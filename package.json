@@ -1,0 +1,7 @@
+{
+  "name": "dochub",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.5",
+  "scripts": {}
+}
