@@ -22,20 +22,28 @@ enum AuthProvider {
   GOOGLE
 }
 
+enum NodeType {
+  FILE
+  FOLDER
+}
+
 model User {
-  id                String        @id @default(uuid()) @db.Uuid
-  email             String
-  normalizedEmail   String        @unique
-  displayName       String
-  status            UserStatus    @default(INVITED)
-  systemRole        SystemRole    @default(MEMBER)
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  authAccounts      AuthAccount[]
-  sessions          Session[]
-  createdGroups     Group[]       @relation("GroupCreatedBy")
-  groupMemberships  GroupMember[] @relation("GroupMemberUser")
-  addedGroupMembers GroupMember[] @relation("GroupMemberAddedBy")
+  id                  String        @id @default(uuid()) @db.Uuid
+  email               String
+  normalizedEmail     String        @unique
+  displayName         String
+  status              UserStatus    @default(INVITED)
+  systemRole          SystemRole    @default(MEMBER)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  authAccounts        AuthAccount[]
+  sessions            Session[]
+  createdGroups       Group[]       @relation("GroupCreatedBy")
+  groupMemberships    GroupMember[] @relation("GroupMemberUser")
+  addedGroupMembers   GroupMember[] @relation("GroupMemberAddedBy")
+  createdNodes        Node[]        @relation("NodeCreatedBy")
+  updatedNodes        Node[]        @relation("NodeUpdatedBy")
+  createdFileVersions FileVersion[] @relation("FileVersionCreatedBy")
 }
 
 model AuthAccount {
@@ -90,4 +98,76 @@ model GroupMember {
 
   @@id([groupId, userId])
   @@index([userId])
+}
+
+// Active-name uniqueness intentionally belongs to the future Node/Trash lifecycle
+// migration: it requires partial unique indexes for both root and non-root nodes.
+model Node {
+  id                 String   @id @default(uuid()) @db.Uuid
+  parentId           String?  @db.Uuid
+  type               NodeType
+  name               String
+  normalizedName     String
+  inheritPermissions Boolean  @default(true)
+  publicAccess       Boolean  @default(false)
+  createdById        String   @db.Uuid
+  updatedById        String?  @db.Uuid
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  parent             Node?    @relation("NodeHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children           Node[]   @relation("NodeHierarchy")
+  createdBy          User     @relation("NodeCreatedBy", fields: [createdById], references: [id])
+  updatedBy          User?    @relation("NodeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  // Node.type = FILE iff a File row exists is an application/domain invariant.
+  file               File?
+
+  @@index([parentId])
+  @@index([createdById])
+}
+
+enum FileVersionSource {
+  UPLOAD
+  EDITOR
+  RESTORE
+  SYSTEM
+}
+
+model File {
+  id               String        @id @default(uuid()) @db.Uuid
+  nodeId           String        @unique @db.Uuid
+  currentVersionId String?       @db.Uuid
+  versionCounter   Int           @default(0)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  node             Node          @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  versions         FileVersion[] @relation("FileVersions")
+  currentVersion   FileVersion?  @relation("FileCurrentVersion", fields: [id, currentVersionId], references: [fileId, id], onDelete: Restrict)
+
+  // Required by Prisma for the composite current-version ownership relation.
+  @@unique([id, currentVersionId])
+}
+
+model FileVersion {
+  id                              String            @id @default(uuid()) @db.Uuid
+  fileId                          String            @db.Uuid
+  versionNumber                   Int
+  storageKey                      String            @unique
+  originalFilename                String
+  mimeType                        String
+  extension                       String?
+  sizeBytes                       BigInt
+  sha256                          String
+  source                          FileVersionSource
+  sourceVersionId                 String?           @db.Uuid
+  createdById                     String?           @db.Uuid
+  createdAt                       DateTime          @default(now())
+  file                            File              @relation("FileVersions", fields: [fileId], references: [id], onDelete: Restrict)
+  currentForFile                  File?             @relation("FileCurrentVersion")
+  sourceVersion                   FileVersion?      @relation("FileVersionRestoreSource", fields: [sourceVersionId], references: [id], onDelete: SetNull)
+  versionsRestoredFromThisVersion FileVersion[]     @relation("FileVersionRestoreSource")
+  createdBy                       User?             @relation("FileVersionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([fileId, versionNumber])
+  @@unique([fileId, id])
+  @@index([fileId])
 }
