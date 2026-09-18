@@ -34,6 +34,24 @@ enum TrashOperationStatus {
   PURGED
 }
 
+enum AuditActorType {
+  USER
+  PUBLIC
+  SYSTEM
+}
+
+enum AuditResult {
+  SUCCESS
+  DENIED
+  FAILED
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
 model User {
   id                       String            @id @default(uuid()) @db.Uuid
   email                    String
@@ -55,6 +73,7 @@ model User {
   createdPermissionEntries PermissionEntry[] @relation("PermissionEntryCreatedBy")
   createdShareLinks        ShareLink[]       @relation("ShareLinkCreatedBy")
   trashOperations          TrashOperation[]  @relation("TrashOperationTrashedBy")
+  auditLogEntries          AuditLog[]        @relation("AuditLogActor")
 }
 
 model AuthAccount {
@@ -243,4 +262,38 @@ model TrashOperation {
   nodes            Node[]               @relation("TrashOperationNodes")
 
   @@index([status, expiresAt])
+}
+
+model AuditLog {
+  id           String         @id @default(uuid()) @db.Uuid
+  actorType    AuditActorType
+  actorId      String?        @db.Uuid
+  action       String
+  resourceType String
+  resourceId   String?        @db.Uuid
+  result       AuditResult
+  ipAddress    String?
+  userAgent    String?
+  metadata     Json
+  createdAt    DateTime       @default(now())
+  actor        User?          @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt])
+  @@index([resourceId, createdAt])
+  @@index([action, createdAt])
+}
+
+model OutboxEvent {
+  id            String       @id @default(uuid()) @db.Uuid
+  eventType     String
+  aggregateType String
+  aggregateId   String?      @db.Uuid
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  attemptCount  Int          @default(0)
+  lastError     String?
+  createdAt     DateTime     @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, createdAt])
 }
