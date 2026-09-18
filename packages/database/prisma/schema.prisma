@@ -27,6 +27,13 @@ enum NodeType {
   FOLDER
 }
 
+enum TrashOperationStatus {
+  ACTIVE
+  RESTORED
+  PURGING
+  PURGED
+}
+
 model User {
   id                       String            @id @default(uuid()) @db.Uuid
   email                    String
@@ -47,6 +54,7 @@ model User {
   permissionEntries        PermissionEntry[] @relation("PermissionEntryUser")
   createdPermissionEntries PermissionEntry[] @relation("PermissionEntryCreatedBy")
   createdShareLinks        ShareLink[]       @relation("ShareLinkCreatedBy")
+  trashOperations          TrashOperation[]  @relation("TrashOperationTrashedBy")
 }
 
 model AuthAccount {
@@ -104,31 +112,35 @@ model GroupMember {
   @@index([userId])
 }
 
-// Active-name uniqueness intentionally belongs to the future Node/Trash lifecycle
-// migration: it requires partial unique indexes for both root and non-root nodes.
+// Active-name uniqueness is enforced by partial indexes in the Trash lifecycle migration.
 model Node {
-  id                 String            @id @default(uuid()) @db.Uuid
-  parentId           String?           @db.Uuid
-  type               NodeType
-  name               String
-  normalizedName     String
-  inheritPermissions Boolean           @default(true)
-  publicAccess       Boolean           @default(false)
-  createdById        String            @db.Uuid
-  updatedById        String?           @db.Uuid
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  parent             Node?             @relation("NodeHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
-  children           Node[]            @relation("NodeHierarchy")
-  createdBy          User              @relation("NodeCreatedBy", fields: [createdById], references: [id])
-  updatedBy          User?             @relation("NodeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  id                                String            @id @default(uuid()) @db.Uuid
+  parentId                          String?           @db.Uuid
+  type                              NodeType
+  name                              String
+  normalizedName                    String
+  inheritPermissions                Boolean           @default(true)
+  publicAccess                      Boolean           @default(false)
+  createdById                       String            @db.Uuid
+  updatedById                       String?           @db.Uuid
+  createdAt                         DateTime          @default(now())
+  updatedAt                         DateTime          @updatedAt
+  parent                            Node?             @relation("NodeHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children                          Node[]            @relation("NodeHierarchy")
+  createdBy                         User              @relation("NodeCreatedBy", fields: [createdById], references: [id])
+  updatedBy                         User?             @relation("NodeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   // Node.type = FILE iff a File row exists is an application/domain invariant.
-  file               File?
-  permissionEntries  PermissionEntry[]
-  shareLinks         ShareLink[]
+  file                              File?
+  permissionEntries                 PermissionEntry[]
+  shareLinks                        ShareLink[]
+  trashOperationId                  String?           @db.Uuid
+  trashOperation                    TrashOperation?   @relation("TrashOperationNodes", fields: [trashOperationId], references: [id], onDelete: Restrict)
+  trashOperationsAsRoot             TrashOperation[]  @relation("TrashOperationRootNode")
+  trashOperationsWithOriginalParent TrashOperation[]  @relation("TrashOperationOriginalParent")
 
   @@index([parentId])
   @@index([createdById])
+  @@index([trashOperationId])
 }
 
 enum FileVersionSource {
@@ -213,4 +225,22 @@ model ShareLink {
   revokedAt   DateTime?
   node        Node      @relation(fields: [nodeId], references: [id], onDelete: Restrict)
   createdBy   User?     @relation("ShareLinkCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+}
+
+model TrashOperation {
+  id               String               @id @default(uuid()) @db.Uuid
+  rootNodeId       String?              @db.Uuid
+  originalParentId String?              @db.Uuid
+  trashedById      String?              @db.Uuid
+  status           TrashOperationStatus @default(ACTIVE)
+  trashedAt        DateTime             @default(now())
+  expiresAt        DateTime
+  restoredAt       DateTime?
+  purgedAt         DateTime?
+  rootNode         Node?                @relation("TrashOperationRootNode", fields: [rootNodeId], references: [id], onDelete: SetNull)
+  originalParent   Node?                @relation("TrashOperationOriginalParent", fields: [originalParentId], references: [id], onDelete: SetNull)
+  trashedBy        User?                @relation("TrashOperationTrashedBy", fields: [trashedById], references: [id], onDelete: SetNull)
+  nodes            Node[]               @relation("TrashOperationNodes")
+
+  @@index([status, expiresAt])
 }
