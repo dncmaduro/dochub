@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: dochub-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dochub
+      POSTGRES_USER: dochub
+      POSTGRES_PASSWORD: dochub_dev
+    ports:
+      - "5433:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: dochub-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:

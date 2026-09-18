@@ -3,5 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "packageManager": "pnpm@9.15.5",
-  "scripts": {}
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "dev:api": "pnpm --filter api start:dev",
+    "dev:worker": "pnpm --filter worker start:dev",
+
+    "build": "pnpm -r build",
+
+    "infra:up": "docker compose -f docker-compose.dev.yml up -d",
+    "infra:down": "docker compose -f docker-compose.dev.yml down",
+    "infra:ps": "docker compose -f docker-compose.dev.yml ps",
+    "infra:logs": "docker compose -f docker-compose.dev.yml logs -f"
+  }
 }
