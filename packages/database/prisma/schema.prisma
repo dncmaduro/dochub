@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+enum SystemRole {
+  ADMIN
+  MEMBER
+}
+
+enum AuthProvider {
+  GOOGLE
+}
+
+model User {
+  id                String        @id @default(uuid()) @db.Uuid
+  email             String
+  normalizedEmail   String        @unique
+  displayName       String
+  status            UserStatus    @default(INVITED)
+  systemRole        SystemRole    @default(MEMBER)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  authAccounts      AuthAccount[]
+  sessions          Session[]
+  createdGroups     Group[]       @relation("GroupCreatedBy")
+  groupMemberships  GroupMember[] @relation("GroupMemberUser")
+  addedGroupMembers GroupMember[] @relation("GroupMemberAddedBy")
+}
+
+model AuthAccount {
+  id                String       @id @default(uuid()) @db.Uuid
+  userId            String       @db.Uuid
+  provider          AuthProvider
+  providerAccountId String
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @db.Uuid
+  refreshTokenHash String
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  ipAddress        String?
+  userAgent        String?
+  createdAt        DateTime  @default(now())
+  lastUsedAt       DateTime?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshTokenHash])
+}
+
+model Group {
+  id             String        @id @default(uuid()) @db.Uuid
+  name           String
+  normalizedName String        @unique
+  description    String?
+  createdById    String        @db.Uuid
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  createdBy      User          @relation("GroupCreatedBy", fields: [createdById], references: [id])
+  members        GroupMember[]
+}
+
+model GroupMember {
+  groupId   String   @db.Uuid
+  userId    String   @db.Uuid
+  addedById String   @db.Uuid
+  createdAt DateTime @default(now())
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User     @relation("GroupMemberUser", fields: [userId], references: [id])
+  addedBy   User     @relation("GroupMemberAddedBy", fields: [addedById], references: [id])
+
+  @@id([groupId, userId])
+  @@index([userId])
+}
