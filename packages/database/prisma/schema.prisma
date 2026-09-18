@@ -52,6 +52,38 @@ enum OutboxStatus {
   FAILED
 }
 
+enum FileProcessingTaskType {
+  VALIDATION
+  METADATA
+  THUMBNAIL
+  TEXT_EXTRACTION
+  SEARCH_INDEX
+  VIRUS_SCAN
+}
+
+enum FileProcessingTaskStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum EditorActorType {
+  USER
+  PUBLIC
+}
+
+enum EditorMode {
+  VIEW
+  EDIT
+}
+
+enum EditorSessionStatus {
+  ACTIVE
+  CLOSED
+  FAILED
+}
+
 model User {
   id                       String            @id @default(uuid()) @db.Uuid
   email                    String
@@ -74,6 +106,9 @@ model User {
   createdShareLinks        ShareLink[]       @relation("ShareLinkCreatedBy")
   trashOperations          TrashOperation[]  @relation("TrashOperationTrashedBy")
   auditLogEntries          AuditLog[]        @relation("AuditLogActor")
+  editorSessions           EditorSession[]   @relation("EditorSessionUser")
+  favorites                Favorite[]        @relation("FavoriteUser")
+  recentItems              RecentItem[]      @relation("RecentItemUser")
 }
 
 model AuthAccount {
@@ -156,6 +191,8 @@ model Node {
   trashOperation                    TrashOperation?   @relation("TrashOperationNodes", fields: [trashOperationId], references: [id], onDelete: Restrict)
   trashOperationsAsRoot             TrashOperation[]  @relation("TrashOperationRootNode")
   trashOperationsWithOriginalParent TrashOperation[]  @relation("TrashOperationOriginalParent")
+  favorites                         Favorite[]        @relation("FavoriteNode")
+  recentItems                       RecentItem[]      @relation("RecentItemNode")
 
   @@index([parentId])
   @@index([createdById])
@@ -176,39 +213,44 @@ enum DocumentRole {
 }
 
 model File {
-  id               String        @id @default(uuid()) @db.Uuid
-  nodeId           String        @unique @db.Uuid
-  currentVersionId String?       @db.Uuid
-  versionCounter   Int           @default(0)
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
-  node             Node          @relation(fields: [nodeId], references: [id], onDelete: Restrict)
-  versions         FileVersion[] @relation("FileVersions")
-  currentVersion   FileVersion?  @relation("FileCurrentVersion", fields: [id, currentVersionId], references: [fileId, id], onDelete: Restrict)
+  id               String          @id @default(uuid()) @db.Uuid
+  nodeId           String          @unique @db.Uuid
+  currentVersionId String?         @db.Uuid
+  versionCounter   Int             @default(0)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  node             Node            @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  versions         FileVersion[]   @relation("FileVersions")
+  currentVersion   FileVersion?    @relation("FileCurrentVersion", fields: [id, currentVersionId], references: [fileId, id], onDelete: Restrict)
+  searchDocument   SearchDocument? @relation("SearchDocumentFile")
+  editorSessions   EditorSession[] @relation("EditorSessionFile")
 
   // Required by Prisma for the composite current-version ownership relation.
   @@unique([id, currentVersionId])
 }
 
 model FileVersion {
-  id                              String            @id @default(uuid()) @db.Uuid
-  fileId                          String            @db.Uuid
+  id                              String               @id @default(uuid()) @db.Uuid
+  fileId                          String               @db.Uuid
   versionNumber                   Int
-  storageKey                      String            @unique
+  storageKey                      String               @unique
   originalFilename                String
   mimeType                        String
   extension                       String?
   sizeBytes                       BigInt
   sha256                          String
   source                          FileVersionSource
-  sourceVersionId                 String?           @db.Uuid
-  createdById                     String?           @db.Uuid
-  createdAt                       DateTime          @default(now())
-  file                            File              @relation("FileVersions", fields: [fileId], references: [id], onDelete: Restrict)
-  currentForFile                  File?             @relation("FileCurrentVersion")
-  sourceVersion                   FileVersion?      @relation("FileVersionRestoreSource", fields: [sourceVersionId], references: [id], onDelete: SetNull)
-  versionsRestoredFromThisVersion FileVersion[]     @relation("FileVersionRestoreSource")
-  createdBy                       User?             @relation("FileVersionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  sourceVersionId                 String?              @db.Uuid
+  createdById                     String?              @db.Uuid
+  createdAt                       DateTime             @default(now())
+  file                            File                 @relation("FileVersions", fields: [fileId], references: [id], onDelete: Restrict)
+  currentForFile                  File?                @relation("FileCurrentVersion")
+  sourceVersion                   FileVersion?         @relation("FileVersionRestoreSource", fields: [sourceVersionId], references: [id], onDelete: SetNull)
+  versionsRestoredFromThisVersion FileVersion[]        @relation("FileVersionRestoreSource")
+  createdBy                       User?                @relation("FileVersionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  processingTasks                 FileProcessingTask[] @relation("FileVersionProcessingTasks")
+  indexedSearchDocuments          SearchDocument[]     @relation("SearchDocumentIndexedVersion")
+  editorSessionsBasedOnVersion    EditorSession[]      @relation("EditorSessionBaseVersion")
 
   @@unique([fileId, versionNumber])
   @@unique([fileId, id])
@@ -236,14 +278,15 @@ model PermissionEntry {
 }
 
 model ShareLink {
-  id          String    @id @default(uuid()) @db.Uuid
-  nodeId      String    @db.Uuid
-  tokenHash   String    @unique
-  createdById String?   @db.Uuid
-  createdAt   DateTime  @default(now())
-  revokedAt   DateTime?
-  node        Node      @relation(fields: [nodeId], references: [id], onDelete: Restrict)
-  createdBy   User?     @relation("ShareLinkCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  id             String          @id @default(uuid()) @db.Uuid
+  nodeId         String          @db.Uuid
+  tokenHash      String          @unique
+  createdById    String?         @db.Uuid
+  createdAt      DateTime        @default(now())
+  revokedAt      DateTime?
+  node           Node            @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  createdBy      User?           @relation("ShareLinkCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  editorSessions EditorSession[] @relation("EditorSessionShareLink")
 }
 
 model TrashOperation {
@@ -296,4 +339,74 @@ model OutboxEvent {
   publishedAt   DateTime?
 
   @@index([status, createdAt])
+}
+
+model FileProcessingTask {
+  id            String                   @id @default(uuid()) @db.Uuid
+  fileVersionId String                   @db.Uuid
+  type          FileProcessingTaskType
+  status        FileProcessingTaskStatus @default(PENDING)
+  attemptCount  Int                      @default(0)
+  lastError     String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime                 @default(now())
+  fileVersion   FileVersion              @relation("FileVersionProcessingTasks", fields: [fileVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([fileVersionId, type])
+  @@index([status, createdAt])
+}
+
+model SearchDocument {
+  id            String                   @id @default(uuid()) @db.Uuid
+  fileId        String                   @unique @db.Uuid
+  fileVersionId String                   @db.Uuid
+  contentText   String
+  searchVector  Unsupported("tsvector")?
+  indexedAt     DateTime                 @default(now())
+  file          File                     @relation("SearchDocumentFile", fields: [fileId], references: [id], onDelete: Cascade)
+  fileVersion   FileVersion              @relation("SearchDocumentIndexedVersion", fields: [fileVersionId], references: [id], onDelete: Cascade)
+
+  @@index([fileVersionId])
+}
+
+model EditorSession {
+  id            String              @id @default(uuid()) @db.Uuid
+  fileId        String              @db.Uuid
+  baseVersionId String              @db.Uuid
+  documentKey   String
+  actorType     EditorActorType
+  userId        String?             @db.Uuid
+  shareLinkId   String?             @db.Uuid
+  mode          EditorMode
+  status        EditorSessionStatus @default(ACTIVE)
+  createdAt     DateTime            @default(now())
+  closedAt      DateTime?
+  file          File                @relation("EditorSessionFile", fields: [fileId], references: [id], onDelete: Restrict)
+  baseVersion   FileVersion         @relation("EditorSessionBaseVersion", fields: [fileId, baseVersionId], references: [fileId, id], onDelete: Restrict)
+  user          User?               @relation("EditorSessionUser", fields: [userId], references: [id], onDelete: Restrict)
+  shareLink     ShareLink?          @relation("EditorSessionShareLink", fields: [shareLinkId], references: [id], onDelete: Restrict)
+
+  @@index([documentKey])
+}
+
+model Favorite {
+  userId    String   @db.Uuid
+  nodeId    String   @db.Uuid
+  createdAt DateTime @default(now())
+  user      User     @relation("FavoriteUser", fields: [userId], references: [id], onDelete: Cascade)
+  node      Node     @relation("FavoriteNode", fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@id([userId, nodeId])
+}
+
+model RecentItem {
+  userId         String   @db.Uuid
+  nodeId         String   @db.Uuid
+  lastAccessedAt DateTime @default(now())
+  user           User     @relation("RecentItemUser", fields: [userId], references: [id], onDelete: Cascade)
+  node           Node     @relation("RecentItemNode", fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@id([userId, nodeId])
+  @@index([userId, lastAccessedAt])
 }
