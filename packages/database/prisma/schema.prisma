@@ -46,6 +46,7 @@ model User {
   createdFileVersions      FileVersion[]     @relation("FileVersionCreatedBy")
   permissionEntries        PermissionEntry[] @relation("PermissionEntryUser")
   createdPermissionEntries PermissionEntry[] @relation("PermissionEntryCreatedBy")
+  createdShareLinks        ShareLink[]       @relation("ShareLinkCreatedBy")
 }
 
 model AuthAccount {
@@ -124,6 +125,7 @@ model Node {
   // Node.type = FILE iff a File row exists is an application/domain invariant.
   file               File?
   permissionEntries  PermissionEntry[]
+  shareLinks         ShareLink[]
 
   @@index([parentId])
   @@index([createdById])
@@ -200,4 +202,15 @@ model PermissionEntry {
   @@unique([nodeId, groupId])
   @@index([userId])
   @@index([groupId])
+}
+
+model ShareLink {
+  id          String    @id @default(uuid()) @db.Uuid
+  nodeId      String    @db.Uuid
+  tokenHash   String    @unique
+  createdById String?   @db.Uuid
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
+  node        Node      @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  createdBy   User?     @relation("ShareLinkCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 }
