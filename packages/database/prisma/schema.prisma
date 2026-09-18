@@ -28,22 +28,24 @@ enum NodeType {
 }
 
 model User {
-  id                  String        @id @default(uuid()) @db.Uuid
-  email               String
-  normalizedEmail     String        @unique
-  displayName         String
-  status              UserStatus    @default(INVITED)
-  systemRole          SystemRole    @default(MEMBER)
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
-  authAccounts        AuthAccount[]
-  sessions            Session[]
-  createdGroups       Group[]       @relation("GroupCreatedBy")
-  groupMemberships    GroupMember[] @relation("GroupMemberUser")
-  addedGroupMembers   GroupMember[] @relation("GroupMemberAddedBy")
-  createdNodes        Node[]        @relation("NodeCreatedBy")
-  updatedNodes        Node[]        @relation("NodeUpdatedBy")
-  createdFileVersions FileVersion[] @relation("FileVersionCreatedBy")
+  id                       String            @id @default(uuid()) @db.Uuid
+  email                    String
+  normalizedEmail          String            @unique
+  displayName              String
+  status                   UserStatus        @default(INVITED)
+  systemRole               SystemRole        @default(MEMBER)
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+  authAccounts             AuthAccount[]
+  sessions                 Session[]
+  createdGroups            Group[]           @relation("GroupCreatedBy")
+  groupMemberships         GroupMember[]     @relation("GroupMemberUser")
+  addedGroupMembers        GroupMember[]     @relation("GroupMemberAddedBy")
+  createdNodes             Node[]            @relation("NodeCreatedBy")
+  updatedNodes             Node[]            @relation("NodeUpdatedBy")
+  createdFileVersions      FileVersion[]     @relation("FileVersionCreatedBy")
+  permissionEntries        PermissionEntry[] @relation("PermissionEntryUser")
+  createdPermissionEntries PermissionEntry[] @relation("PermissionEntryCreatedBy")
 }
 
 model AuthAccount {
@@ -76,15 +78,16 @@ model Session {
 }
 
 model Group {
-  id             String        @id @default(uuid()) @db.Uuid
-  name           String
-  normalizedName String        @unique
-  description    String?
-  createdById    String        @db.Uuid
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  createdBy      User          @relation("GroupCreatedBy", fields: [createdById], references: [id])
-  members        GroupMember[]
+  id                String            @id @default(uuid()) @db.Uuid
+  name              String
+  normalizedName    String            @unique
+  description       String?
+  createdById       String            @db.Uuid
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  createdBy         User              @relation("GroupCreatedBy", fields: [createdById], references: [id])
+  members           GroupMember[]
+  permissionEntries PermissionEntry[] @relation("PermissionEntryGroup")
 }
 
 model GroupMember {
@@ -103,23 +106,24 @@ model GroupMember {
 // Active-name uniqueness intentionally belongs to the future Node/Trash lifecycle
 // migration: it requires partial unique indexes for both root and non-root nodes.
 model Node {
-  id                 String   @id @default(uuid()) @db.Uuid
-  parentId           String?  @db.Uuid
+  id                 String            @id @default(uuid()) @db.Uuid
+  parentId           String?           @db.Uuid
   type               NodeType
   name               String
   normalizedName     String
-  inheritPermissions Boolean  @default(true)
-  publicAccess       Boolean  @default(false)
-  createdById        String   @db.Uuid
-  updatedById        String?  @db.Uuid
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-  parent             Node?    @relation("NodeHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
-  children           Node[]   @relation("NodeHierarchy")
-  createdBy          User     @relation("NodeCreatedBy", fields: [createdById], references: [id])
-  updatedBy          User?    @relation("NodeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  inheritPermissions Boolean           @default(true)
+  publicAccess       Boolean           @default(false)
+  createdById        String            @db.Uuid
+  updatedById        String?           @db.Uuid
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  parent             Node?             @relation("NodeHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children           Node[]            @relation("NodeHierarchy")
+  createdBy          User              @relation("NodeCreatedBy", fields: [createdById], references: [id])
+  updatedBy          User?             @relation("NodeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   // Node.type = FILE iff a File row exists is an application/domain invariant.
   file               File?
+  permissionEntries  PermissionEntry[]
 
   @@index([parentId])
   @@index([createdById])
@@ -130,6 +134,12 @@ enum FileVersionSource {
   EDITOR
   RESTORE
   SYSTEM
+}
+
+enum DocumentRole {
+  VIEWER
+  EDITOR
+  OWNER
 }
 
 model File {
@@ -170,4 +180,24 @@ model FileVersion {
   @@unique([fileId, versionNumber])
   @@unique([fileId, id])
   @@index([fileId])
+}
+
+model PermissionEntry {
+  id          String       @id @default(uuid()) @db.Uuid
+  nodeId      String       @db.Uuid
+  userId      String?      @db.Uuid
+  groupId     String?      @db.Uuid
+  role        DocumentRole
+  createdById String?      @db.Uuid
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  node        Node         @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  user        User?        @relation("PermissionEntryUser", fields: [userId], references: [id], onDelete: Cascade)
+  group       Group?       @relation("PermissionEntryGroup", fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy   User?        @relation("PermissionEntryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([nodeId, userId])
+  @@unique([nodeId, groupId])
+  @@index([userId])
+  @@index([groupId])
 }
