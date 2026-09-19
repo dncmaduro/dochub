@@ -52,6 +52,12 @@ describe('API authentication routes (e2e)', () => {
     return request(app.getHttpServer()).get('/nodes/root').expect(401);
   });
 
+  it('/nodes/:nodeId/permissions (GET) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer())
+      .get('/nodes/00000000-0000-4000-8000-000000000000/permissions')
+      .expect(401);
+  });
+
   afterEach(async () => {
     await app.close();
   });

@@ -608,11 +608,19 @@ export class NodesService {
   }
 
   private isSerializationConflict(error: unknown): boolean {
+    if (!error || typeof error !== 'object' || !('code' in error)) {
+      return false;
+    }
+    if (error.code === 'P2034') {
+      return true;
+    }
     return (
-      !!error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      error.code === 'P2034'
+      error.code === 'P2010' &&
+      'meta' in error &&
+      !!error.meta &&
+      typeof error.meta === 'object' &&
+      'code' in error.meta &&
+      error.meta.code === '40001'
     );
   }
 }
