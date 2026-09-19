@@ -4,14 +4,15 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
-import { Injectable } from '@nestjs/common';
-let AppService = class AppService {
-    getHello() {
-        return 'Hello World!';
-    }
+import { Module } from '@nestjs/common';
+import { DatabaseService } from './database.service.js';
+let DatabaseModule = class DatabaseModule {
 };
-AppService = __decorate([
-    Injectable()
-], AppService);
-export { AppService };
-//# sourceMappingURL=app.service.js.map
+DatabaseModule = __decorate([
+    Module({
+        providers: [DatabaseService],
+        exports: [DatabaseService],
+    })
+], DatabaseModule);
+export { DatabaseModule };
+//# sourceMappingURL=database.module.js.map
