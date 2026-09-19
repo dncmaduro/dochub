@@ -37,6 +37,9 @@ importers:
       class-validator:
         specifier: ^0.14.2
         version: 0.14.4
+      content-disposition:
+        specifier: ^1.0.0
+        version: 1.1.0
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7
@@ -68,6 +71,9 @@ importers:
       '@types/busboy':
         specifier: ^1.5.4
         version: 1.5.4
+      '@types/content-disposition':
+        specifier: ^0.5.9
+        version: 0.5.9
       '@types/cookie-parser':
         specifier: ^1.4.9
         version: 1.4.10(@types/express@5.0.6)
@@ -987,6 +993,9 @@ packages:
 
   '@types/connect@3.4.38':
     resolution: {integrity: sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==}
+
+  '@types/content-disposition@0.5.9':
+    resolution: {integrity: sha512-8uYXI3Gw35MhiVYhG3s295oihrxRyytcRHjSjqnqZVDDy/xcGBRny7+Xj1Wgfhv5QzRtN2hB2dVRBUX9XW3UcQ==}
 
   '@types/cookie-parser@1.4.10':
     resolution: {integrity: sha512-B4xqkqfZ8Wek+rCOeRxsjMS9OgvzebEzzLYw7NHYuvzb7IdxOkI0ZHGgeEBX4PUM7QGVvNSK60T3OvWj3YfBRg==}
@@ -3460,6 +3469,8 @@ snapshots:
   '@types/connect@3.4.38':
     dependencies:
       '@types/node': 24.13.5
+
+  '@types/content-disposition@0.5.9': {}
 
   '@types/cookie-parser@1.4.10(@types/express@5.0.6)':
     dependencies:
