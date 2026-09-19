@@ -35,4 +35,28 @@ describe('loadAuthConfig', () => {
       }),
     ).toThrow('AUTH_ACCESS_TOKEN_TTL_SECONDS must be a positive integer');
   });
+
+  it('requires the complete Google OIDC configuration when any Google value is supplied', () => {
+    expect(() =>
+      loadAuthConfig({
+        AUTH_ACCESS_TOKEN_SECRET: 'test-secret',
+        GOOGLE_CLIENT_ID: 'client-id',
+      }),
+    ).toThrow('must be configured together');
+
+    expect(
+      loadAuthConfig({
+        AUTH_ACCESS_TOKEN_SECRET: 'test-secret',
+        GOOGLE_CLIENT_ID: 'client-id',
+        GOOGLE_CLIENT_SECRET: 'client-secret',
+        GOOGLE_REDIRECT_URI: 'http://localhost:3000/auth/google/callback',
+        AUTH_LOGIN_SUCCESS_REDIRECT_URL: 'http://localhost:5173/auth/callback',
+      }).google,
+    ).toEqual({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      redirectUri: 'http://localhost:3000/auth/google/callback',
+      loginSuccessRedirectUrl: 'http://localhost:5173/auth/callback',
+    });
+  });
 });

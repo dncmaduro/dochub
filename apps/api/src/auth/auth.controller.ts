@@ -2,21 +2,20 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
-  Inject,
   Post,
   Req,
   Res,
   UnauthorizedException,
 } from '@nestjs/common';
-import type { CookieOptions, Request, Response } from 'express';
-import { AUTH_CONFIG, type AuthConfig } from './auth.config.js';
+import type { Request, Response } from 'express';
+import { AuthCookieService } from './auth-cookie.service.js';
 import { AuthSessionService } from './auth-session.service.js';
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly authSessions: AuthSessionService,
-    @Inject(AUTH_CONFIG) private readonly config: AuthConfig,
+    private readonly authCookies: AuthCookieService,
   ) {}
 
   @Post('refresh')
@@ -31,9 +30,9 @@ export class AuthController {
 
     const tokens = await this.authSessions.refreshSession(refreshToken);
     response.cookie(
-      this.config.refreshCookieName,
+      this.authCookies.refreshCookieName(),
       tokens.refreshToken,
-      this.refreshCookieOptions(),
+      this.authCookies.refreshOptions(),
     );
     return {
       accessToken: tokens.accessToken,
@@ -54,31 +53,13 @@ export class AuthController {
     }
 
     response.clearCookie(
-      this.config.refreshCookieName,
-      this.refreshCookieOptions(false),
+      this.authCookies.refreshCookieName(),
+      this.authCookies.refreshOptions(false),
     );
   }
 
   private refreshTokenFrom(request: Request): string | undefined {
-    const cookie = request.cookies?.[this.config.refreshCookieName];
+    const cookie = request.cookies?.[this.authCookies.refreshCookieName()];
     return typeof cookie === 'string' ? cookie : undefined;
-  }
-
-  private refreshCookieOptions(includeMaxAge = true): CookieOptions {
-    const options: CookieOptions = {
-      httpOnly: true,
-      secure: this.config.refreshCookieSecure,
-      sameSite: this.config.refreshCookieSameSite,
-      path: '/auth',
-    };
-
-    if (this.config.refreshCookieDomain) {
-      options.domain = this.config.refreshCookieDomain;
-    }
-    if (includeMaxAge) {
-      options.maxAge = this.config.refreshTokenLifetimeMs;
-    }
-
-    return options;
   }
 }

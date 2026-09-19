@@ -10,6 +10,14 @@ export interface AuthConfig {
   refreshCookieSameSite: RefreshCookieSameSite;
   refreshCookieDomain?: string;
   webOrigin?: string;
+  google?: GoogleOidcConfig;
+}
+
+export interface GoogleOidcConfig {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  loginSuccessRedirectUrl: string;
 }
 
 export const AUTH_CONFIG = Symbol('AUTH_CONFIG');
@@ -87,6 +95,49 @@ function optionalValue(value: string | undefined): string | undefined {
   return normalized || undefined;
 }
 
+function absoluteHttpUrl(name: string, value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error();
+    }
+    return value;
+  } catch {
+    throw new Error(`${name} must be an absolute http(s) URL`);
+  }
+}
+
+function googleOidcConfig(
+  env: NodeJS.ProcessEnv,
+): GoogleOidcConfig | undefined {
+  const values = {
+    clientId: optionalValue(env.GOOGLE_CLIENT_ID),
+    clientSecret: optionalValue(env.GOOGLE_CLIENT_SECRET),
+    redirectUri: optionalValue(env.GOOGLE_REDIRECT_URI),
+    loginSuccessRedirectUrl: optionalValue(env.AUTH_LOGIN_SUCCESS_REDIRECT_URL),
+  };
+  const configuredValues = Object.values(values).filter(Boolean);
+
+  if (configuredValues.length === 0) {
+    return undefined;
+  }
+  if (configuredValues.length !== Object.keys(values).length) {
+    throw new Error(
+      'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, and AUTH_LOGIN_SUCCESS_REDIRECT_URL must be configured together',
+    );
+  }
+
+  return {
+    clientId: values.clientId!,
+    clientSecret: values.clientSecret!,
+    redirectUri: absoluteHttpUrl('GOOGLE_REDIRECT_URI', values.redirectUri!),
+    loginSuccessRedirectUrl: absoluteHttpUrl(
+      'AUTH_LOGIN_SUCCESS_REDIRECT_URL',
+      values.loginSuccessRedirectUrl!,
+    ),
+  };
+}
+
 export function loadAuthConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): AuthConfig {
@@ -133,5 +184,6 @@ export function loadAuthConfig(
     refreshCookieSameSite,
     refreshCookieDomain: optionalValue(env.AUTH_REFRESH_COOKIE_DOMAIN),
     webOrigin: optionalValue(env.WEB_ORIGIN),
+    google: googleOidcConfig(env),
   };
 }
