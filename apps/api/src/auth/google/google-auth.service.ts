@@ -9,6 +9,7 @@ import * as oidc from 'openid-client';
 import { DatabaseService } from '../../database/database.service.js';
 import { AuthSessionService } from '../auth-session.service.js';
 import type { CreateSessionInput, SessionTokens } from '../auth.types.js';
+import { normalizeEmail } from '../../common/normalization.js';
 import {
   GOOGLE_OIDC_CLIENT,
   type GoogleOidcClient,
@@ -126,7 +127,7 @@ export class GoogleAuthService {
 
     return {
       sub: claims.sub,
-      normalizedEmail: claims.email.trim().toLowerCase(),
+      normalizedEmail: normalizeEmail(claims.email),
     };
   }
 

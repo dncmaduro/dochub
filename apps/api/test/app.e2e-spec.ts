@@ -37,6 +37,10 @@ describe('API authentication routes (e2e)', () => {
     return request(app.getHttpServer()).post('/auth/logout').expect(204);
   });
 
+  it('/admin/users (GET) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer()).get('/admin/users').expect(401);
+  });
+
   afterEach(async () => {
     await app.close();
   });

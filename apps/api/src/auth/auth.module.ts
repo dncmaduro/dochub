@@ -39,6 +39,6 @@ import {
     },
     OpenIdClientGoogleOidcClient,
   ],
-  exports: [AuthSessionService, AccessTokenGuard],
+  exports: [JwtModule, AuthSessionService, AccessTokenGuard],
 })
 export class AuthModule {}
