@@ -41,6 +41,17 @@ describe('API authentication routes (e2e)', () => {
     return request(app.getHttpServer()).get('/admin/users').expect(401);
   });
 
+  it('/folders (POST) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer())
+      .post('/folders')
+      .send({ name: 'Unauthenticated folder' })
+      .expect(401);
+  });
+
+  it('/nodes/root (GET) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer()).get('/nodes/root').expect(401);
+  });
+
   afterEach(async () => {
     await app.close();
   });

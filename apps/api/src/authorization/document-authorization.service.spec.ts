@@ -22,7 +22,9 @@ function createService({
     .fn()
     .mockResolvedValueOnce(nodeChain)
     .mockResolvedValueOnce(memberships);
-  const findMany = vi.fn().mockResolvedValue(roles.map((role) => ({ role })));
+  const findMany = vi
+    .fn()
+    .mockResolvedValue(roles.map((role) => ({ nodeId, role })));
   const database = {
     prisma: { $queryRaw: queryRaw, permissionEntry: { findMany } },
   } as unknown as DatabaseService;
@@ -77,7 +79,7 @@ describe('DocumentAuthorizationService', () => {
         nodeId: { in: [nodeId, parentId] },
         OR: [{ userId }, { groupId: { in: [groupId] } }],
       },
-      select: { role: true },
+      select: { nodeId: true, role: true },
     });
   });
 

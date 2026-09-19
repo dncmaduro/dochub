@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { DocumentRole } from '@dochub/database';
+import { DocumentRole, Prisma, type PrismaClient } from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
 import {
   DOCUMENT_ROLE_CAPABILITIES,
@@ -24,6 +24,9 @@ export interface ResolvedDocumentCapabilities {
   capabilities: ReadonlySet<DocumentCapability>;
 }
 
+export type DocumentAuthorizationClient =
+  PrismaClient | Prisma.TransactionClient;
+
 @Injectable()
 export class DocumentAuthorizationService {
   constructor(private readonly database: DatabaseService) {}
@@ -35,8 +38,9 @@ export class DocumentAuthorizationService {
   async resolveCapabilities(
     userId: string,
     nodeId: string,
+    client: DocumentAuthorizationClient = this.database.prisma,
   ): Promise<ResolvedDocumentCapabilities> {
-    const nodeChain = await this.database.prisma.$queryRaw<NodeChainRow[]>`
+    const nodeChain = await client.$queryRaw<NodeChainRow[]>`
       WITH RECURSIVE node_chain AS (
         SELECT
           "id",
@@ -75,45 +79,90 @@ export class DocumentAuthorizationService {
 
     // Fetching the user and all memberships together lets a missing user fail
     // closed without a per-group query.
-    const membershipRows = await this.database.prisma.$queryRaw<
-      UserMembershipRow[]
-    >`
+    const groupIds = await this.findUserGroupIds(userId, client);
+    if (groupIds === null) {
+      return this.emptyResolution(nodeId);
+    }
+
+    const capabilitiesByNode = await this.resolveExplicitCapabilities(
+      userId,
+      nodeChain.map((node) => node.id),
+      groupIds,
+      client,
+    );
+    const capabilities = new Set<DocumentCapability>();
+    for (const node of nodeChain) {
+      for (const capability of capabilitiesByNode.get(node.id) ?? []) {
+        capabilities.add(capability);
+      }
+    }
+    return { nodeId, capabilities };
+  }
+
+  /** Returns null if the principal no longer exists. */
+  async findUserGroupIds(
+    userId: string,
+    client: DocumentAuthorizationClient = this.database.prisma,
+  ): Promise<string[] | null> {
+    const membershipRows = await client.$queryRaw<UserMembershipRow[]>`
       SELECT user_record."id" AS "userId", membership."groupId" AS "groupId"
       FROM "User" AS user_record
       LEFT JOIN "GroupMember" AS membership
         ON membership."userId" = user_record."id"
       WHERE user_record."id" = ${userId}::uuid
     `;
-
     if (membershipRows.length === 0) {
-      return this.emptyResolution(nodeId);
+      return null;
+    }
+    return [
+      ...new Set(
+        membershipRows.flatMap((membership) =>
+          membership.groupId === null ? [] : [membership.groupId],
+        ),
+      ),
+    ];
+  }
+
+  /**
+   * Resolves only direct ACL entries for a bounded set of nodes. Callers that
+   * need inheritance compose these results using their known hierarchy.
+   */
+  async resolveExplicitCapabilities(
+    userId: string,
+    nodeIds: readonly string[],
+    groupIds: readonly string[],
+    client: DocumentAuthorizationClient = this.database.prisma,
+  ): Promise<Map<string, ReadonlySet<DocumentCapability>>> {
+    const capabilitiesByNode = new Map<
+      string,
+      ReadonlySet<DocumentCapability>
+    >();
+    if (nodeIds.length === 0) {
+      return capabilitiesByNode;
     }
 
-    const groupIds = membershipRows.flatMap((membership) =>
-      membership.groupId === null ? [] : [membership.groupId],
-    );
-    const permissionEntries =
-      await this.database.prisma.permissionEntry.findMany({
-        where: {
-          nodeId: { in: nodeChain.map((node) => node.id) },
-          OR: [
-            { userId },
-            ...(groupIds.length > 0 ? [{ groupId: { in: groupIds } }] : []),
-          ],
-        },
-        select: { role: true },
-      });
-
-    const capabilities = new Set<DocumentCapability>();
+    const permissionEntries = await client.permissionEntry.findMany({
+      where: {
+        nodeId: { in: [...nodeIds] },
+        OR: [
+          { userId },
+          ...(groupIds.length > 0 ? [{ groupId: { in: [...groupIds] } }] : []),
+        ],
+      },
+      select: { nodeId: true, role: true },
+    });
     for (const permissionEntry of permissionEntries) {
+      const capabilities = new Set(
+        capabilitiesByNode.get(permissionEntry.nodeId) ?? [],
+      );
       for (const capability of DOCUMENT_ROLE_CAPABILITIES[
         permissionEntry.role as DocumentRole
       ]) {
         capabilities.add(capability);
       }
+      capabilitiesByNode.set(permissionEntry.nodeId, capabilities);
     }
-
-    return { nodeId, capabilities };
+    return capabilitiesByNode;
   }
 
   async hasCapability(
