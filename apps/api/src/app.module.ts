@@ -7,6 +7,7 @@ import { FilesModule } from './files/files.module.js';
 import { HealthController } from './health/health.controller.js';
 import { NodesModule } from './nodes/nodes.module.js';
 import { PermissionsModule } from './permissions/permissions.module.js';
+import { TrashModule } from './trash/trash.module.js';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { PermissionsModule } from './permissions/permissions.module.js';
     NodesModule,
     PermissionsModule,
     FilesModule,
+    TrashModule,
   ],
   controllers: [HealthController],
 })
