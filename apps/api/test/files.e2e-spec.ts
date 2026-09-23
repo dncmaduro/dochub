@@ -130,7 +130,9 @@ describe('streaming file uploads (e2e)', () => {
       data: { trashOperationId: null },
     });
     await prisma.trashOperation.deleteMany({
-      where: { rootNodeId: { in: nodes } },
+      where: {
+        OR: [{ rootNodeId: { in: nodes } }, { trashedById: actorId }],
+      },
     });
     for (const file of files) {
       await prisma.file.update({
@@ -286,6 +288,79 @@ describe('streaming file uploads (e2e)', () => {
       })
       .expect(200);
     expect(content.body).toEqual(bytes);
+  });
+
+  it('permanently purges every file version after trashing without exposing storage details', async () => {
+    const uploaded = await request(app.getHttpServer())
+      .post('/files')
+      .field('parentId', root)
+      .attach('file', Buffer.from('%PDF-1.7\npurge one'), 'purge.pdf')
+      .expect(201);
+    nodes.push(uploaded.body.node.id);
+    await request(app.getHttpServer())
+      .post(`/nodes/${uploaded.body.node.id}/versions`)
+      .attach('file', Buffer.from('%PDF-1.7\npurge two'), 'purge.pdf')
+      .expect(201);
+    const versions = await prisma.fileVersion.findMany({
+      where: { fileId: uploaded.body.file.id },
+      select: { id: true, storageKey: true },
+    });
+    const trashed = await request(app.getHttpServer())
+      .delete(`/nodes/${uploaded.body.node.id}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get(`/nodes/${uploaded.body.node.id}/content`)
+      .expect(404);
+
+    const purged = await request(app.getHttpServer())
+      .delete(`/trash/${trashed.body.operation.id}`)
+      .expect(200);
+    expect(purged.body).toMatchObject({
+      operationId: trashed.body.operation.id,
+      rootNodeId: uploaded.body.node.id,
+      status: 'PURGED',
+      purgedNodeCount: 1,
+      purgedFileCount: 1,
+      purgedVersionCount: 2,
+    });
+    expect(JSON.stringify(purged.body)).not.toContain('storageKey');
+    expect(JSON.stringify(purged.body)).not.toContain(storageRoot);
+    await expect(
+      prisma.node.findUnique({ where: { id: uploaded.body.node.id } }),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.file.findUnique({ where: { id: uploaded.body.file.id } }),
+    ).resolves.toBeNull();
+    expect(
+      await prisma.fileVersion.count({
+        where: { fileId: uploaded.body.file.id },
+      }),
+    ).toBe(0);
+    await Promise.all(
+      versions.map((version) =>
+        expect(
+          readFile(path.join(storageRoot, ...version.storageKey.split('/'))),
+        ).rejects.toMatchObject({ code: 'ENOENT' }),
+      ),
+    );
+    await expect(
+      prisma.auditLog.findFirstOrThrow({
+        where: {
+          action: 'NODE_PURGED',
+          resourceId: uploaded.body.node.id,
+          actorId,
+        },
+      }),
+    ).resolves.toBeTruthy();
+    await request(app.getHttpServer())
+      .get(`/nodes/${uploaded.body.node.id}/content`)
+      .expect(404);
+    await request(app.getHttpServer())
+      .get(`/nodes/${uploaded.body.node.id}/versions/${versions[0].id}/content`)
+      .expect(404);
+    await request(app.getHttpServer())
+      .delete(`/trash/${trashed.body.operation.id}`)
+      .expect(409);
   });
 
   it('returns stable multipart errors and cleans temporary files', async () => {

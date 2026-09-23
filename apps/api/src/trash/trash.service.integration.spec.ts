@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   DocumentRole,
+  EditorActorType,
+  EditorMode,
+  FileProcessingTaskType,
   NodeType,
   prisma,
   SystemRole,
@@ -28,9 +31,17 @@ describeWithDatabase('TrashService integration', () => {
   const userIds = [actorId, viewerId, editorId, invisibleId, adminId];
   const database = { prisma } as unknown as DatabaseService;
   const authorization = new DocumentAuthorizationService(database);
-  const service = new TrashService(database, authorization, {
-    retentionDays: 30,
-  });
+  const storage = { delete: vi.fn().mockResolvedValue(undefined) };
+  const service = new TrashService(
+    database,
+    authorization,
+    {
+      ...storage,
+    } as never,
+    {
+      retentionDays: 30,
+    },
+  );
   beforeAll(async () => {
     await prisma.user.createMany({
       data: [
@@ -102,6 +113,31 @@ describeWithDatabase('TrashService integration', () => {
     await prisma.permissionEntry.deleteMany({
       where: { nodeId: { in: nodeIds } },
     });
+    const files = await prisma.file.findMany({
+      where: { nodeId: { in: nodeIds } },
+      select: { id: true },
+    });
+    await prisma.editorSession.deleteMany({
+      where: {
+        OR: [
+          { fileId: { in: files.map((file) => file.id) } },
+          { shareLink: { nodeId: { in: nodeIds } } },
+        ],
+      },
+    });
+    await prisma.shareLink.deleteMany({ where: { nodeId: { in: nodeIds } } });
+    if (files.length > 0) {
+      await prisma.file.updateMany({
+        where: { id: { in: files.map((file) => file.id) } },
+        data: { currentVersionId: null },
+      });
+      await prisma.fileVersion.deleteMany({
+        where: { fileId: { in: files.map((file) => file.id) } },
+      });
+      await prisma.file.deleteMany({
+        where: { id: { in: files.map((file) => file.id) } },
+      });
+    }
     await prisma.groupMember.deleteMany({ where: { groupId } });
     await prisma.group.deleteMany({ where: { id: groupId } });
     const rows = await prisma.node.findMany({
@@ -134,6 +170,38 @@ describeWithDatabase('TrashService integration', () => {
     });
     nodeIds.push(record.id);
     return record;
+  }
+
+  async function file(nodeId: string, versionCount = 2) {
+    const id = randomUUID();
+    await prisma.file.create({
+      data: { id, nodeId, versionCounter: versionCount },
+    });
+    const versions = await Promise.all(
+      Array.from({ length: versionCount }, async (_, index) => {
+        const versionId = randomUUID();
+        return prisma.fileVersion.create({
+          data: {
+            id: versionId,
+            fileId: id,
+            versionNumber: index + 1,
+            storageKey: `purge/${id}/${versionId}`,
+            originalFilename: 'purge.pdf',
+            mimeType: 'application/pdf',
+            extension: 'pdf',
+            sizeBytes: BigInt(index + 1),
+            sha256: String(index + 1).repeat(64),
+            source: 'UPLOAD',
+            createdById: actorId,
+          },
+        });
+      }),
+    );
+    await prisma.file.update({
+      where: { id },
+      data: { currentVersionId: versions.at(-1)?.id },
+    });
+    return { id, versions };
   }
   it('trashes an active subtree once and preserves active-name reuse', async () => {
     const root = await node(null, 'root'),
@@ -510,5 +578,329 @@ describeWithDatabase('TrashService integration', () => {
         service.restore(actorId, operation.operation.id),
       ).rejects.toMatchObject({ status: 409 });
     }
+  });
+
+  it('purges a file and all versions only after deleting every storage object', async () => {
+    storage.delete.mockClear();
+    const root = await node(null, 'purge-file', NodeType.FILE);
+    const fixture = await file(root.id);
+    await prisma.permissionEntry.create({
+      data: { nodeId: root.id, userId: actorId, role: DocumentRole.OWNER },
+    });
+    const shareLink = await prisma.shareLink.create({
+      data: {
+        nodeId: root.id,
+        tokenHash: `purge-share-${randomUUID()}`,
+        createdById: actorId,
+      },
+    });
+    await prisma.favorite.create({
+      data: { userId: actorId, nodeId: root.id },
+    });
+    await prisma.recentItem.create({
+      data: { userId: actorId, nodeId: root.id },
+    });
+    await prisma.fileProcessingTask.create({
+      data: {
+        fileVersionId: fixture.versions[0].id,
+        type: FileProcessingTaskType.VALIDATION,
+      },
+    });
+    await prisma.searchDocument.create({
+      data: {
+        fileId: fixture.id,
+        fileVersionId: fixture.versions[1].id,
+        contentText: 'purge fixture',
+      },
+    });
+    await prisma.editorSession.create({
+      data: {
+        fileId: fixture.id,
+        baseVersionId: fixture.versions[1].id,
+        documentKey: `purge-session-${randomUUID()}`,
+        actorType: EditorActorType.USER,
+        userId: actorId,
+        shareLinkId: null,
+        mode: EditorMode.VIEW,
+      },
+    });
+    const operation = await service.trash(actorId, root.id);
+
+    await expect(
+      service.purge(actorId, operation.operation.id),
+    ).resolves.toMatchObject({
+      operationId: operation.operation.id,
+      rootNodeId: root.id,
+      status: TrashOperationStatus.PURGED,
+      purgedNodeCount: 1,
+      purgedFileCount: 1,
+      purgedVersionCount: 2,
+    });
+    expect(storage.delete).toHaveBeenCalledTimes(2);
+    expect(await prisma.node.findUnique({ where: { id: root.id } })).toBeNull();
+    expect(
+      await prisma.file.findUnique({ where: { id: fixture.id } }),
+    ).toBeNull();
+    expect(
+      await prisma.fileVersion.count({ where: { fileId: fixture.id } }),
+    ).toBe(0);
+    await expect(
+      prisma.permissionEntry.findFirst({ where: { nodeId: root.id } }),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.shareLink.findUnique({ where: { id: shareLink.id } }),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.favorite.findUnique({
+        where: { userId_nodeId: { userId: actorId, nodeId: root.id } },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.recentItem.findUnique({
+        where: { userId_nodeId: { userId: actorId, nodeId: root.id } },
+      }),
+    ).resolves.toBeNull();
+    expect(
+      await prisma.fileProcessingTask.count({
+        where: {
+          fileVersionId: { in: fixture.versions.map((version) => version.id) },
+        },
+      }),
+    ).toBe(0);
+    await expect(
+      prisma.searchDocument.findUnique({ where: { fileId: fixture.id } }),
+    ).resolves.toBeNull();
+    expect(
+      await prisma.trashOperation.findUniqueOrThrow({
+        where: { id: operation.operation.id },
+      }),
+    ).toMatchObject({ status: TrashOperationStatus.PURGED });
+    await expect(
+      prisma.auditLog.findFirstOrThrow({
+        where: { action: 'NODE_PURGED', resourceId: root.id, actorId },
+      }),
+    ).resolves.toBeTruthy();
+  });
+
+  it('purges an entire subtree, preserving an unrelated sibling and nested operation history', async () => {
+    storage.delete.mockClear();
+    const parent = await node(null, 'purge-parent');
+    const left = await node(parent.id, 'purge-left', NodeType.FILE);
+    const branch = await node(parent.id, 'purge-branch');
+    const nested = await node(branch.id, 'purge-nested', NodeType.FILE);
+    const sibling = await node(null, 'purge-sibling', NodeType.FILE);
+    const leftFile = await file(left.id);
+    const nestedFile = await file(nested.id);
+    const siblingFile = await file(sibling.id);
+    await prisma.permissionEntry.create({
+      data: { nodeId: parent.id, userId: actorId, role: DocumentRole.OWNER },
+    });
+    const old = await service.trash(actorId, nested.id);
+    const newer = await service.trash(actorId, parent.id);
+
+    await expect(
+      service.purge(actorId, newer.operation.id),
+    ).resolves.toMatchObject({
+      purgedNodeCount: 4,
+      purgedFileCount: 2,
+      purgedVersionCount: 4,
+    });
+    expect(
+      await prisma.node.count({
+        where: { id: { in: [parent.id, left.id, branch.id, nested.id] } },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.file.findUnique({ where: { id: leftFile.id } }),
+    ).toBeNull();
+    expect(
+      await prisma.file.findUnique({ where: { id: nestedFile.id } }),
+    ).toBeNull();
+    expect(
+      await prisma.node.findUnique({ where: { id: sibling.id } }),
+    ).not.toBeNull();
+    expect(
+      await prisma.file.findUnique({ where: { id: siblingFile.id } }),
+    ).not.toBeNull();
+    expect(
+      await prisma.trashOperation.findUniqueOrThrow({
+        where: { id: old.operation.id },
+      }),
+    ).toMatchObject({ status: TrashOperationStatus.PURGED });
+  });
+
+  it('leaves metadata PURGING when storage deletion fails and completes on an authorized retry', async () => {
+    const root = await node(null, 'purge-storage-failure', NodeType.FILE);
+    const fixture = await file(root.id);
+    await prisma.permissionEntry.create({
+      data: { nodeId: root.id, userId: actorId, role: DocumentRole.OWNER },
+    });
+    const operation = await service.trash(actorId, root.id);
+    storage.delete
+      .mockReset()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('controlled storage failure'));
+
+    await expect(
+      service.purge(actorId, operation.operation.id),
+    ).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(
+      await prisma.trashOperation.findUniqueOrThrow({
+        where: { id: operation.operation.id },
+      }),
+    ).toMatchObject({ status: TrashOperationStatus.PURGING, purgedAt: null });
+    expect(
+      await prisma.node.findUnique({ where: { id: root.id } }),
+    ).not.toBeNull();
+    expect(
+      await prisma.file.findUnique({ where: { id: fixture.id } }),
+    ).not.toBeNull();
+    expect(
+      await prisma.auditLog.findFirst({
+        where: { action: 'NODE_PURGED', resourceId: root.id },
+      }),
+    ).toBeNull();
+
+    storage.delete.mockReset().mockResolvedValue(undefined);
+    await expect(
+      service.purge(actorId, operation.operation.id),
+    ).resolves.toMatchObject({
+      status: TrashOperationStatus.PURGED,
+    });
+  });
+
+  it('does not authorize invisible, viewer, or ACL-less administrator purges or touch storage', async () => {
+    const root = await node(null, 'purge-authorization', NodeType.FILE);
+    await file(root.id, 1);
+    await prisma.permissionEntry.create({
+      data: { nodeId: root.id, userId: actorId, role: DocumentRole.OWNER },
+    });
+    const operation = await service.trash(actorId, root.id);
+    storage.delete.mockClear();
+    await expect(
+      service.purge(invisibleId, operation.operation.id),
+    ).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(
+      service.purge(adminId, operation.operation.id),
+    ).rejects.toMatchObject({
+      status: 404,
+    });
+    await prisma.permissionEntry.create({
+      data: { nodeId: root.id, userId: viewerId, role: DocumentRole.VIEWER },
+    });
+    await expect(
+      service.purge(viewerId, operation.operation.id),
+    ).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(
+      await prisma.trashOperation.findUniqueOrThrow({
+        where: { id: operation.operation.id },
+      }),
+    ).toMatchObject({ status: TrashOperationStatus.ACTIVE });
+
+    const trashedByRoot = await node(
+      null,
+      'purge-no-trashed-by-bypass',
+      NodeType.FILE,
+    );
+    await file(trashedByRoot.id, 1);
+    await prisma.permissionEntry.create({
+      data: {
+        nodeId: trashedByRoot.id,
+        userId: actorId,
+        role: DocumentRole.OWNER,
+      },
+    });
+    const trashedByOperation = await service.trash(actorId, trashedByRoot.id);
+    await prisma.permissionEntry.deleteMany({
+      where: { nodeId: trashedByRoot.id, userId: actorId },
+    });
+    storage.delete.mockClear();
+    await expect(
+      service.purge(actorId, trashedByOperation.operation.id),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(storage.delete).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent restore and purge into one coherent lifecycle outcome', async () => {
+    storage.delete.mockReset().mockResolvedValue(undefined);
+    const root = await node(null, 'purge-race', NodeType.FILE);
+    await file(root.id, 1);
+    await prisma.permissionEntry.create({
+      data: { nodeId: root.id, userId: actorId, role: DocumentRole.OWNER },
+    });
+    const operation = await service.trash(actorId, root.id);
+    const results = await Promise.allSettled([
+      service.restore(actorId, operation.operation.id),
+      service.purge(actorId, operation.operation.id),
+    ]);
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    const status = (
+      await prisma.trashOperation.findUniqueOrThrow({
+        where: { id: operation.operation.id },
+      })
+    ).status;
+    expect([
+      TrashOperationStatus.RESTORED,
+      TrashOperationStatus.PURGED,
+    ]).toContain(status);
+    if (status === TrashOperationStatus.RESTORED) {
+      expect(
+        await prisma.node.findUnique({ where: { id: root.id } }),
+      ).not.toBeNull();
+    } else {
+      expect(
+        await prisma.node.findUnique({ where: { id: root.id } }),
+      ).toBeNull();
+    }
+  });
+
+  it('rejects purge for restored operations and allows only one concurrent structural finalization', async () => {
+    storage.delete.mockReset().mockResolvedValue(undefined);
+    const restoredRoot = await node(null, 'purge-restored', NodeType.FILE);
+    await file(restoredRoot.id, 1);
+    await prisma.permissionEntry.create({
+      data: {
+        nodeId: restoredRoot.id,
+        userId: actorId,
+        role: DocumentRole.OWNER,
+      },
+    });
+    const restoredOperation = await service.trash(actorId, restoredRoot.id);
+    await service.restore(actorId, restoredOperation.operation.id);
+    await expect(
+      service.purge(actorId, restoredOperation.operation.id),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(
+      await prisma.node.findUnique({ where: { id: restoredRoot.id } }),
+    ).not.toBeNull();
+
+    const root = await node(null, 'purge-double', NodeType.FILE);
+    await file(root.id, 1);
+    await prisma.permissionEntry.create({
+      data: { nodeId: root.id, userId: actorId, role: DocumentRole.OWNER },
+    });
+    const operation = await service.trash(actorId, root.id);
+    const results = await Promise.allSettled([
+      service.purge(actorId, operation.operation.id),
+      service.purge(actorId, operation.operation.id),
+    ]);
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      await prisma.auditLog.count({
+        where: { action: 'NODE_PURGED', resourceId: root.id },
+      }),
+    ).toBe(1);
   });
 });

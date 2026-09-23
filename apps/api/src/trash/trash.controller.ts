@@ -32,4 +32,13 @@ export class TrashController {
   ) {
     return this.trash.restore(auth.userId, operationId);
   }
+
+  @Delete('trash/:operationId')
+  @HttpCode(HttpStatus.OK)
+  purge(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('operationId') operationId: string,
+  ) {
+    return this.trash.purge(auth.userId, operationId);
+  }
 }
