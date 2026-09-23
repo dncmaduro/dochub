@@ -19,24 +19,8 @@ import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
 import type { StorageService } from '@dochub/storage';
+import { PurgeError, TrashPurgeEngine } from '@dochub/trash';
 import { TRASH_CONFIG, type TrashConfig } from './trash.config.js';
-
-type TrashClient = PrismaClient | Prisma.TransactionClient;
-
-interface SubtreeNodeRow {
-  id: string;
-  depth: number;
-}
-
-interface PurgePlan {
-  nodeIds: string[];
-  nodesByDeepestFirst: string[];
-  fileIds: string[];
-  versionIds: string[];
-  storageKeys: string[];
-  deletedBytes: bigint;
-  nestedOperationIds: string[];
-}
 
 @Injectable()
 export class TrashService {
@@ -241,262 +225,43 @@ export class TrashService {
   }
 
   async purge(actorId: string, operationId: string) {
-    const claim = await this.claimPurge(actorId, operationId);
-    const plan = await this.discoverSubtree(
-      this.database.prisma,
-      claim.rootNodeId,
-    );
-
     try {
-      await this.deleteStorageObjects(plan.storageKeys);
-    } catch {
-      throw new ServiceUnavailableException(
-        'Document storage is temporarily unavailable',
-      );
-    }
-
-    return this.finalizePurge(actorId, operationId, claim.rootNodeId);
-  }
-
-  private async claimPurge(actorId: string, operationId: string) {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        return await this.database.prisma.$transaction(
-          async (tx) => {
-            const locked = await tx.$queryRaw<
-              Array<{ id: string }>
-            >`SELECT "id" FROM "TrashOperation" WHERE "id" = ${operationId}::uuid FOR UPDATE`;
-            if (!locked[0])
-              throw new NotFoundException('Trash operation not found');
-            const operation = await tx.trashOperation.findUnique({
-              where: { id: operationId },
-              include: { rootNode: true },
-            });
-            if (!operation?.rootNode || !operation.rootNodeId)
-              throw new ConflictException('Trash operation is unavailable');
-            const capabilities =
-              await this.authorization.resolveTrashCapabilities(
-                actorId,
-                operation.rootNodeId,
-                tx,
-              );
-            if (!capabilities.capabilities.has(DocumentCapability.VIEW))
-              throw new NotFoundException('Node not found');
-            if (!capabilities.capabilities.has(DocumentCapability.DELETE))
-              throw new ForbiddenException(
-                'You do not have the required document capability',
-              );
-            if (
-              operation.status !== TrashOperationStatus.ACTIVE &&
-              operation.status !== TrashOperationStatus.PURGING
-            )
-              throw new ConflictException('Trash operation cannot be purged');
-            if (operation.rootNode.trashOperationId !== operationId)
-              throw new ConflictException('Trash operation is inconsistent');
-            if (operation.status === TrashOperationStatus.ACTIVE) {
-              await tx.trashOperation.update({
-                where: { id: operationId },
-                data: { status: TrashOperationStatus.PURGING },
-              });
-            }
-            return { rootNodeId: operation.rootNodeId };
-          },
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-        );
-      } catch (error) {
-        if (this.isSerializationConflict(error) && attempt < 2) continue;
-        if (this.isSerializationConflict(error))
-          throw new ConflictException('Purge conflicted; retry');
-        throw error;
-      }
-    }
-    throw new ConflictException('Purge conflicted; retry');
-  }
-
-  private async deleteStorageObjects(storageKeys: readonly string[]) {
-    const queue = [...storageKeys];
-    const workers = Array.from(
-      { length: Math.min(4, queue.length) },
-      async () => {
-        while (queue.length > 0) {
-          const storageKey = queue.shift();
-          if (storageKey) await this.storage.delete(storageKey);
-        }
-      },
-    );
-    await Promise.all(workers);
-  }
-
-  private async finalizePurge(
-    actorId: string,
-    operationId: string,
-    rootNodeId: string,
-  ) {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        return await this.database.prisma.$transaction(
-          async (tx) => {
-            const locked = await tx.$queryRaw<
-              Array<{ id: string }>
-            >`SELECT "id" FROM "TrashOperation" WHERE "id" = ${operationId}::uuid FOR UPDATE`;
-            if (!locked[0])
-              throw new ConflictException('Trash operation is unavailable');
-            const operation = await tx.trashOperation.findUnique({
-              where: { id: operationId },
-              include: { rootNode: true },
-            });
-            if (
-              !operation?.rootNode ||
-              operation.rootNodeId !== rootNodeId ||
-              operation.rootNode.trashOperationId !== operationId
-            )
-              throw new ConflictException('Trash operation is inconsistent');
-            if (operation.status !== TrashOperationStatus.PURGING)
-              throw new ConflictException('Trash operation cannot be purged');
-
-            const plan = await this.discoverSubtree(tx, rootNodeId);
-            const nestedOperations = await tx.trashOperation.findMany({
-              where: { rootNodeId: { in: plan.nodeIds } },
-              select: { id: true, status: true },
-            });
-            const fileIds = plan.fileIds;
-            const versionIds = plan.versionIds;
-
-            await tx.editorSession.deleteMany({
-              where: {
-                OR: [
-                  ...(fileIds.length > 0 ? [{ fileId: { in: fileIds } }] : []),
-                  ...(plan.nodeIds.length > 0
-                    ? [{ shareLink: { nodeId: { in: plan.nodeIds } } }]
-                    : []),
-                ],
-              },
-            });
-            await tx.shareLink.deleteMany({
-              where: { nodeId: { in: plan.nodeIds } },
-            });
-            await tx.permissionEntry.deleteMany({
-              where: { nodeId: { in: plan.nodeIds } },
-            });
-            if (fileIds.length > 0) {
-              await tx.file.updateMany({
-                where: { id: { in: fileIds } },
-                data: { currentVersionId: null },
-              });
-              await tx.fileVersion.deleteMany({
-                where: { id: { in: versionIds } },
-              });
-              await tx.file.deleteMany({ where: { id: { in: fileIds } } });
-            }
-            for (const nodeId of plan.nodesByDeepestFirst) {
-              await tx.node.delete({ where: { id: nodeId } });
-            }
-
-            const now = new Date();
-            const operationIds = nestedOperations
-              .filter(
-                (nested) =>
-                  nested.status === TrashOperationStatus.ACTIVE ||
-                  nested.status === TrashOperationStatus.PURGING,
-              )
-              .map((nested) => nested.id);
-            await tx.trashOperation.updateMany({
-              where: { id: { in: operationIds } },
-              data: { status: TrashOperationStatus.PURGED, purgedAt: now },
-            });
-            await tx.auditLog.create({
-              data: {
-                actorType: AuditActorType.USER,
-                actorId,
-                action: 'NODE_PURGED',
-                resourceType: 'NODE',
-                resourceId: rootNodeId,
-                result: AuditResult.SUCCESS,
-                metadata: {
-                  trashOperationId: operationId,
-                  purgedNodeCount: plan.nodeIds.length,
-                  purgedFileCount: fileIds.length,
-                  purgedVersionCount: versionIds.length,
-                  deletedBytes: plan.deletedBytes.toString(),
-                  nestedTrashOperationCount: operationIds.length,
-                },
-              },
-            });
-            return {
-              operationId,
+      const result = await new TrashPurgeEngine(
+        this.database.prisma,
+        this.storage,
+      ).purge({
+        operationId,
+        actor: { actorType: AuditActorType.USER, actorId },
+        authorize: async (rootNodeId, transaction) => {
+          const capabilities =
+            await this.authorization.resolveTrashCapabilities(
+              actorId,
               rootNodeId,
-              status: TrashOperationStatus.PURGED,
-              purgedAt: now,
-              purgedNodeCount: plan.nodeIds.length,
-              purgedFileCount: fileIds.length,
-              purgedVersionCount: versionIds.length,
-            };
-          },
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-        );
-      } catch (error) {
-        if (this.isSerializationConflict(error) && attempt < 2) continue;
-        if (this.isSerializationConflict(error))
-          throw new ConflictException('Purge conflicted; retry');
-        throw error;
-      }
-    }
-    throw new ConflictException('Purge conflicted; retry');
-  }
-
-  private async discoverSubtree(
-    client: TrashClient,
-    rootNodeId: string,
-  ): Promise<PurgePlan> {
-    const nodes = await client.$queryRaw<
-      SubtreeNodeRow[]
-    >`WITH RECURSIVE tree AS (
-      SELECT "id", "parentId", 0 AS depth, ARRAY["id"] AS path
-      FROM "Node"
-      WHERE "id" = ${rootNodeId}::uuid
-
-      UNION ALL
-
-      SELECT child."id", child."parentId", tree.depth + 1, tree.path || child."id"
-      FROM "Node" AS child
-      INNER JOIN tree ON child."parentId" = tree."id"
-      WHERE NOT child."id" = ANY(tree.path)
-    )
-    SELECT "id", depth
-    FROM tree`;
-    if (nodes.length === 0)
-      throw new ConflictException('Trash operation is inconsistent');
-
-    const nodeIds = nodes.map((node) => node.id);
-    const files = await client.file.findMany({
-      where: { nodeId: { in: nodeIds } },
-      select: {
-        id: true,
-        versions: {
-          select: { id: true, storageKey: true, sizeBytes: true },
+              transaction,
+            );
+          if (!capabilities.capabilities.has(DocumentCapability.VIEW))
+            return 'not_found';
+          if (!capabilities.capabilities.has(DocumentCapability.DELETE))
+            return 'forbidden';
+          return 'allowed';
         },
-      },
-    });
-    const versions = files.flatMap((file) => file.versions);
-    const nestedOperations = await client.trashOperation.findMany({
-      where: { rootNodeId: { in: nodeIds } },
-      select: { id: true },
-    });
-
-    return {
-      nodeIds,
-      nodesByDeepestFirst: [...nodes]
-        .sort((left, right) => right.depth - left.depth)
-        .map((node) => node.id),
-      fileIds: files.map((file) => file.id),
-      versionIds: versions.map((version) => version.id),
-      storageKeys: versions.map((version) => version.storageKey),
-      deletedBytes: versions.reduce(
-        (total, version) => total + version.sizeBytes,
-        0n,
-      ),
-      nestedOperationIds: nestedOperations.map((operation) => operation.id),
-    };
+      });
+      const { deletedBytes: _deletedBytes, ...response } = result;
+      return response;
+    } catch (error) {
+      if (!(error instanceof PurgeError)) throw error;
+      if (error.code === 'NOT_FOUND')
+        throw new NotFoundException('Node not found');
+      if (error.code === 'FORBIDDEN')
+        throw new ForbiddenException(
+          'You do not have the required document capability',
+        );
+      if (error.code === 'STORAGE_FAILURE')
+        throw new ServiceUnavailableException(
+          'Document storage is temporarily unavailable',
+        );
+      throw new ConflictException('Trash operation cannot be purged');
+    }
   }
 
   private isSerializationConflict(error: unknown): boolean {
