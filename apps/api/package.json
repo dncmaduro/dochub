@@ -15,7 +15,7 @@
     "start:debug": "node --env-file-if-exists=../../.env ./node_modules/@nestjs/cli/bin/nest.js start --debug --watch",
     "start:prod": "node --env-file-if-exists=../../.env dist/main",
     "lint": "oxlint --type-aware src/ test/",
-    "test": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run",
+    "test": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run && node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run --config ./vitest.config.integration.ts",
     "test:watch": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs",
     "test:cov": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run --coverage",
     "test:debug": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs --inspect-brk --no-file-parallelism",

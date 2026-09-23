@@ -1,14 +1,13 @@
 import { defineConfig } from 'vitest/config';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
+/** Shared PostgreSQL fixtures use SERIALIZABLE transactions, so files run in order. */
 export default defineConfig({
-  // Resolves the path aliases declared in tsconfig.json, including the ones
-  // added by `nest g library`.
   plugins: [tsconfigPaths()],
   test: {
     globals: true,
     root: './',
-    include: ['**/*.spec.ts'],
-    exclude: ['**/*.integration.spec.ts'],
+    include: ['**/*.integration.spec.ts'],
+    fileParallelism: false,
   },
 });
