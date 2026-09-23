@@ -119,6 +119,34 @@ describe('DocumentAuthorizationService', () => {
     }
   });
 
+  it('keeps trashed nodes hidden normally while the lifecycle resolver retains their ACL', async () => {
+    const trashedChain = [
+      {
+        id: nodeId,
+        parentId: null,
+        inheritPermissions: true,
+        trashOperationId: 'a0000000-0000-4000-8000-000000000005',
+        depth: 0,
+      },
+    ];
+    const normal = createService({ nodeChain: trashedChain });
+    const lifecycle = createService({ nodeChain: trashedChain });
+
+    await expect(
+      normal.service.hasCapability(userId, nodeId, DocumentCapability.VIEW),
+    ).resolves.toBe(false);
+    await expect(
+      lifecycle.service.resolveTrashCapabilities(userId, nodeId),
+    ).resolves.toEqual({
+      nodeId,
+      capabilities: new Set([
+        DocumentCapability.VIEW,
+        DocumentCapability.PREVIEW,
+        DocumentCapability.DOWNLOAD,
+      ]),
+    });
+  });
+
   it('does not grant a capability that no explicit permission grants', async () => {
     const { service } = createService({
       nodeChain: [

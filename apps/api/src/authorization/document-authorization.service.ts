@@ -40,6 +40,24 @@ export class DocumentAuthorizationService {
     nodeId: string,
     client: DocumentAuthorizationClient = this.database.prisma,
   ): Promise<ResolvedDocumentCapabilities> {
+    return this.resolveCapabilitiesInternal(userId, nodeId, client, false);
+  }
+
+  /** Lifecycle-only ACL lookup; normal document reads must continue hiding Trash. */
+  async resolveTrashCapabilities(
+    userId: string,
+    nodeId: string,
+    client: DocumentAuthorizationClient = this.database.prisma,
+  ): Promise<ResolvedDocumentCapabilities> {
+    return this.resolveCapabilitiesInternal(userId, nodeId, client, true);
+  }
+
+  private async resolveCapabilitiesInternal(
+    userId: string,
+    nodeId: string,
+    client: DocumentAuthorizationClient,
+    includeTrashed: boolean,
+  ): Promise<ResolvedDocumentCapabilities> {
     const nodeChain = await client.$queryRaw<NodeChainRow[]>`
       WITH RECURSIVE node_chain AS (
         SELECT
@@ -72,7 +90,8 @@ export class DocumentAuthorizationService {
 
     if (
       nodeChain.length === 0 ||
-      nodeChain.some((node) => node.trashOperationId !== null)
+      (!includeTrashed &&
+        nodeChain.some((node) => node.trashOperationId !== null))
     ) {
       return this.emptyResolution(nodeId);
     }
