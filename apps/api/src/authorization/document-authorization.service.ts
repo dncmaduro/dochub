@@ -43,6 +43,60 @@ export class DocumentAuthorizationService {
     return this.resolveCapabilitiesInternal(userId, nodeId, client, false);
   }
 
+  /** Resolves normal capabilities for a bounded set without scalar per-node lookups. */
+  async resolveCapabilitiesForNodes(
+    userId: string,
+    nodeIds: readonly string[],
+    client: DocumentAuthorizationClient = this.database.prisma,
+  ): Promise<Map<string, ResolvedDocumentCapabilities>> {
+    const results = new Map<string, ResolvedDocumentCapabilities>();
+    const uniqueIds = [...new Set(nodeIds)];
+    if (uniqueIds.length === 0) return results;
+    const nodeChain = await client.$queryRaw<
+      (NodeChainRow & { targetId: string })[]
+    >`
+      WITH RECURSIVE node_chain AS (
+        SELECT "id" AS "targetId", "id", "parentId", "inheritPermissions", "trashOperationId", 0 AS depth, ARRAY["id"] AS path
+        FROM "Node" WHERE "id" IN (${Prisma.join(uniqueIds.map((id) => Prisma.sql`${id}::uuid`))})
+        UNION ALL
+        SELECT child."targetId", parent."id", parent."parentId", parent."inheritPermissions", parent."trashOperationId", child.depth + 1, child.path || parent."id"
+        FROM "Node" AS parent INNER JOIN node_chain AS child ON parent."id" = child."parentId"
+        WHERE child."inheritPermissions" = true AND NOT parent."id" = ANY(child.path)
+      ) SELECT "targetId", "id", "parentId", "inheritPermissions", "trashOperationId", depth FROM node_chain
+    `;
+    const chains = new Map<string, (NodeChainRow & { targetId: string })[]>();
+    for (const row of nodeChain)
+      chains.set(row.targetId, [...(chains.get(row.targetId) ?? []), row]);
+    const groupIds = await this.findUserGroupIds(userId, client);
+    if (groupIds === null) {
+      for (const nodeId of uniqueIds)
+        results.set(nodeId, this.emptyResolution(nodeId));
+      return results;
+    }
+    const explicit = await this.resolveExplicitCapabilities(
+      userId,
+      [...new Set(nodeChain.map((row) => row.id))],
+      groupIds,
+      client,
+    );
+    for (const nodeId of uniqueIds) {
+      const chain = chains.get(nodeId) ?? [];
+      if (
+        chain.length === 0 ||
+        chain.some((node) => node.trashOperationId !== null)
+      )
+        results.set(nodeId, this.emptyResolution(nodeId));
+      else {
+        const capabilities = new Set<DocumentCapability>();
+        for (const node of chain)
+          for (const capability of explicit.get(node.id) ?? [])
+            capabilities.add(capability);
+        results.set(nodeId, { nodeId, capabilities });
+      }
+    }
+    return results;
+  }
+
   /** Lifecycle-only ACL lookup; normal document reads must continue hiding Trash. */
   async resolveTrashCapabilities(
     userId: string,

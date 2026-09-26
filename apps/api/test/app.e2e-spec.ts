@@ -84,6 +84,10 @@ describe('API authentication routes (e2e)', () => {
       .expect(401);
   });
 
+  it('/search (GET) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer()).get('/search?q=bao').expect(401);
+  });
+
   afterEach(async () => {
     await app.close();
   });

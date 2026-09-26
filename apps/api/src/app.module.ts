@@ -9,6 +9,7 @@ import { NodesModule } from './nodes/nodes.module.js';
 import { PermissionsModule } from './permissions/permissions.module.js';
 import { TrashModule } from './trash/trash.module.js';
 import { SharingModule } from './sharing/sharing.module.js';
+import { SearchModule } from './search/search.module.js';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { SharingModule } from './sharing/sharing.module.js';
     FilesModule,
     TrashModule,
     SharingModule,
+    SearchModule,
   ],
   controllers: [HealthController],
 })

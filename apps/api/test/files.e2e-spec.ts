@@ -9,7 +9,7 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import {
   DocumentRole,
@@ -70,6 +70,13 @@ describe('streaming file uploads (e2e)', () => {
       })
       .compile();
     app = fixture.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
     await app.init();
     await prisma.user.create({
       data: {
@@ -207,6 +214,73 @@ describe('streaming file uploads (e2e)', () => {
         where: { resourceId: response.body.node.id, action: 'FILE_UPLOADED' },
       }),
     ).resolves.toBeTruthy();
+  });
+
+  it('serves the authenticated /search HTTP contract without leaking internals', async () => {
+    const searchable = await prisma.node.create({
+      data: {
+        type: NodeType.FOLDER,
+        name: `Search Report ${suffix}`,
+        normalizedName: `search-report-${randomUUID()}`,
+        createdById: actorId,
+      },
+    });
+    nodes.push(searchable.id);
+    await prisma.permissionEntry.create({
+      data: {
+        nodeId: searchable.id,
+        userId: actorId,
+        role: DocumentRole.VIEWER,
+      },
+    });
+    const valid = await request(app.getHttpServer())
+      .get('/search?q=search')
+      .set('x-test-user', actorId)
+      .expect(200);
+    expect(valid.body).toMatchObject({
+      items: [{ id: searchable.id, type: 'FOLDER', name: searchable.name }],
+      nextCursor: null,
+    });
+    for (const item of valid.body.items)
+      for (const key of [
+        'normalizedName',
+        'trashOperationId',
+        'createdById',
+        'updatedById',
+        'score',
+        'tier',
+        'storageKey',
+        'tokenHash',
+      ])
+        expect(item).not.toHaveProperty(key);
+    await request(app.getHttpServer())
+      .get('/search')
+      .set('x-test-user', actorId)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/search?q=%20%20')
+      .set('x-test-user', actorId)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(`/search?q=${'a'.repeat(201)}`)
+      .set('x-test-user', actorId)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/search?q=x&type=INVALID')
+      .set('x-test-user', actorId)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/search?q=x&limit=0')
+      .set('x-test-user', actorId)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/search?q=x&limit=51')
+      .set('x-test-user', actorId)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/search?q=x&cursor=not-a-cursor')
+      .set('x-test-user', actorId)
+      .expect(400);
   });
 
   it('serves an active public ShareLink inline with ranges but forbids anonymous download', async () => {
