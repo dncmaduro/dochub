@@ -1,15 +1,17 @@
 import { JwtService } from '@nestjs/jwt';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DatabaseService } from '../database/database.service.js';
+import { type StorageConfig } from '../storage/storage.config.js';
 import { type EditorConfig } from './editor.config.js';
 export declare class EditorSessionService {
     private readonly database;
     private readonly authorization;
     private readonly jwt;
     private readonly config;
-    constructor(database: DatabaseService, authorization: DocumentAuthorizationService, jwt: JwtService, config: EditorConfig | undefined);
+    private readonly storage;
+    constructor(database: DatabaseService, authorization: DocumentAuthorizationService, jwt: JwtService, config: EditorConfig | undefined, storage: StorageConfig);
     static documentKey(versionId: string): string;
-    create(actorUserId: string, nodeId: string): Promise<{
+    create(actorUserId: string, nodeId: string, mode?: 'VIEW' | 'EDIT'): Promise<{
         session: {
             id: string;
             mode: import("@dochub/database").$Enums.EditorMode;
@@ -21,29 +23,6 @@ export declare class EditorSessionService {
         };
         config: {
             token: string;
-            documentType: "word" | "cell" | "slide";
-            document: {
-                fileType: string;
-                key: string;
-                title: string;
-                url: string;
-                permissions: {
-                    edit: boolean;
-                    comment: boolean;
-                    review: boolean;
-                    fillForms: boolean;
-                    modifyFilter: boolean;
-                    download: boolean;
-                    print: boolean;
-                };
-            };
-            editorConfig: {
-                mode: "view";
-                user: {
-                    id: string;
-                    name: string;
-                };
-            };
         };
     }>;
     close(actorUserId: string, sessionId: string): Promise<{
@@ -56,6 +35,13 @@ export declare class EditorSessionService {
         nodeId: string;
         versionId: string;
     }>;
+    handleCallback(sessionId: string, capabilityToken: string, input: unknown): Promise<{
+        error: number;
+    }>;
+    private callbackPayload;
+    private callbackSession;
+    private stageEditedDocument;
     private signFetchToken;
+    private signCallbackToken;
     private requireConfig;
 }

@@ -18,64 +18,212 @@ withDb('EditorSessionService integration', () => {
   const config: EditorConfig = {
     publicUrl: new URL('http://localhost:8082'),
     internalApiUrl: new URL('http://host.docker.internal:3000'),
-    jwtSecret: 'a'.repeat(32), fetchTokenSecret: 'b'.repeat(32), fetchTokenTtlSeconds: 900,
+    jwtSecret: 'a'.repeat(32),
+    fetchTokenSecret: 'b'.repeat(32),
+    fetchTokenTtlSeconds: 900,
+    callbackTokenTtlSeconds: 3600,
   };
   const database = { prisma } as unknown as DatabaseService;
   const authorization = new DocumentAuthorizationService(database);
-  const service = new EditorSessionService(database, authorization, new JwtService(), config);
+  const service = new EditorSessionService(
+    database,
+    authorization,
+    new JwtService(),
+    config,
+    {
+      uploadTempRoot: '/tmp/dochub-editor-test',
+      uploadMaxBytes: 1024 * 1024,
+      root: '/tmp/dochub-editor-storage',
+      driver: 'local',
+    },
+  );
 
   async function version(number: number) {
     const id = randomUUID();
     versionIds.push(id);
-    await prisma.fileVersion.create({ data: {
-      id, fileId, versionNumber: number, storageKey: `editor/${id}`,
-      originalFilename: `brief-${number}.docx`, extension: 'docx',
-      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      sizeBytes: 4n, sha256: id.replaceAll('-', '').padEnd(64, '0'), source: 'UPLOAD', createdById: actorId,
-    }});
-    await prisma.file.update({ where: { id: fileId }, data: { currentVersionId: id, versionCounter: number } });
+    await prisma.fileVersion.create({
+      data: {
+        id,
+        fileId,
+        versionNumber: number,
+        storageKey: `editor/${id}`,
+        originalFilename: `brief-${number}.docx`,
+        extension: 'docx',
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        sizeBytes: 4n,
+        sha256: id.replaceAll('-', '').padEnd(64, '0'),
+        source: 'UPLOAD',
+        createdById: actorId,
+      },
+    });
+    await prisma.file.update({
+      where: { id: fileId },
+      data: { currentVersionId: id, versionCounter: number },
+    });
     return id;
   }
 
   beforeAll(async () => {
-    await prisma.user.createMany({ data: [
-      { id: actorId, email: `editor-${suffix}@test`, normalizedEmail: `editor-${suffix}@test`, displayName: 'Editor Viewer', status: UserStatus.ACTIVE },
-      { id: outsiderId, email: `editor-out-${suffix}@test`, normalizedEmail: `editor-out-${suffix}@test`, displayName: 'No Access', status: UserStatus.ACTIVE },
-    ]});
-    await prisma.node.create({ data: { id: nodeId, type: NodeType.FILE, name: `brief-${suffix}.docx`, normalizedName: `brief-${suffix}`, createdById: actorId } });
-    await prisma.permissionEntry.create({ data: { nodeId, userId: actorId, role: DocumentRole.VIEWER } });
+    await prisma.user.createMany({
+      data: [
+        {
+          id: actorId,
+          email: `editor-${suffix}@test`,
+          normalizedEmail: `editor-${suffix}@test`,
+          displayName: 'Editor Viewer',
+          status: UserStatus.ACTIVE,
+        },
+        {
+          id: outsiderId,
+          email: `editor-out-${suffix}@test`,
+          normalizedEmail: `editor-out-${suffix}@test`,
+          displayName: 'No Access',
+          status: UserStatus.ACTIVE,
+        },
+      ],
+    });
+    await prisma.node.create({
+      data: {
+        id: nodeId,
+        type: NodeType.FILE,
+        name: `brief-${suffix}.docx`,
+        normalizedName: `brief-${suffix}`,
+        createdById: actorId,
+      },
+    });
+    await prisma.permissionEntry.create({
+      data: { nodeId, userId: actorId, role: DocumentRole.VIEWER },
+    });
     await prisma.file.create({ data: { id: fileId, nodeId } });
     await version(1);
   });
   afterAll(async () => {
     await prisma.editorSession.deleteMany({ where: { fileId } });
-    await prisma.file.update({ where: { id: fileId }, data: { currentVersionId: null } });
+    await prisma.file.update({
+      where: { id: fileId },
+      data: { currentVersionId: null },
+    });
     await prisma.fileVersion.deleteMany({ where: { id: { in: versionIds } } });
     await prisma.file.delete({ where: { id: fileId } });
     await prisma.permissionEntry.deleteMany({ where: { nodeId } });
     await prisma.node.delete({ where: { id: nodeId } });
-    await prisma.user.deleteMany({ where: { id: { in: [actorId, outsiderId] } } });
+    await prisma.user.deleteMany({
+      where: { id: { in: [actorId, outsiderId] } },
+    });
     await prisma.$disconnect();
   });
 
   it('creates an immutable VIEW snapshot with signed, non-secret config', async () => {
     const created = await service.create(actorId, nodeId);
-    expect(created.session).toMatchObject({ mode: 'VIEW', status: 'ACTIVE', expiresAt: null });
-    expect(created.config).toMatchObject({ documentType: 'word', document: { fileType: 'docx', permissions: { edit: false, download: true, print: true } }, editorConfig: { mode: 'view', user: { id: actorId } } });
+    expect(created.session).toMatchObject({
+      mode: 'VIEW',
+      status: 'ACTIVE',
+      expiresAt: null,
+    });
+    expect(created.config).toMatchObject({
+      documentType: 'word',
+      document: {
+        fileType: 'docx',
+        permissions: { edit: false, download: true, print: true },
+      },
+      editorConfig: { mode: 'view', user: { id: actorId } },
+    });
     expect(JSON.stringify(created)).not.toContain(config.jwtSecret);
     expect(JSON.stringify(created)).not.toContain(config.fetchTokenSecret);
-    const signedConfig = await new JwtService().verifyAsync(created.config.token, {
-      secret: config.jwtSecret,
-      algorithms: ['HS256'],
+    const signedConfig = await new JwtService().verifyAsync(
+      created.config.token,
+      {
+        secret: config.jwtSecret,
+        algorithms: ['HS256'],
+      },
+    );
+    expect(signedConfig).toMatchObject({
+      documentType: 'word',
+      editorConfig: { mode: 'view' },
     });
-    expect(signedConfig).toMatchObject({ documentType: 'word', editorConfig: { mode: 'view' } });
     await expect(
-      new JwtService().verifyAsync(`${created.config.token}x`, { secret: config.jwtSecret }),
+      new JwtService().verifyAsync(`${created.config.token}x`, {
+        secret: config.jwtSecret,
+      }),
     ).rejects.toBeTruthy();
-    const persisted = await prisma.editorSession.findUniqueOrThrow({ where: { id: created.session.id } });
+    const persisted = await prisma.editorSession.findUniqueOrThrow({
+      where: { id: created.session.id },
+    });
     expect(persisted.baseVersionId).toBe(versionIds[0]);
-    expect(persisted.documentKey).toBe(EditorSessionService.documentKey(versionIds[0]));
-    await expect(service.create(outsiderId, nodeId)).rejects.toMatchObject({ status: 404 });
+    expect(persisted.documentKey).toBe(
+      EditorSessionService.documentKey(versionIds[0]),
+    );
+    await expect(service.create(outsiderId, nodeId)).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('creates EDIT only for EDIT-capable users and emits a callback capability', async () => {
+    await expect(service.create(actorId, nodeId, 'EDIT')).rejects.toMatchObject(
+      { status: 403 },
+    );
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    expect(created.session).toMatchObject({ mode: 'EDIT', status: 'ACTIVE' });
+    expect(created.config).toMatchObject({
+      document: { permissions: { edit: true } },
+      editorConfig: { mode: 'edit' },
+    });
+    const callback = new URL(
+      (created.config.editorConfig as { callbackUrl: string }).callbackUrl,
+    );
+    expect(callback.origin).toBe(config.internalApiUrl.origin);
+    const capability = callback.searchParams.get('capability');
+    expect(capability).toBeTruthy();
+    await expect(
+      new JwtService().verifyAsync(capability!, {
+        secret: config.fetchTokenSecret,
+        audience: 'onlyoffice-callback',
+      }),
+    ).resolves.toMatchObject({
+      sessionId: created.session.id,
+      baseVersionId: versionIds.at(-1),
+      purpose: 'onlyoffice-callback',
+    });
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.VIEWER },
+    });
+  });
+
+  it('keeps an EDIT session active after an authenticated status 4 so a retried save remains eligible', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    const callback = new URL(
+      (created.config.editorConfig as { callbackUrl: string }).callbackUrl,
+    );
+    const signed = new JwtService().sign(
+      { status: 4, key: created.config.document.key },
+      { secret: config.jwtSecret, algorithm: 'HS256' },
+    );
+    await expect(
+      service.handleCallback(
+        created.session.id,
+        callback.searchParams.get('capability')!,
+        { status: 4, key: created.config.document.key, token: signed },
+      ),
+    ).resolves.toEqual({ error: 0 });
+    await expect(
+      prisma.editorSession.findUniqueOrThrow({
+        where: { id: created.session.id },
+      }),
+    ).resolves.toMatchObject({ status: 'ACTIVE', stagedArtifactId: null });
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.VIEWER },
+    });
   });
 
   it('keeps old sessions on V1 and makes a new key for V2', async () => {
@@ -83,8 +231,12 @@ withDb('EditorSessionService integration', () => {
     const v2 = await version(2);
     const second = await service.create(actorId, nodeId);
     expect(first.config.document.key).not.toBe(second.config.document.key);
-    const firstRow = await prisma.editorSession.findUniqueOrThrow({ where: { id: first.session.id } });
-    const secondRow = await prisma.editorSession.findUniqueOrThrow({ where: { id: second.session.id } });
+    const firstRow = await prisma.editorSession.findUniqueOrThrow({
+      where: { id: first.session.id },
+    });
+    const secondRow = await prisma.editorSession.findUniqueOrThrow({
+      where: { id: second.session.id },
+    });
     expect(firstRow.baseVersionId).toBe(versionIds[0]);
     expect(secondRow.baseVersionId).toBe(v2);
   });
@@ -93,30 +245,83 @@ withDb('EditorSessionService integration', () => {
     const created = await service.create(actorId, nodeId);
     const source = new URL(created.config.document.url);
     const token = source.searchParams.get('token')!;
-    await expect(service.authorizeFetch(created.session.id, token)).resolves.toMatchObject({ nodeId, versionId: versionIds.at(-1) });
-    await expect(service.authorizeFetch(randomUUID(), token)).rejects.toMatchObject({ status: 404 });
-    await expect(service.authorizeFetch(created.session.id, `${token}x`)).rejects.toMatchObject({ status: 404 });
+    await expect(
+      service.authorizeFetch(created.session.id, token),
+    ).resolves.toMatchObject({ nodeId, versionId: versionIds.at(-1) });
+    await expect(
+      service.authorizeFetch(randomUUID(), token),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      service.authorizeFetch(created.session.id, `${token}x`),
+    ).rejects.toMatchObject({ status: 404 });
     await service.close(actorId, created.session.id);
-    await expect(service.close(actorId, created.session.id)).resolves.toMatchObject({ status: 'CLOSED' });
-    await expect(service.authorizeFetch(created.session.id, token)).rejects.toMatchObject({ status: 404 });
+    await expect(
+      service.close(actorId, created.session.id),
+    ).resolves.toMatchObject({ status: 'CLOSED' });
+    await expect(
+      service.authorizeFetch(created.session.id, token),
+    ).rejects.toMatchObject({ status: 404 });
   });
 
   it('rejects expired, wrong-version, wrong-audience, revoked, and trashed fetches', async () => {
     const created = await service.create(actorId, nodeId);
-    const token = new URL(created.config.document.url).searchParams.get('token')!;
+    const token = new URL(created.config.document.url).searchParams.get(
+      'token',
+    )!;
     const jwt = new JwtService();
     const forge = (payload: object, options: object = {}) =>
-      jwt.sign({ aud: 'onlyoffice-file-fetch', sessionId: created.session.id, fileVersionId: versionIds.at(-1), purpose: 'onlyoffice-file-fetch', ...payload }, { secret: config.fetchTokenSecret, algorithm: 'HS256', ...options });
-    await expect(service.authorizeFetch(created.session.id, forge({}, { expiresIn: -1 }))).rejects.toMatchObject({ status: 404 });
-    await expect(service.authorizeFetch(created.session.id, forge({ fileVersionId: randomUUID() }))).rejects.toMatchObject({ status: 404 });
-    await expect(service.authorizeFetch(created.session.id, forge({ aud: 'wrong-audience' }))).rejects.toMatchObject({ status: 404 });
-    await prisma.permissionEntry.deleteMany({ where: { nodeId, userId: actorId } });
-    await expect(service.authorizeFetch(created.session.id, token)).rejects.toMatchObject({ status: 404 });
-    await prisma.permissionEntry.create({ data: { nodeId, userId: actorId, role: DocumentRole.VIEWER } });
-    const operation = await prisma.trashOperation.create({ data: { rootNodeId: nodeId, trashedById: actorId, expiresAt: new Date(Date.now() + 60_000) } });
-    await prisma.node.update({ where: { id: nodeId }, data: { trashOperationId: operation.id } });
-    await expect(service.authorizeFetch(created.session.id, token)).rejects.toMatchObject({ status: 404 });
-    await prisma.node.update({ where: { id: nodeId }, data: { trashOperationId: null } });
+      jwt.sign(
+        {
+          aud: 'onlyoffice-file-fetch',
+          sessionId: created.session.id,
+          fileVersionId: versionIds.at(-1),
+          purpose: 'onlyoffice-file-fetch',
+          ...payload,
+        },
+        { secret: config.fetchTokenSecret, algorithm: 'HS256', ...options },
+      );
+    await expect(
+      service.authorizeFetch(created.session.id, forge({}, { expiresIn: -1 })),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      service.authorizeFetch(
+        created.session.id,
+        forge({ fileVersionId: randomUUID() }),
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      service.authorizeFetch(
+        created.session.id,
+        forge({ aud: 'wrong-audience' }),
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+    await prisma.permissionEntry.deleteMany({
+      where: { nodeId, userId: actorId },
+    });
+    await expect(
+      service.authorizeFetch(created.session.id, token),
+    ).rejects.toMatchObject({ status: 404 });
+    await prisma.permissionEntry.create({
+      data: { nodeId, userId: actorId, role: DocumentRole.VIEWER },
+    });
+    const operation = await prisma.trashOperation.create({
+      data: {
+        rootNodeId: nodeId,
+        trashedById: actorId,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    await prisma.node.update({
+      where: { id: nodeId },
+      data: { trashOperationId: operation.id },
+    });
+    await expect(
+      service.authorizeFetch(created.session.id, token),
+    ).rejects.toMatchObject({ status: 404 });
+    await prisma.node.update({
+      where: { id: nodeId },
+      data: { trashOperationId: null },
+    });
     await prisma.trashOperation.delete({ where: { id: operation.id } });
   });
 });

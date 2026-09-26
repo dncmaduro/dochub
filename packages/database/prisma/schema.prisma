@@ -385,6 +385,10 @@ model EditorSession {
   status        EditorSessionStatus @default(ACTIVE)
   createdAt     DateTime            @default(now())
   closedAt      DateTime?
+  stagedArtifactId String?   @db.Uuid
+  stagedSha256     String?
+  stagedSizeBytes  BigInt?
+  stagedAt         DateTime?
   file          File                @relation("EditorSessionFile", fields: [fileId], references: [id], onDelete: Restrict)
   baseVersion   FileVersion         @relation("EditorSessionBaseVersion", fields: [fileId, baseVersionId], references: [fileId, id], onDelete: Restrict)
   user          User?               @relation("EditorSessionUser", fields: [userId], references: [id], onDelete: Restrict)

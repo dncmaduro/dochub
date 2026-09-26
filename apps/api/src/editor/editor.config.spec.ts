@@ -11,12 +11,19 @@ const env = {
 describe('editor configuration', () => {
   it('is disabled only when all ONLYOFFICE settings are absent', () => {
     expect(loadEditorConfig({})).toBeUndefined();
-    expect(() => loadEditorConfig({ ONLYOFFICE_PUBLIC_URL: 'http://localhost:8082' })).toThrow('is required');
+    expect(() =>
+      loadEditorConfig({ ONLYOFFICE_PUBLIC_URL: 'http://localhost:8082' }),
+    ).toThrow('is required');
   });
 
   it('validates URLs, secrets, and bounded fetch TTL', () => {
     expect(loadEditorConfig(env)?.fetchTokenTtlSeconds).toBe(900);
-    expect(() => loadEditorConfig({ ...env, ONLYOFFICE_JWT_SECRET: 'short' })).toThrow('at least 32');
-    expect(() => loadEditorConfig({ ...env, ONLYOFFICE_FETCH_TOKEN_TTL_SECONDS: '2' })).toThrow('between 60 and 3600');
+    expect(loadEditorConfig(env)?.callbackTokenTtlSeconds).toBe(3600);
+    expect(() =>
+      loadEditorConfig({ ...env, ONLYOFFICE_JWT_SECRET: 'short' }),
+    ).toThrow('at least 32');
+    expect(() =>
+      loadEditorConfig({ ...env, ONLYOFFICE_FETCH_TOKEN_TTL_SECONDS: '2' }),
+    ).toThrow('between 60 and 3600');
   });
 });
