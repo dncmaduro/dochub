@@ -5,6 +5,7 @@ import { AUTH_CONFIG, type AuthConfig } from './auth.config.js';
 import { AuthConfigModule } from './auth-config.module.js';
 import { AuthCookieService } from './auth-cookie.service.js';
 import { AccessTokenGuard } from './access-token.guard.js';
+import { OptionalAccessTokenGuard } from './optional-access-token.guard.js';
 import { AuthController } from './auth.controller.js';
 import { AuthSessionService } from './auth-session.service.js';
 import { GoogleAuthController } from './google/google-auth.controller.js';
@@ -32,6 +33,7 @@ import {
     AuthCookieService,
     AuthSessionService,
     AccessTokenGuard,
+    OptionalAccessTokenGuard,
     GoogleAuthService,
     {
       provide: GOOGLE_OIDC_CLIENT,
@@ -39,6 +41,11 @@ import {
     },
     OpenIdClientGoogleOidcClient,
   ],
-  exports: [JwtModule, AuthSessionService, AccessTokenGuard],
+  exports: [
+    JwtModule,
+    AuthSessionService,
+    AccessTokenGuard,
+    OptionalAccessTokenGuard,
+  ],
 })
 export class AuthModule {}

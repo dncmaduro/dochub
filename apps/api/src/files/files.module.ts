@@ -12,6 +12,12 @@ import { MultipartUploadService } from './multipart-upload.service.js';
 @Module({
   imports: [AuthModule, AuthorizationModule, DatabaseModule, StorageModule],
   controllers: [FilesController],
-  providers: [FilesService, MultipartUploadService, FileValidationService, FileReadService],
+  providers: [
+    FilesService,
+    MultipartUploadService,
+    FileValidationService,
+    FileReadService,
+  ],
+  exports: [FileReadService],
 })
 export class FilesModule {}

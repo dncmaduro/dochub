@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -125,6 +125,7 @@ describe('streaming file uploads (e2e)', () => {
     await prisma.permissionEntry.deleteMany({
       where: { nodeId: { in: nodes } },
     });
+    await prisma.shareLink.deleteMany({ where: { nodeId: { in: nodes } } });
     await prisma.node.updateMany({
       where: { id: { in: nodes } },
       data: { trashOperationId: null },
@@ -206,6 +207,71 @@ describe('streaming file uploads (e2e)', () => {
         where: { resourceId: response.body.node.id, action: 'FILE_UPLOADED' },
       }),
     ).resolves.toBeTruthy();
+  });
+
+  it('serves an active public ShareLink inline with ranges but forbids anonymous download', async () => {
+    const bytes = Buffer.from('%PDF-1.7\n0123456789');
+    const uploaded = await request(app.getHttpServer())
+      .post('/files')
+      .field('parentId', root)
+      .attach('file', bytes, 'shared.pdf')
+      .expect(201);
+    nodes.push(uploaded.body.node.id);
+    const token =
+      randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    await prisma.node.update({
+      where: { id: uploaded.body.node.id },
+      data: { publicAccess: true },
+    });
+    await prisma.shareLink.create({
+      data: {
+        nodeId: uploaded.body.node.id,
+        createdById: actorId,
+        tokenHash: createHash('sha256').update(token).digest('hex'),
+      },
+    });
+
+    const resolved = await request(app.getHttpServer())
+      .get(`/share/${token}`)
+      .expect(200);
+    expect(resolved.body).toEqual({
+      node: { id: uploaded.body.node.id, type: 'FILE', name: 'shared.pdf' },
+      access: { mode: 'PUBLIC', canPreview: true, canDownload: false },
+    });
+    expect(resolved.body).not.toHaveProperty('tokenHash');
+    const content = await request(app.getHttpServer())
+      .get(`/share/${token}/content`)
+      .buffer(true)
+      .parse((response, callback) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => callback(null, Buffer.concat(chunks)));
+      })
+      .expect(200);
+    expect(content.body).toEqual(bytes);
+    expect(content.headers).toMatchObject({
+      'content-type': 'application/pdf',
+      'content-length': '19',
+      'accept-ranges': 'bytes',
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    expect(content.headers['content-disposition']).toContain('inline');
+    const range = await request(app.getHttpServer())
+      .get(`/share/${token}/content`)
+      .set('Range', 'bytes=11-14')
+      .buffer(true)
+      .parse((response, callback) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => callback(null, Buffer.concat(chunks)));
+      })
+      .expect(206);
+    expect(range.body).toEqual(Buffer.from('2345'));
+    expect(range.headers['content-range']).toBe('bytes 11-14/19');
+    await request(app.getHttpServer())
+      .get(`/share/${token}/download`)
+      .expect(403);
   });
 
   it('restores a trashed file through the lifecycle route without changing its binary or version metadata', async () => {

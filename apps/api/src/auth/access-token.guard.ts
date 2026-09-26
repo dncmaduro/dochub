@@ -25,6 +25,14 @@ export class AccessTokenGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    await this.authenticateRequest(request);
+    return true;
+  }
+
+  /** Shared by the optional guard so supplied credentials always have normal semantics. */
+  async authenticateRequest(
+    request: AuthenticatedRequest,
+  ): Promise<AuthPrincipal> {
     const token = this.bearerToken(request.headers.authorization);
 
     let payload: AccessTokenPayload;
@@ -38,11 +46,12 @@ export class AccessTokenGuard implements CanActivate {
       throw this.authenticationFailed();
     }
 
-    request.auth = await this.authSessions.validateAccessSession({
+    const auth = await this.authSessions.validateAccessSession({
       userId: payload.sub,
       sessionId: payload.sid,
     });
-    return true;
+    request.auth = auth;
+    return auth;
   }
 
   private bearerToken(header: string | string[] | undefined): string {
