@@ -19,13 +19,21 @@ withDb('SearchService integration', () => {
   const hiddenId = randomUUID();
   const adminId = randomUUID();
   const nodeIds: string[] = [];
+  const fileIds: string[] = [];
+  const groupIds: string[] = [];
   const database = { prisma } as unknown as DatabaseService;
   const authorization = new DocumentAuthorizationService(database);
   const search = new SearchService(database, authorization);
-  async function node(name: string, type = NodeType.FOLDER, visible = true) {
+  async function node(
+    name: string,
+    type = NodeType.FOLDER,
+    visible = true,
+    parentId: string | null = null,
+  ) {
     const row = await prisma.node.create({
       data: {
         type,
+        parentId,
         name,
         normalizedName: `${name.toLowerCase()}-${randomUUID()}`,
         createdById: actorId,
@@ -37,6 +45,41 @@ withDb('SearchService integration', () => {
         data: { nodeId: row.id, userId: actorId, role: DocumentRole.VIEWER },
       });
     return row;
+  }
+  async function contentFile(
+    name: string,
+    content: string,
+    visible = true,
+    parentId: string | null = null,
+  ) {
+    const row = await node(name, NodeType.FILE, visible, parentId);
+    const fileId = randomUUID();
+    const versionId = randomUUID();
+    fileIds.push(fileId);
+    await prisma.file.create({ data: { id: fileId, nodeId: row.id } });
+    await prisma.fileVersion.create({
+      data: {
+        id: versionId,
+        fileId,
+        versionNumber: 1,
+        storageKey: `search/${fileId}/${versionId}`,
+        originalFilename: name,
+        mimeType: 'application/pdf',
+        sizeBytes: BigInt(content.length),
+        sha256: versionId.replaceAll('-', '').padEnd(64, '0'),
+        source: 'UPLOAD',
+        createdById: actorId,
+      },
+    });
+    await prisma.file.update({
+      where: { id: fileId },
+      data: { currentVersionId: versionId, versionCounter: 1 },
+    });
+    await prisma.$executeRaw`
+      INSERT INTO "SearchDocument" ("id", "fileId", "fileVersionId", "contentText", "searchVector")
+      VALUES (${randomUUID()}::uuid, ${fileId}::uuid, ${versionId}::uuid, ${content}, to_tsvector('simple', public.search_unaccent(${content})))
+    `;
+    return { ...row, fileId, versionId };
   }
   beforeAll(async () => {
     await prisma.user.createMany({
@@ -73,6 +116,16 @@ withDb('SearchService integration', () => {
     await prisma.permissionEntry.deleteMany({
       where: { nodeId: { in: nodeIds } },
     });
+    await prisma.file.updateMany({
+      where: { id: { in: fileIds } },
+      data: { currentVersionId: null },
+    });
+    await prisma.fileVersion.deleteMany({ where: { fileId: { in: fileIds } } });
+    await prisma.file.deleteMany({ where: { id: { in: fileIds } } });
+    await prisma.groupMember.deleteMany({
+      where: { groupId: { in: groupIds } },
+    });
+    await prisma.group.deleteMany({ where: { id: { in: groupIds } } });
     await prisma.node.deleteMany({ where: { id: { in: nodeIds } } });
     await prisma.user.deleteMany({
       where: { id: { in: [actorId, hiddenId, adminId] } },
@@ -294,5 +347,297 @@ withDb('SearchService integration', () => {
         (item) => item.id,
       ),
     ).toContain(prefix.id);
+  });
+
+  it('matches current file content with accent-insensitive multi-word FTS and keeps folders name-only', async () => {
+    const content = await contentFile(
+      'document-001.pdf',
+      'Chiến lược sản phẩm quý bốn',
+    );
+    const folder = await node('content-folder', NodeType.FOLDER);
+    expect(
+      (await search.search(actorId, { q: 'chien luoc san pham' })).items.map(
+        (x) => x.id,
+      ),
+    ).toContain(content.id);
+    expect(
+      (await search.search(actorId, { q: 'CHIEN LUOC SAN PHAM' })).items.map(
+        (x) => x.id,
+      ),
+    ).toContain(content.id);
+    expect(
+      (await search.search(actorId, { q: 'chien luoc beta' })).items.map(
+        (x) => x.id,
+      ),
+    ).not.toContain(content.id);
+    expect(
+      (
+        await search.search(actorId, {
+          q: 'chien luoc san pham',
+          type: NodeType.FOLDER,
+        })
+      ).items.map((x) => x.id),
+    ).not.toContain(folder.id);
+  });
+
+  it('deduplicates name/content matches and ranks names before content-only files', async () => {
+    const named = await contentFile(
+      `Kế hoạch Aurora nhân sự ${suffix}.pdf`,
+      'Kế hoạch Aurora nhân sự',
+    );
+    const contentOnly = await contentFile(
+      'Document.pdf',
+      'Kế hoạch Aurora nhân sự',
+    );
+    const repeated = await contentFile(
+      'Other.pdf',
+      'Kế hoạch Aurora nhân sự Kế hoạch Aurora nhân sự Kế hoạch Aurora nhân sự',
+    );
+    const result = await search.search(actorId, {
+      q: 'ke hoach aurora nhan su',
+      limit: 20,
+    });
+    const ids = result.items.map((item) => item.id);
+    expect(ids[0]).toBe(named.id);
+    expect(ids.filter((id) => id === named.id)).toHaveLength(1);
+    expect(ids).toContain(contentOnly.id);
+    expect(ids).toContain(repeated.id);
+    expect(ids.indexOf(repeated.id)).toBeGreaterThan(ids.indexOf(named.id));
+    expect(ids.indexOf(repeated.id)).toBeLessThan(ids.indexOf(contentOnly.id));
+  });
+
+  it('rejects stale SearchDocument content after a newer version becomes current', async () => {
+    const current = await contentFile('versioned.pdf', 'project venus');
+    const oldVersionId = randomUUID();
+    await prisma.fileVersion.create({
+      data: {
+        id: oldVersionId,
+        fileId: current.fileId,
+        versionNumber: 2,
+        storageKey: `search/${current.fileId}/${oldVersionId}`,
+        originalFilename: 'versioned.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 20n,
+        sha256: oldVersionId.replaceAll('-', '').padEnd(64, '0'),
+        source: 'UPLOAD',
+        createdById: actorId,
+      },
+    });
+    await prisma.file.update({
+      where: { id: current.fileId },
+      data: { currentVersionId: oldVersionId, versionCounter: 2 },
+    });
+    expect(
+      (await search.search(actorId, { q: 'project venus' })).items.map(
+        (x) => x.id,
+      ),
+    ).not.toContain(current.id);
+    expect(
+      (await search.search(actorId, { q: 'project mercury' })).items.map(
+        (x) => x.id,
+      ),
+    ).not.toContain(current.id);
+  });
+
+  it('paginates mixed content candidates without duplicates', async () => {
+    const files = await Promise.all([
+      contentFile(`alpha-content-${suffix}.pdf`, 'ngân sách dự án alpha'),
+      contentFile(`beta-content-${suffix}.pdf`, 'ngân sách dự án alpha alpha'),
+      contentFile(
+        `gamma-content-${suffix}.pdf`,
+        'ngân sách dự án alpha alpha alpha',
+      ),
+      contentFile(
+        `delta-content-${suffix}.pdf`,
+        'ngân sách dự án alpha alpha alpha alpha',
+      ),
+    ]);
+    const first = await search.search(actorId, {
+      q: 'ngan sach alpha',
+      limit: 2,
+    });
+    expect(first.items).toHaveLength(2);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await search.search(actorId, {
+      q: 'ngan sach alpha',
+      limit: 2,
+      cursor: first.nextCursor!,
+    });
+    expect(second.items).toHaveLength(2);
+    expect(
+      new Set([...first.items, ...second.items].map((x) => x.id)).size,
+    ).toBe(4);
+    expect(new Set(files.map((file) => file.id))).toEqual(
+      new Set([...first.items, ...second.items].map((x) => x.id)),
+    );
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('paginates mixed name and content candidates and ignores hidden content when determining nextCursor', async () => {
+    const named = await contentFile(
+      `mixed-pagination-${suffix}.pdf`,
+      'mixed pagination needle',
+    );
+    const contentOnly = await contentFile(
+      'document-mixed.pdf',
+      'mixed pagination needle mixed pagination needle',
+    );
+    const trailingVisible = await contentFile(
+      'document-mixed-visible.pdf',
+      'mixed pagination needle mixed pagination needle mixed pagination needle',
+    );
+    const first = await search.search(actorId, {
+      q: 'mixed pagination needle',
+      limit: 2,
+    });
+    expect(first.items).toHaveLength(2);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await search.search(actorId, {
+      q: 'mixed pagination needle',
+      limit: 2,
+      cursor: first.nextCursor!,
+    });
+    expect(new Set([...first.items, ...second.items].map((item) => item.id)).size).toBe(3);
+    expect(new Set([...first.items, ...second.items].map((item) => item.id))).toEqual(
+      new Set([named.id, contentOnly.id, trailingVisible.id]),
+    );
+    expect(second.nextCursor).toBeNull();
+
+    const visibleA = await contentFile('visible-a.pdf', 'hidden cursor needle');
+    const visibleB = await contentFile('visible-b.pdf', 'hidden cursor needle');
+    await contentFile('hidden-a.pdf', 'hidden cursor needle', false);
+    await contentFile('hidden-b.pdf', 'hidden cursor needle', false);
+    const visiblePage = await search.search(actorId, {
+      q: 'hidden cursor needle',
+      limit: 2,
+    });
+    expect(new Set(visiblePage.items.map((item) => item.id))).toEqual(
+      new Set([visibleA.id, visibleB.id]),
+    );
+    expect(visiblePage.nextCursor).toBeNull();
+  });
+
+  it('hides trashed content and restores it when current provenance remains valid', async () => {
+    const content = await contentFile('trash-content.pdf', 'restore content needle');
+    const operation = await prisma.trashOperation.create({
+      data: {
+        rootNodeId: content.id,
+        trashedById: actorId,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+    await prisma.node.update({
+      where: { id: content.id },
+      data: { trashOperationId: operation.id },
+    });
+    expect(
+      (await search.search(actorId, { q: 'restore content needle' })).items.map(
+        (item) => item.id,
+      ),
+    ).not.toContain(content.id);
+    await prisma.node.update({
+      where: { id: content.id },
+      data: { trashOperationId: null },
+    });
+    await prisma.trashOperation.delete({ where: { id: operation.id } });
+    expect(
+      (await search.search(actorId, { q: 'restore content needle' })).items.map(
+        (item) => item.id,
+      ),
+    ).toContain(content.id);
+  });
+
+  it('uses the bulk ACL resolver for direct, group, inherited, boundary, admin, and public content candidates', async () => {
+    const groupId = randomUUID();
+    groupIds.push(groupId);
+    await prisma.group.create({
+      data: {
+        id: groupId,
+        name: `content-group-${suffix}`,
+        normalizedName: `content-group-${suffix}`,
+        createdById: actorId,
+      },
+    });
+    await prisma.groupMember.create({
+      data: { groupId, userId: actorId, addedById: actorId },
+    });
+    const direct = await contentFile(
+      `direct-${suffix}.pdf`,
+      'acl direct unique',
+    );
+    const group = await contentFile(
+      `group-${suffix}.pdf`,
+      'acl group unique',
+      false,
+    );
+    await prisma.permissionEntry.create({
+      data: { nodeId: group.id, groupId, role: DocumentRole.VIEWER },
+    });
+    const inheritedRoot = await node(`acl-inherited-root-${suffix}`);
+    const inherited = await contentFile(
+      `inherited-${suffix}.pdf`,
+      'acl inherited unique',
+      false,
+      inheritedRoot.id,
+    );
+    const boundary = await node(
+      `acl-boundary-${suffix}`,
+      NodeType.FOLDER,
+      false,
+      inheritedRoot.id,
+    );
+    await prisma.node.update({
+      where: { id: boundary.id },
+      data: { inheritPermissions: false },
+    });
+    const blocked = await contentFile(
+      `boundary-${suffix}.pdf`,
+      'acl boundary unique',
+      false,
+      boundary.id,
+    );
+    const directChild = await contentFile(
+      `boundary-direct-${suffix}.pdf`,
+      'acl direct-child unique',
+      false,
+      boundary.id,
+    );
+    await prisma.permissionEntry.create({
+      data: {
+        nodeId: directChild.id,
+        userId: actorId,
+        role: DocumentRole.VIEWER,
+      },
+    });
+    const adminOnly = await contentFile(
+      `admin-only-${suffix}.pdf`,
+      'acl admin unique',
+      false,
+    );
+    const publicOnly = await contentFile(
+      `public-only-${suffix}.pdf`,
+      'acl public unique',
+      false,
+    );
+    await prisma.node.update({
+      where: { id: publicOnly.id },
+      data: { publicAccess: true },
+    });
+    const visible = (term: string) =>
+      search
+        .search(actorId, { q: term })
+        .then((result) => result.items.map((item) => item.id));
+    expect(await visible('acl direct unique')).toContain(direct.id);
+    expect(await visible('acl group unique')).toContain(group.id);
+    expect(await visible('acl inherited unique')).toContain(inherited.id);
+    expect(await visible('acl boundary unique')).not.toContain(blocked.id);
+    expect(await visible('acl direct child unique')).toContain(directChild.id);
+    expect(await visible('acl admin unique')).not.toContain(adminOnly.id);
+    expect(await visible('acl public unique')).not.toContain(publicOnly.id);
+    expect(
+      (await search.search(adminId, { q: 'acl admin unique' })).items.map(
+        (item) => item.id,
+      ),
+    ).not.toContain(adminOnly.id);
   });
 });

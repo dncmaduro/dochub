@@ -24,6 +24,8 @@ export class FileProcessingService
   private inFlight: Promise<number> | undefined;
   private stopping = false;
   private backfillCursor: string | undefined;
+  private reindexCursor: string | undefined;
+  private reindexComplete = false;
 
   constructor(
     private readonly database: PrismaClient,
@@ -105,6 +107,7 @@ export class FileProcessingService
   }
 
   private async processCycle(): Promise<number> {
+    if (!this.reindexComplete) await this.reindexCurrentSearchDocuments();
     await this.backfillCurrentVersions();
     const tasks = await this.claimTasks();
     let next = 0;
@@ -118,6 +121,35 @@ export class FileProcessingService
       ),
     );
     return tasks.length;
+  }
+
+  /** Bounded compatibility pass for rows written before accent-folded vectors. */
+  private async reindexCurrentSearchDocuments(): Promise<void> {
+    const documents = await this.database.searchDocument.findMany({
+      where: this.reindexCursor
+        ? { id: { gt: this.reindexCursor } }
+        : undefined,
+      select: { id: true },
+      orderBy: { id: 'asc' },
+      take: this.config.batchSize,
+    });
+    if (!documents.length) {
+      this.reindexCursor = undefined;
+      this.reindexComplete = true;
+      return;
+    }
+    this.reindexCursor = documents.at(-1)?.id;
+    for (const document of documents)
+      await this.database.$executeRaw`
+        UPDATE "SearchDocument" AS sd
+        SET "searchVector" = to_tsvector('simple', public.search_unaccent(sd."contentText")),
+            "indexedAt" = NOW()
+        FROM "File" AS f
+        WHERE sd."id" = ${document.id}::uuid
+          AND f."id" = sd."fileId"
+          AND f."currentVersionId" = sd."fileVersionId"
+          AND sd."searchVector" IS DISTINCT FROM to_tsvector('simple', public.search_unaccent(sd."contentText"))
+      `;
   }
 
   private async claimTasks(): Promise<ClaimedTask[]> {
@@ -188,7 +220,7 @@ export class FileProcessingService
       if (files[0]?.currentVersionId !== versionId) return;
       await tx.$executeRaw`
         INSERT INTO "SearchDocument" ("id", "fileId", "fileVersionId", "contentText", "searchVector", "indexedAt")
-        VALUES (${crypto.randomUUID()}::uuid, ${fileId}::uuid, ${versionId}::uuid, ${content}, to_tsvector('simple', ${content}), NOW())
+        VALUES (${crypto.randomUUID()}::uuid, ${fileId}::uuid, ${versionId}::uuid, ${content}, to_tsvector('simple', public.search_unaccent(${content})), NOW())
         ON CONFLICT ("fileId") DO UPDATE SET
           "fileVersionId" = EXCLUDED."fileVersionId", "contentText" = EXCLUDED."contentText",
           "searchVector" = EXCLUDED."searchVector", "indexedAt" = EXCLUDED."indexedAt"

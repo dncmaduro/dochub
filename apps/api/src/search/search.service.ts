@@ -51,7 +51,10 @@ export class SearchService {
     }> = [];
     let scanCursor = cursor;
     let lastVisible: SearchRow | undefined;
-    while (items.length < limit) {
+    let moreCandidates = false;
+    // Continue past a full page until an additional visible row is found. This
+    // avoids emitting a cursor solely because hidden candidates still exist.
+    while (!moreCandidates) {
       const rows = await this.candidates(query, dto.type, scanCursor);
       if (!rows.length) break;
       const capabilityByNode =
@@ -72,6 +75,10 @@ export class SearchService {
             ?.capabilities.has(DocumentCapability.VIEW)
         )
           continue;
+        if (items.length === limit) {
+          moreCandidates = true;
+          break;
+        }
         items.push({
           id: row.id,
           type: row.type,
@@ -79,11 +86,10 @@ export class SearchService {
           updatedAt: row.updatedAt.toISOString(),
         });
         lastVisible = row;
-        if (items.length === limit) break;
       }
-      if (rows.length < BATCH_SIZE) break;
+      if (moreCandidates || rows.length < BATCH_SIZE) break;
     }
-    const hasMore = items.length === limit && !!lastVisible;
+    const hasMore = items.length === limit && !!lastVisible && moreCandidates;
     return {
       items,
       nextCursor: hasMore
@@ -103,7 +109,7 @@ export class SearchService {
   ) {
     const pattern = `%${escapeLike(query)}%`;
     return this.database.prisma.$queryRaw<SearchRow[]>`
-      WITH ranked AS (
+      WITH name_candidates AS (
         SELECT "id", "type", "name", "updatedAt", "normalizedName",
           CASE WHEN public.search_unaccent(lower("name")) = ${query} THEN 0
                WHEN public.search_unaccent(lower("name")) LIKE ${`${escapeLike(query)}%`} ESCAPE '\\' THEN 1
@@ -112,6 +118,25 @@ export class SearchService {
         FROM "Node" WHERE "trashOperationId" IS NULL
           AND (${type ?? null}::"NodeType" IS NULL OR "type" = ${type ?? null}::"NodeType")
           AND (public.search_unaccent(lower("name")) LIKE ${pattern} ESCAPE '\\' OR similarity(public.search_unaccent(lower("name")), ${query}) >= 0.25)
+      ), content_candidates AS (
+        SELECT n."id", n."type", n."name", n."updatedAt", n."normalizedName",
+          4 AS tier,
+          round(ts_rank_cd(sd."searchVector", plainto_tsquery('simple', public.search_unaccent(${query})))::numeric, 6)::double precision AS score
+        FROM "Node" n
+        INNER JOIN "File" f ON f."nodeId" = n."id"
+        INNER JOIN "SearchDocument" sd
+          ON sd."fileId" = f."id" AND sd."fileVersionId" = f."currentVersionId"
+        WHERE n."trashOperationId" IS NULL
+          AND n."type" = 'FILE'::"NodeType"
+          AND (${type ?? null}::"NodeType" IS NULL OR n."type" = ${type ?? null}::"NodeType")
+          AND sd."searchVector" @@ plainto_tsquery('simple', public.search_unaccent(${query}))
+      ), combined AS (
+        SELECT * FROM name_candidates
+        UNION ALL
+        SELECT * FROM content_candidates
+      ), ranked AS (
+        SELECT DISTINCT ON ("id") * FROM combined
+        ORDER BY "id", tier ASC, score DESC, "normalizedName" ASC
       ) SELECT * FROM ranked
       WHERE (${cursor?.tier ?? null}::int IS NULL OR tier > ${cursor?.tier ?? null}
         OR (tier = ${cursor?.tier ?? null} AND score < ${cursor?.score ?? null})

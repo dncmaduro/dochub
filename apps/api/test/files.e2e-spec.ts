@@ -294,6 +294,58 @@ describe('streaming file uploads (e2e)', () => {
       .expect(400);
   });
 
+  it('returns a current indexed content-only file over the real HTTP search route', async () => {
+    const nodeId = randomUUID();
+    const fileId = randomUUID();
+    const versionId = randomUUID();
+    nodes.push(nodeId);
+    await prisma.node.create({
+      data: {
+        id: nodeId,
+        parentId: root,
+        type: NodeType.FILE,
+        name: 'document-001.pdf',
+        normalizedName: `document-001-${suffix}`,
+        createdById: actorId,
+      },
+    });
+    await prisma.permissionEntry.create({
+      data: { nodeId, userId: actorId, role: DocumentRole.VIEWER },
+    });
+    await prisma.file.create({ data: { id: fileId, nodeId } });
+    await prisma.fileVersion.create({
+      data: {
+        id: versionId,
+        fileId,
+        versionNumber: 1,
+        storageKey: `search/${fileId}/${versionId}`,
+        originalFilename: 'document-001.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 32n,
+        sha256: versionId.replaceAll('-', '').padEnd(64, '0'),
+        source: 'UPLOAD',
+        createdById: actorId,
+      },
+    });
+    await prisma.file.update({
+      where: { id: fileId },
+      data: { currentVersionId: versionId, versionCounter: 1 },
+    });
+    await prisma.$executeRaw`
+      INSERT INTO "SearchDocument" ("id", "fileId", "fileVersionId", "contentText", "searchVector")
+      VALUES (${randomUUID()}::uuid, ${fileId}::uuid, ${versionId}::uuid, ${'Báo cáo doanh thu khu vực miền Bắc'}, to_tsvector('simple', public.search_unaccent(${'Báo cáo doanh thu khu vực miền Bắc'})))
+    `;
+    const response = await request(app.getHttpServer())
+      .get('/search?q=bao%20cao%20doanh%20thu')
+      .set('x-test-user', actorId)
+      .expect(200);
+    expect(response.body.items).toContainEqual(
+      expect.objectContaining({ id: nodeId, name: 'document-001.pdf' }),
+    );
+    expect(JSON.stringify(response.body)).not.toContain('doanh thu khu vực');
+    expect(JSON.stringify(response.body)).not.toContain(versionId);
+  });
+
   it('serves an active public ShareLink inline with ranges but forbids anonymous download', async () => {
     const bytes = Buffer.from('%PDF-1.7\n0123456789');
     const uploaded = await request(app.getHttpServer())
