@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
-import { DatabaseModule } from './database/database.module.js';
+import { RetentionModule } from './retention/retention.module.js';
 
 @Module({
-  imports: [DatabaseModule],
+  imports: [RetentionModule],
 })
 export class AppModule {}

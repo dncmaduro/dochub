@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  AuditActorType,
   DocumentRole,
   EditorActorType,
   EditorMode,
@@ -679,7 +680,7 @@ describeWithDatabase('TrashService integration', () => {
       prisma.auditLog.findFirstOrThrow({
         where: { action: 'NODE_PURGED', resourceId: root.id, actorId },
       }),
-    ).resolves.toBeTruthy();
+    ).resolves.toMatchObject({ actorType: AuditActorType.USER, actorId });
   });
 
   it('purges an entire subtree, preserving an unrelated sibling and nested operation history', async () => {
