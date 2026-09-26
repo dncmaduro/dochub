@@ -14,6 +14,8 @@ import {
   AuditResult,
   DocumentRole,
   FileVersionSource,
+  FileProcessingTaskType,
+  isSearchableFileMimeType,
   NodeType,
   Prisma,
   SystemRole,
@@ -137,6 +139,11 @@ export class FilesService {
           where: { id: fileId },
           data: { versionCounter: 1, currentVersionId: versionId },
         });
+        await this.createTextExtractionTask(
+          transaction,
+          versionId,
+          metadata.mimeType,
+        );
         await transaction.permissionEntry.create({
           data: {
             nodeId,
@@ -226,6 +233,11 @@ export class FilesService {
             currentVersionId: versionId,
           },
         });
+        await this.createTextExtractionTask(
+          transaction,
+          versionId,
+          metadata.mimeType,
+        );
         await this.writeAudit(transaction, {
           actorUserId,
           action: 'FILE_VERSION_CREATED',
@@ -286,7 +298,12 @@ export class FilesService {
     nodeId: string,
     client: DocumentAuthorizationClient = this.database.prisma,
   ): Promise<VisibleNode & { fileId: string }> {
-    const node = await this.requireVisibleNode(actorUserId, nodeId, client, true);
+    const node = await this.requireVisibleNode(
+      actorUserId,
+      nodeId,
+      client,
+      true,
+    );
     if (node.type !== NodeType.FILE) {
       throw new ConflictException('A folder cannot receive file versions');
     }
@@ -409,6 +426,17 @@ export class FilesService {
         result: AuditResult.SUCCESS,
         metadata: input.metadata,
       },
+    });
+  }
+
+  private async createTextExtractionTask(
+    transaction: Prisma.TransactionClient,
+    fileVersionId: string,
+    mimeType: string,
+  ): Promise<void> {
+    if (!isSearchableFileMimeType(mimeType)) return;
+    await transaction.fileProcessingTask.create({
+      data: { fileVersionId, type: FileProcessingTaskType.TEXT_EXTRACTION },
     });
   }
 

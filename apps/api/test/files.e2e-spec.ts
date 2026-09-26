@@ -13,6 +13,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import {
   DocumentRole,
+  FileProcessingTaskType,
   NodeType,
   prisma,
   SystemRole,
@@ -214,6 +215,16 @@ describe('streaming file uploads (e2e)', () => {
         where: { resourceId: response.body.node.id, action: 'FILE_UPLOADED' },
       }),
     ).resolves.toBeTruthy();
+    await expect(
+      prisma.fileProcessingTask.findUniqueOrThrow({
+        where: {
+          fileVersionId_type: {
+            fileVersionId: version.id,
+            type: FileProcessingTaskType.TEXT_EXTRACTION,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ status: 'PENDING' });
   });
 
   it('serves the authenticated /search HTTP contract without leaking internals', async () => {
@@ -561,6 +572,14 @@ describe('streaming file uploads (e2e)', () => {
         ),
       ),
     ).toHaveLength(3);
+    expect(
+      await prisma.fileProcessingTask.count({
+        where: {
+          fileVersionId: { in: file.versions.map((version) => version.id) },
+          type: FileProcessingTaskType.TEXT_EXTRACTION,
+        },
+      }),
+    ).toBe(3);
   });
 
   it('streams current and historical immutable versions with secure headers and single ranges', async () => {

@@ -25,6 +25,13 @@ services:
       timeout: 5s
       retries: 10
 
+  tika:
+    image: apache/tika:3.2.3.0-full
+    container_name: dochub-tika
+    restart: unless-stopped
+    ports:
+      - "9998:9998"
+
 volumes:
   postgres_data:
   redis_data:
