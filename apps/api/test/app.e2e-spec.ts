@@ -64,6 +64,26 @@ describe('API authentication routes (e2e)', () => {
       .expect(401);
   });
 
+  it('rejects every unauthenticated sharing-management route', async () => {
+    const nodeId = '00000000-0000-4000-8000-000000000000';
+    await request(app.getHttpServer())
+      .get(`/nodes/${nodeId}/sharing`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .post(`/nodes/${nodeId}/share-link`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .post(`/nodes/${nodeId}/share-link/reset`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`/nodes/${nodeId}/share-link`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .patch(`/nodes/${nodeId}/sharing`)
+      .send({ publicAccess: true })
+      .expect(401);
+  });
+
   afterEach(async () => {
     await app.close();
   });

@@ -8,6 +8,7 @@ import { HealthController } from './health/health.controller.js';
 import { NodesModule } from './nodes/nodes.module.js';
 import { PermissionsModule } from './permissions/permissions.module.js';
 import { TrashModule } from './trash/trash.module.js';
+import { SharingModule } from './sharing/sharing.module.js';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { TrashModule } from './trash/trash.module.js';
     PermissionsModule,
     FilesModule,
     TrashModule,
+    SharingModule,
   ],
   controllers: [HealthController],
 })
