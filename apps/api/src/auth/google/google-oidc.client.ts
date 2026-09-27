@@ -15,8 +15,8 @@ export interface GoogleAuthorizationParameters {
 }
 
 export interface GoogleCallbackParameters {
-  code: string;
-  state: string;
+  callbackParameters: URLSearchParams;
+  expectedState: string;
   nonce: string;
   codeVerifier: string;
 }
@@ -58,14 +58,13 @@ export class OpenIdClientGoogleOidcClient implements GoogleOidcClient {
   ): Promise<unknown> {
     const google = this.googleConfig();
     const callbackUrl = new URL(google.redirectUri);
-    callbackUrl.searchParams.set('code', parameters.code);
-    callbackUrl.searchParams.set('state', parameters.state);
+    callbackUrl.search = parameters.callbackParameters.toString();
 
     const tokenResponse = await oidc.authorizationCodeGrant(
       await this.getConfiguration(google),
       callbackUrl,
       {
-        expectedState: parameters.state,
+        expectedState: parameters.expectedState,
         expectedNonce: parameters.nonce,
         pkceCodeVerifier: parameters.codeVerifier,
       },

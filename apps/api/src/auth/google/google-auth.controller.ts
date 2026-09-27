@@ -72,6 +72,7 @@ export class GoogleAuthController {
         code,
         state,
         expectedState,
+        callbackParameters: this.callbackParameters(request),
         nonce,
         codeVerifier,
         ipAddress: request.ip,
@@ -99,6 +100,14 @@ export class GoogleAuthController {
   private flowCookie(request: Request, name: string): string | undefined {
     const value = request.cookies?.[name];
     return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
+  private callbackParameters(request: Request): URLSearchParams {
+    const requestUrl = request.originalUrl ?? request.url;
+    const queryStart = requestUrl.indexOf('?');
+    return new URLSearchParams(
+      queryStart === -1 ? '' : requestUrl.slice(queryStart + 1),
+    );
   }
 
   private clearFlowCookies(response: Response): void {

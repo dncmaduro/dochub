@@ -31,6 +31,7 @@ export interface GoogleCallbackInput extends Omit<
   code: string;
   state: string;
   expectedState: string;
+  callbackParameters: URLSearchParams;
   nonce: string;
   codeVerifier: string;
 }
@@ -88,8 +89,8 @@ export class GoogleAuthService {
 
     try {
       const claims = await this.oidcClient.validateCallback({
-        code: input.code,
-        state: input.state,
+        callbackParameters: input.callbackParameters,
+        expectedState: input.expectedState,
         nonce: input.nonce,
         codeVerifier: input.codeVerifier,
       });

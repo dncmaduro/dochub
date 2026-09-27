@@ -16,6 +16,11 @@ const callbackInput: GoogleCallbackInput = {
   code: 'authorization-code',
   state: 'state',
   expectedState: 'state',
+  callbackParameters: new URLSearchParams({
+    code: 'authorization-code',
+    state: 'state',
+    iss: 'https://accounts.google.com',
+  }),
   nonce: 'nonce',
   codeVerifier: 'code-verifier',
   ipAddress: '127.0.0.1',

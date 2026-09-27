@@ -74,7 +74,9 @@ describe('GoogleAuthController', () => {
   it('sets only the application refresh cookie and redirects to the fixed success URL', async () => {
     const { controller, googleAuth, response } = controllerFor();
     const request = {
-      query: { code: 'code', state: 'state' },
+      query: { code: 'code', state: 'state', iss: 'https://accounts.google.com' },
+      originalUrl:
+        '/auth/google/callback?code=code&state=state&iss=https%3A%2F%2Faccounts.google.com&scope=openid%20email',
       cookies: {
         dochub_google_state: 'state',
         dochub_google_nonce: 'nonce',
@@ -86,13 +88,19 @@ describe('GoogleAuthController', () => {
 
     await controller.callback(request as never, response as never);
 
-    expect(googleAuth.completeAuthorization).toHaveBeenCalledWith(
-      expect.objectContaining({
-        code: 'code',
-        state: 'state',
-        ipAddress: '127.0.0.1',
-      }),
-    );
+    const authorizationInput = vi.mocked(googleAuth.completeAuthorization)
+      .mock.calls[0][0];
+    expect(authorizationInput).toMatchObject({
+      code: 'code',
+      state: 'state',
+      ipAddress: '127.0.0.1',
+    });
+    expect(Object.fromEntries(authorizationInput.callbackParameters)).toEqual({
+      code: 'code',
+      state: 'state',
+      iss: 'https://accounts.google.com',
+      scope: 'openid email',
+    });
     expect(response.cookie).toHaveBeenCalledWith(
       'dochub_refresh',
       'application-refresh-token',
@@ -122,5 +130,27 @@ describe('GoogleAuthController', () => {
       controller.callback(request as never, response as never),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(response.clearCookie).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not log callback parameter values', async () => {
+    const { controller, response } = controllerFor();
+    const log = vi.spyOn(console, 'log');
+    const warn = vi.spyOn(console, 'warn');
+    const request = {
+      query: { code: 'sensitive-code', state: 'state' },
+      originalUrl: '/auth/google/callback?code=sensitive-code&state=state',
+      cookies: {
+        dochub_google_state: 'state',
+        dochub_google_nonce: 'nonce',
+        dochub_google_verifier: 'verifier',
+      },
+      ip: '127.0.0.1',
+      get: vi.fn().mockReturnValue('test-agent'),
+    };
+
+    await controller.callback(request as never, response as never);
+
+    expect(log).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
   });
 });

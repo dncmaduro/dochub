@@ -70,8 +70,13 @@ describe('OpenIdClientGoogleOidcClient', () => {
 
     await expect(
       client.validateCallback({
-        code: 'code',
-        state: 'state',
+        callbackParameters: new URLSearchParams({
+          code: 'code',
+          state: 'state',
+          iss: 'https://accounts.google.com',
+          scope: 'openid email',
+        }),
+        expectedState: 'state',
         nonce: 'nonce',
         codeVerifier: 'verifier',
       }),
@@ -79,7 +84,9 @@ describe('OpenIdClientGoogleOidcClient', () => {
     expect(oidc.authorizationCodeGrant).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        href: expect.stringContaining('code=code'),
+        href: expect.stringMatching(
+          /code=code&state=state&iss=https%3A%2F%2Faccounts\.google\.com&scope=openid\+email/,
+        ),
       }),
       {
         expectedState: 'state',

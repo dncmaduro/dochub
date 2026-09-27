@@ -1,122 +1,69 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
+import { type ChangeEvent, type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { ApiClient, ApiError, type Breadcrumb, type EditorSession, type Node } from './api'
 import './App.css'
 
-function App() {
-  const [count, setCount] = useState(0)
+const api = new ApiClient()
+type Notice = { tone: 'error' | 'success'; message: string } | null
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+function currentFolderId() { return window.location.pathname.match(/^\/drive\/([0-9a-f-]+)$/i)?.[1] ?? null }
+function navigate(folderId: string | null) { const path = folderId ? `/drive/${folderId}` : '/drive'; if (window.location.pathname !== path) { window.history.pushState({}, '', path); window.dispatchEvent(new PopStateEvent('popstate')) } }
+function displayError(error: unknown) { return error instanceof ApiError ? error.message : 'Something went wrong. Please try again.' }
+function hasCapability(node: Node, capability: string) { return node.capabilities.includes(capability) }
+function isOfficeFile(name: string) { return /\.(docx?|xlsx?|pptx?)$/i.test(name) }
+function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }).format(date) }
+function compareNodes(left: Node, right: Node) { return left.type === right.type ? left.name.localeCompare(right.name) : left.type === 'FOLDER' ? -1 : 1 }
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+function Icon({ name, size = 18 }: { name: string; size?: number }) {
+  const paths: Record<string, ReactNode> = {
+    folder: <path d="M3.5 6.5h6l1.7 2H20a1 1 0 0 1 1 1v8.75a1.75 1.75 0 0 1-1.75 1.75h-14.5A1.75 1.75 0 0 1 3 18.25v-10A1.75 1.75 0 0 1 4.75 6.5Z" />,
+    file: <><path d="M6 2.75h7.6L19 8.1v12.15A1.75 1.75 0 0 1 17.25 22h-11.5A1.75 1.75 0 0 1 4 20.25V4.75A2 2 0 0 1 6 2.75Z" /><path d="M13.25 2.9v5.35H18.7M7.75 13h7.5M7.75 16.5h7.5" /></>,
+    drive: <><path d="m12 3 8 14H4L12 3Z" /><path d="m12 3 4 7H8l4-7ZM8 10l4 7 4-7" /></>,
+    plus: <path d="M12 5v14M5 12h14" />, upload: <><path d="M12 16V4M7.5 8.5 12 4l4.5 4.5" /><path d="M4 15.5v3.75A1.75 1.75 0 0 0 5.75 21h12.5A1.75 1.75 0 0 0 20 19.25V15.5" /></>,
+    more: <path d="M6.5 12h.01M12 12h.01M17.5 12h.01" strokeWidth="3" strokeLinecap="round" />, chevron: <path d="m9 18 6-6-6-6" />, close: <path d="m6 6 12 12M18 6 6 18" />, refresh: <><path d="M20 11a8 8 0 0 0-14.8-4.2L3 9" /><path d="M3 4v5h5M4 13a8 8 0 0 0 14.8 4.2L21 15" /><path d="M21 20v-5h-5" /></>, download: <><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5" /><path d="M4 19.5v.75A1.75 1.75 0 0 0 5.75 22h12.5A1.75 1.75 0 0 0 20 20.25v-.75" /></>, edit: <path d="m14.5 5.5 4 4M4 20l4.2-1 10.9-10.9a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z" />,
+  }
+  return <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">{paths[name]}</svg>
 }
 
+function App() {
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null)
+  useEffect(() => { let active = true; void api.refresh().then(() => { if (!active) return; if (!/^\/drive(?:\/[0-9a-f-]+)?$/i.test(window.location.pathname)) window.history.replaceState({}, '', '/drive'); setAuthenticated(true) }, () => active && setAuthenticated(false)); return () => { active = false } }, [])
+  if (authenticated === null) return <div className="auth-state">Checking your session…</div>
+  return authenticated ? <DriveApp /> : <SignIn />
+}
+function SignIn() { return <main className="sign-in"><section><Icon name="drive" size={30} /><h1>Docs Hub</h1><p>Sign in to access your documents.</p><a className="button button-primary" href={api.googleAuthUrl()}>Continue with Google</a></section></main> }
+
+function DriveApp() {
+  const [folderId, setFolderId] = useState(currentFolderId)
+  const [nodes, setNodes] = useState<Node[]>([])
+  const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([])
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState<Notice>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [renameNode, setRenameNode] = useState<Node | null>(null)
+  const [editor, setEditor] = useState<EditorSession | null>(null)
+  const uploadInput = useRef<HTMLInputElement>(null)
+  const load = useCallback(async (id: string | null) => { setStatus('loading'); setError(''); try { const [page, trail] = await Promise.all([api.listNodes(id), id ? api.breadcrumb(id) : Promise.resolve([])]); setNodes(page.items); setBreadcrumbs(trail); setStatus('ready') } catch (requestError) { setStatus('error'); setError(displayError(requestError)) } }, [])
+  useEffect(() => { const onPopState = () => setFolderId(currentFolderId()); window.addEventListener('popstate', onPopState); return () => window.removeEventListener('popstate', onPopState) }, [])
+  useEffect(() => { const timer = window.setTimeout(() => { void load(folderId) }, 0); return () => window.clearTimeout(timer) }, [folderId, load])
+  async function createFolder(name: string) { const node = await api.createFolder(name, folderId); setNodes((items) => [...items, node].sort(compareNodes)); setNotice({ tone: 'success', message: `Created “${node.name}”.` }) }
+  async function rename(node: Node, name: string) { const updated = await api.renameNode(node.id, name); setNodes((items) => items.map((item) => item.id === node.id ? updated : item).sort(compareNodes)); setNotice({ tone: 'success', message: 'Name updated.' }) }
+  async function upload(event: ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; event.target.value = ''; if (!file) return; try { setNotice(null); const result = await api.upload(file, folderId); setNodes((items) => [...items, result.node].sort(compareNodes)); setNotice({ tone: 'success', message: `Uploaded “${result.node.name}”.` }) } catch (requestError) { setNotice({ tone: 'error', message: displayError(requestError) }) } }
+  async function openFile(node: Node) { try { if (isOfficeFile(node.name) && hasCapability(node, 'PREVIEW')) { setEditor(await api.createEditorSession(node.id)); return } if (hasCapability(node, 'DOWNLOAD')) await api.download(node) } catch (requestError) { setNotice({ tone: 'error', message: displayError(requestError) }) } }
+  return <div className="app-shell"><aside className="sidebar"><div className="brand"><Icon name="drive" size={22} /><span>Docs Hub</span></div><nav aria-label="Main navigation"><button className="nav-item is-active" type="button" onClick={() => navigate(null)}><Icon name="folder" /><span>Files</span></button></nav></aside><main className="drive-main"><header className="topbar"><Breadcrumbs items={breadcrumbs} folderId={folderId} /><div className="toolbar-actions"><button type="button" className="button" onClick={() => void load(folderId)} aria-label="Refresh folder"><Icon name="refresh" /></button><button type="button" className="button" onClick={() => setCreateOpen(true)}><Icon name="plus" />New folder</button><button type="button" className="button button-primary" onClick={() => uploadInput.current?.click()}><Icon name="upload" />Upload</button><input className="visually-hidden" ref={uploadInput} type="file" onChange={upload} /></div></header>{notice && <div className={`notice notice-${notice.tone}`} role="status"><span>{notice.message}</span><button type="button" aria-label="Dismiss message" onClick={() => setNotice(null)}><Icon name="close" size={15} /></button></div>}<section className="drive-content" aria-label="Files">{status === 'loading' && <LoadingRows />}{status === 'error' && <ErrorState message={error} onRetry={() => void load(folderId)} />}{status === 'ready' && nodes.length === 0 && <EmptyState onFolder={() => setCreateOpen(true)} onUpload={() => uploadInput.current?.click()} />}{status === 'ready' && nodes.length > 0 && <FileList nodes={nodes} onFolder={(id) => navigate(id)} onRename={setRenameNode} onOpen={openFile} onNotice={setNotice} />}</section></main>{createOpen && <NameDialog title="New folder" action="Create" onClose={() => setCreateOpen(false)} onSubmit={createFolder} />}{renameNode && <NameDialog title="Rename" action="Save" initialValue={renameNode.name} onClose={() => setRenameNode(null)} onSubmit={(name) => rename(renameNode, name)} />}{editor && <EditorDialog session={editor} onClose={() => setEditor(null)} />}</div>
+}
+
+function Breadcrumbs({ items, folderId }: { items: Breadcrumb[]; folderId: string | null }) { return <nav className="breadcrumbs" aria-label="Breadcrumb"><button type="button" onClick={() => navigate(null)}>Files</button>{items.map((item, index) => <span key={item.id} className="crumb"><Icon name="chevron" size={15} />{index === items.length - 1 && folderId === item.id ? <span aria-current="page">{item.name}</span> : <button type="button" onClick={() => navigate(item.id)}>{item.name}</button>}</span>)}</nav> }
+function FileList({ nodes, onFolder, onRename, onOpen, onNotice }: { nodes: Node[]; onFolder: (id: string) => void; onRename: (node: Node) => void; onOpen: (node: Node) => void; onNotice: (notice: Notice) => void }) { return <div className="file-table-wrap"><table className="file-table"><thead><tr><th scope="col">Name</th><th scope="col">Modified</th><th scope="col"><span className="visually-hidden">Actions</span></th></tr></thead><tbody>{nodes.map((node) => <FileRow key={node.id} node={node} onFolder={onFolder} onRename={onRename} onOpen={onOpen} onNotice={onNotice} />)}</tbody></table></div> }
+function FileRow({ node, onFolder, onRename, onOpen, onNotice }: { node: Node; onFolder: (id: string) => void; onRename: (node: Node) => void; onOpen: (node: Node) => void; onNotice: (notice: Notice) => void }) {
+  const [menuOpen, setMenuOpen] = useState(false); const isFolder = node.type === 'FOLDER'; const canOpen = isFolder || (isOfficeFile(node.name) && hasCapability(node, 'PREVIEW')) || hasCapability(node, 'DOWNLOAD')
+  async function download() { try { await api.download(node) } catch (error) { onNotice({ tone: 'error', message: displayError(error) }) } }
+  return <tr><td><button className="file-name" type="button" onClick={() => isFolder ? onFolder(node.id) : void onOpen(node)} disabled={!canOpen}><Icon name={isFolder ? 'folder' : 'file'} size={19} /><span>{node.name}</span></button></td><td className="modified">{formatDate(node.updatedAt)}</td><td className="row-actions"><button type="button" className="icon-button" aria-label={`Actions for ${node.name}`} aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}><Icon name="more" /></button>{menuOpen && <div className="row-menu" role="menu"><button type="button" role="menuitem" onClick={() => { setMenuOpen(false); if (isFolder) onFolder(node.id); else void onOpen(node) }} disabled={!canOpen}>{isFolder ? 'Open folder' : isOfficeFile(node.name) && hasCapability(node, 'PREVIEW') ? 'Open' : 'Download'}</button>{hasCapability(node, 'RENAME') && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onRename(node) }}><Icon name="edit" size={16} />Rename</button>}{!isFolder && hasCapability(node, 'DOWNLOAD') && isOfficeFile(node.name) && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); void download() }}><Icon name="download" size={16} />Download</button>}</div>}</td></tr>
+}
+function NameDialog({ title, action, initialValue = '', onClose, onSubmit }: { title: string; action: string; initialValue?: string; onClose: () => void; onSubmit: (name: string) => Promise<void> }) { const [name, setName] = useState(initialValue); const [pending, setPending] = useState(false); const [error, setError] = useState(''); const input = useRef<HTMLInputElement>(null); useEffect(() => { input.current?.focus() }, []); async function submit(event: FormEvent) { event.preventDefault(); const value = name.trim(); if (!value) { setError('Enter a name.'); return } setPending(true); setError(''); try { await onSubmit(value); onClose() } catch (requestError) { setError(displayError(requestError)) } finally { setPending(false) } } return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="name-dialog-title"><form onSubmit={submit}><h2 id="name-dialog-title">{title}</h2><label htmlFor="node-name">Name</label><input id="node-name" ref={input} value={name} onChange={(event) => setName(event.target.value)} maxLength={255} disabled={pending} />{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>Cancel</button><button type="submit" className="button button-primary" disabled={pending}>{pending ? `${action}…` : action}</button></div></form></section></div> }
+function EmptyState({ onFolder, onUpload }: { onFolder: () => void; onUpload: () => void }) { return <div className="content-state"><Icon name="folder" size={30} /><h1>No files in this folder.</h1><div><button type="button" className="button" onClick={onFolder}>New folder</button><button type="button" className="button button-primary" onClick={onUpload}>Upload file</button></div></div> }
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) { return <div className="content-state"><h1>Couldn’t load this folder.</h1><p>{message}</p><button type="button" className="button" onClick={onRetry}>Retry</button></div> }
+function LoadingRows() { return <div className="loading-list" aria-label="Loading files"><span /><span /><span /><span /></div> }
+function EditorDialog({ session, onClose }: { session: EditorSession; onClose: () => void }) { const container = useRef<HTMLDivElement>(null); const [error, setError] = useState(''); useEffect(() => { let editor: { destroyEditor?: () => void } | undefined; let script: HTMLScriptElement | undefined; const start = () => { try { if (!window.DocsAPI || !container.current) throw new Error(); editor = new window.DocsAPI.DocEditor(container.current.id, session.config) } catch { setError('The document editor could not be opened.') } }; if (window.DocsAPI) start(); else { script = document.createElement('script'); script.src = session.documentServer.apiUrl; script.async = true; script.onload = start; script.onerror = () => setError('The document editor is unavailable.'); document.head.append(script) } return () => { editor?.destroyEditor?.(); if (script) script.remove(); void api.closeEditorSession(session.session.id).catch(() => undefined) } }, [session]); return <div className="editor-backdrop"><section className="editor-dialog" role="dialog" aria-modal="true" aria-label="Document editor"><header><span>Document editor</span><button type="button" className="icon-button" aria-label="Close editor" onClick={onClose}><Icon name="close" /></button></header>{error ? <div className="editor-error">{error}</div> : <div id="onlyoffice-editor" ref={container} className="editor-frame" />}</section></div> }
+declare global { interface Window { DocsAPI?: { DocEditor: new (elementId: string, config: Record<string, unknown>) => { destroyEditor?: () => void } } } }
 export default App
