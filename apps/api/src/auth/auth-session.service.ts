@@ -1,6 +1,6 @@
 import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { UserStatus } from '@dochub/database';
+import { SystemRole, UserStatus } from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
 import { AUTH_CONFIG, type AuthConfig } from './auth.config.js';
 import type {
@@ -22,7 +22,7 @@ export class AuthSessionService {
   async createSession(input: CreateSessionInput): Promise<SessionTokens> {
     const user = await this.database.prisma.user.findUnique({
       where: { id: input.userId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, systemRole: true },
     });
     this.assertActiveUser(user);
 
@@ -38,7 +38,7 @@ export class AuthSessionService {
       select: { id: true },
     });
 
-    return this.issueTokens(user.id, session.id, refreshToken);
+    return this.issueTokens(user.id, session.id, refreshToken, user.systemRole);
   }
 
   async refreshSession(refreshToken: string): Promise<SessionTokens> {
@@ -51,7 +51,7 @@ export class AuthSessionService {
         userId: true,
         expiresAt: true,
         revokedAt: true,
-        user: { select: { id: true, status: true } },
+        user: { select: { id: true, status: true, systemRole: true } },
       },
     });
 
@@ -81,7 +81,12 @@ export class AuthSessionService {
       throw this.authenticationFailed();
     }
 
-    return this.issueTokens(session.userId, session.id, nextRefreshToken);
+    return this.issueTokens(
+      session.userId,
+      session.id,
+      nextRefreshToken,
+      session.user.systemRole,
+    );
   }
 
   async revokeSession(refreshToken: string): Promise<void> {
@@ -126,6 +131,7 @@ export class AuthSessionService {
     userId: string,
     sessionId: string,
     refreshToken: string,
+    systemRole: SystemRole,
   ): Promise<SessionTokens> {
     const payload: AccessTokenPayload = {
       sub: userId,
@@ -136,6 +142,7 @@ export class AuthSessionService {
       accessToken: await this.jwtService.signAsync(payload),
       refreshToken,
       expiresIn: this.config.accessTokenTtlSeconds,
+      systemRole,
     };
   }
 
@@ -148,6 +155,7 @@ export class AuthSessionService {
   ): asserts user is {
     id: string;
     status: 'ACTIVE';
+    systemRole: SystemRole;
   } {
     if (!user || user.status !== UserStatus.ACTIVE) {
       throw this.authenticationFailed();

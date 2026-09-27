@@ -22,7 +22,12 @@ export class AuthController {
   async refresh(
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
-  ): Promise<{ accessToken: string; tokenType: 'Bearer'; expiresIn: number }> {
+  ): Promise<{
+    accessToken: string;
+    tokenType: 'Bearer';
+    expiresIn: number;
+    systemRole: 'ADMIN' | 'MEMBER';
+  }> {
     const refreshToken = this.refreshTokenFrom(request);
     if (!refreshToken) {
       throw new UnauthorizedException('Authentication failed');
@@ -38,6 +43,7 @@ export class AuthController {
       accessToken: tokens.accessToken,
       tokenType: 'Bearer',
       expiresIn: tokens.expiresIn,
+      systemRole: tokens.systemRole,
     };
   }
 

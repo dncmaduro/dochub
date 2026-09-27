@@ -4,7 +4,8 @@ export interface EditorSession { session: { id: string }; documentServer: { apiU
 
 interface NodePage { items: Node[]; nextCursor: string | null }
 interface UploadResponse { node: Node }
-interface RefreshResponse { accessToken: string }
+export type SystemRole = 'ADMIN' | 'MEMBER'
+interface RefreshResponse { accessToken: string; systemRole: SystemRole }
 
 const apiOrigin = (import.meta.env.VITE_API_ORIGIN ?? 'http://localhost:3000').replace(/\/$/, '')
 
@@ -25,7 +26,9 @@ export class ApiClient {
   async refresh() {
     const response = await fetch(`${apiOrigin}/auth/refresh`, { method: 'POST', credentials: 'include' })
     if (!response.ok) throw await this.error(response)
-    this.accessToken = (await response.json() as RefreshResponse).accessToken
+    const body = await response.json() as RefreshResponse
+    this.accessToken = body.accessToken
+    return body
   }
 
   async listNodes(folderId: string | null) { return this.request<NodePage>(folderId ? `/nodes/${folderId}/children` : '/nodes/root') }
