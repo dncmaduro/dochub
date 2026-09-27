@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { Transform } from 'node:stream';
@@ -9,6 +9,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -19,12 +20,20 @@ import {
   EditorActorType,
   EditorMode,
   EditorSessionStatus,
+  FileProcessingTaskType,
+  FileVersionSource,
   NodeType,
+  Prisma,
   UserStatus,
+  AuditActorType,
+  AuditResult,
+  isSearchableFileMimeType,
 } from '@dochub/database';
+import type { StorageService } from '@dochub/storage';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
+import { STORAGE_SERVICE } from '../storage/storage.module.js';
 import {
   STORAGE_CONFIG,
   type StorageConfig,
@@ -54,12 +63,15 @@ class CallbackFailure extends Error {}
 
 @Injectable()
 export class EditorSessionService {
+  private readonly logger = new Logger(EditorSessionService.name);
+
   constructor(
     private readonly database: DatabaseService,
     private readonly authorization: DocumentAuthorizationService,
     private readonly jwt: JwtService,
     @Inject(EDITOR_CONFIG) private readonly config: EditorConfig | undefined,
     @Inject(STORAGE_CONFIG) private readonly storage: StorageConfig,
+    @Inject(STORAGE_SERVICE) private readonly objectStorage: StorageService,
   ) {}
 
   static documentKey(versionId: string): string {
@@ -335,6 +347,10 @@ export class EditorSessionService {
         cap.baseVersionId,
         signed.key,
       );
+      // A retried save is acknowledged only after its durable result can be
+      // identified. This also permits a CLOSED finalized session to absorb
+      // ONLYOFFICE's callback retries.
+      if (session.finalizedFileVersionId) return { error: 0 };
       if (payload.status === 1 || payload.status === 4) {
         // A status 4 is a no-change close notification. Do not close an EDIT
         // session here: it can follow a rejected/retried save callback and
@@ -343,9 +359,11 @@ export class EditorSessionService {
       }
       if (payload.status === 3 || payload.status === 7) return { error: 1 };
       if (payload.status !== 2 && payload.status !== 6) return { error: 0 };
-      if (session.stagedArtifactId) return { error: 0 };
-      if (!payload.url) throw new CallbackFailure();
-      await this.stageEditedDocument(session, payload.url);
+      if (!session.stagedArtifactId) {
+        if (!payload.url) throw new CallbackFailure();
+        await this.stageEditedDocument(session, payload.url);
+      }
+      await this.finalizeStagedDocument(session.id);
       return { error: 0 };
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
@@ -382,7 +400,6 @@ export class EditorSessionService {
         id: sessionId,
         baseVersionId,
         mode: EditorMode.EDIT,
-        status: EditorSessionStatus.ACTIVE,
         actorType: EditorActorType.USER,
       },
       select: {
@@ -390,6 +407,8 @@ export class EditorSessionService {
         baseVersionId: true,
         documentKey: true,
         stagedArtifactId: true,
+        finalizedFileVersionId: true,
+        status: true,
         userId: true,
         file: {
           select: {
@@ -403,12 +422,17 @@ export class EditorSessionService {
     });
     if (
       !session ||
+      (key !== undefined && key !== session.documentKey)
+    )
+      throw new CallbackFailure();
+    if (session.finalizedFileVersionId) return session;
+    if (
+      session.status !== EditorSessionStatus.ACTIVE ||
       !session.userId ||
       !session.user ||
       session.user.status !== UserStatus.ACTIVE ||
       session.file.node.trashOperationId !== null ||
-      session.file.currentVersionId !== session.baseVersionId ||
-      (key !== undefined && key !== session.documentKey)
+      session.file.currentVersionId !== session.baseVersionId
     )
       throw new CallbackFailure();
     const caps = await this.authorization.resolveCapabilities(
@@ -483,8 +507,8 @@ export class EditorSessionService {
         }),
       );
       await rename(partialPath, finalPath);
-      await this.database.prisma.editorSession.update({
-        where: { id: session.id },
+      const staged = await this.database.prisma.editorSession.updateMany({
+        where: { id: session.id, stagedArtifactId: null, finalizedFileVersionId: null },
         data: {
           stagedArtifactId: artifactId,
           stagedSha256: hash.digest('hex'),
@@ -492,11 +516,162 @@ export class EditorSessionService {
           stagedAt: new Date(),
         },
       });
+      // Another callback won the staging race. Its artifact is authoritative;
+      // never replace it with a second download of the same logical save.
+      if (staged.count !== 1) await rm(finalPath, { force: true });
     } catch (error) {
       await rm(partialPath, { force: true }).catch(() => undefined);
       await rm(finalPath, { force: true }).catch(() => undefined);
       throw error instanceof CallbackFailure ? error : new CallbackFailure();
     }
+  }
+
+  private async finalizeStagedDocument(sessionId: string): Promise<void> {
+    const staged = await this.database.prisma.editorSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        stagedArtifactId: true,
+        stagedSha256: true,
+        stagedSizeBytes: true,
+        finalizedFileVersionId: true,
+      },
+    });
+    if (!staged) throw new CallbackFailure();
+    if (staged.finalizedFileVersionId) return;
+    if (
+      !staged.stagedArtifactId ||
+      !staged.stagedSha256 ||
+      staged.stagedSizeBytes === null
+    )
+      throw new CallbackFailure();
+
+    const stagedPath = this.stagedPath(sessionId, staged.stagedArtifactId);
+    await this.assertStagedArtifact(
+      stagedPath,
+      staged.stagedSizeBytes,
+      staged.stagedSha256,
+    );
+
+    // Storage precedes the database transaction: a committed FileVersion can
+    // therefore never point at an absent immutable object. On transaction
+    // failure the object is removed, while staging remains for a safe retry.
+    const versionId = randomUUID();
+    let storageKey: string | undefined;
+    try {
+      const identity = await this.database.prisma.editorSession.findUnique({
+        where: { id: sessionId },
+        select: { fileId: true, finalizedFileVersionId: true },
+      });
+      if (!identity) throw new CallbackFailure();
+      if (identity.finalizedFileVersionId) return;
+      storageKey = `files/${identity.fileId}/versions/${versionId}`;
+      await this.objectStorage.putStream(storageKey, createReadStream(stagedPath));
+
+      const finalized = await this.database.prisma.$transaction(
+        (transaction) => this.commitEditorVersion(transaction, sessionId, versionId, storageKey!),
+      );
+      if (finalized.created) {
+        await rm(stagedPath, { force: true }).catch(() => {
+          this.logger.warn(`Unable to remove finalized editor staging artifact for session ${sessionId}`);
+        });
+      } else {
+        await this.objectStorage.delete(storageKey).catch(() => undefined);
+      }
+    } catch (error) {
+      if (storageKey) {
+        await this.objectStorage.delete(storageKey).catch(() => {
+          this.logger.warn('Editor finalization database failure left a storage orphan');
+        });
+      }
+      throw error instanceof CallbackFailure ? error : new CallbackFailure();
+    }
+  }
+
+  private async commitEditorVersion(
+    transaction: Prisma.TransactionClient,
+    sessionId: string,
+    versionId: string,
+    storageKey: string,
+  ): Promise<{ created: boolean }> {
+    // Serialize same-session callback retries before examining the File row.
+    const lockedSessions = await transaction.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "EditorSession" WHERE "id" = ${sessionId}::uuid FOR UPDATE`;
+    if (!lockedSessions[0]) throw new CallbackFailure();
+    const session = await transaction.editorSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true, fileId: true, baseVersionId: true, userId: true, mode: true,
+        status: true, stagedArtifactId: true, stagedSha256: true, stagedSizeBytes: true,
+        finalizedFileVersionId: true,
+        file: { select: { nodeId: true, node: { select: { trashOperationId: true } } } },
+        baseVersion: { select: { originalFilename: true, mimeType: true, extension: true } },
+        user: { select: { status: true } },
+      },
+    });
+    if (!session) throw new CallbackFailure();
+    if (session.finalizedFileVersionId) return { created: false };
+    if (
+      session.mode !== EditorMode.EDIT ||
+      session.status !== EditorSessionStatus.ACTIVE ||
+      !session.userId || session.user?.status !== UserStatus.ACTIVE ||
+      !session.stagedArtifactId || !session.stagedSha256 || session.stagedSizeBytes === null ||
+      session.file.node.trashOperationId !== null
+    ) throw new CallbackFailure();
+    const caps = await this.authorization.resolveCapabilities(session.userId, session.file.nodeId, transaction);
+    if (!caps.capabilities.has(DocumentCapability.VIEW) || !caps.capabilities.has(DocumentCapability.EDIT))
+      throw new CallbackFailure();
+    const lockedFiles = await transaction.$queryRaw<Array<{ id: string; versionCounter: number; currentVersionId: string | null }>>`
+      SELECT "id", "versionCounter", "currentVersionId" FROM "File"
+      WHERE "id" = ${session.fileId}::uuid FOR UPDATE`;
+    const file = lockedFiles[0];
+    if (!file || file.currentVersionId !== session.baseVersionId) throw new CallbackFailure();
+    const versionNumber = file.versionCounter + 1;
+    await transaction.fileVersion.create({
+      data: {
+        id: versionId, fileId: file.id, versionNumber, storageKey,
+        originalFilename: session.baseVersion.originalFilename,
+        mimeType: session.baseVersion.mimeType,
+        extension: session.baseVersion.extension,
+        sizeBytes: session.stagedSizeBytes, sha256: session.stagedSha256,
+        source: FileVersionSource.EDITOR, sourceVersionId: session.baseVersionId,
+        createdById: session.userId,
+      },
+    });
+    await transaction.file.update({ where: { id: file.id }, data: { versionCounter: versionNumber, currentVersionId: versionId } });
+    if (isSearchableFileMimeType(session.baseVersion.mimeType)) {
+      await transaction.fileProcessingTask.create({ data: { fileVersionId: versionId, type: FileProcessingTaskType.TEXT_EXTRACTION } });
+    }
+    await transaction.auditLog.create({ data: {
+      actorType: AuditActorType.USER, actorId: session.userId,
+      action: 'FILE_VERSION_CREATED', resourceType: 'FILE_VERSION', resourceId: versionId,
+      result: AuditResult.SUCCESS,
+      metadata: { fileId: file.id, nodeId: session.file.nodeId, versionNumber, source: 'EDITOR', sourceVersionId: session.baseVersionId, mimeType: session.baseVersion.mimeType, sizeBytes: session.stagedSizeBytes.toString() },
+    } });
+    await transaction.editorSession.update({ where: { id: session.id }, data: { finalizedFileVersionId: versionId, finalizedAt: new Date(), status: EditorSessionStatus.CLOSED, closedAt: new Date() } });
+    return { created: true };
+  }
+
+  private stagedPath(sessionId: string, artifactId: string): string {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(artifactId))
+      throw new CallbackFailure();
+    return path.join(this.storage.uploadTempRoot, 'editor', sessionId, artifactId);
+  }
+
+  private async assertStagedArtifact(pathname: string, expectedSize: bigint, expectedSha256: string): Promise<void> {
+    const hash = createHash('sha256');
+    let size = 0n;
+    try {
+      for await (const chunk of createReadStream(pathname)) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += BigInt(bytes.length);
+        if (size > BigInt(this.storage.uploadMaxBytes)) throw new CallbackFailure();
+        hash.update(bytes);
+      }
+    } catch (error) {
+      throw error instanceof CallbackFailure ? error : new CallbackFailure();
+    }
+    if (size !== expectedSize || hash.digest('hex') !== expectedSha256) throw new CallbackFailure();
   }
 
   private signFetchToken(

@@ -41,6 +41,7 @@ interface VisibleNode {
   createdAt: Date;
   updatedAt: Date;
   fileId?: string;
+  currentVersionId?: string | null;
   capabilities: ReadonlySet<DocumentCapability>;
 }
 
@@ -200,8 +201,8 @@ export class FilesService {
           transaction,
         );
         const lockedFiles = await transaction.$queryRaw<
-          Array<{ id: string; versionCounter: number }>
-        >`SELECT "id", "versionCounter"
+          Array<{ id: string; versionCounter: number; currentVersionId: string | null }>
+        >`SELECT "id", "versionCounter", "currentVersionId"
           FROM "File"
           WHERE "id" = ${target.fileId}::uuid
             AND "nodeId" = ${nodeId}::uuid
@@ -209,6 +210,26 @@ export class FilesService {
         const lockedFile = lockedFiles[0];
         if (!lockedFile) {
           throw new ConflictException('File metadata is unavailable');
+        }
+        if (lockedFile.currentVersionId !== earlyTarget.currentVersionId) {
+          // Concurrent uploads remain serialized into successive immutable
+          // versions. An editor finalization, however, is based on a specific
+          // immutable version, so an upload prepared before it must not append
+          // blindly after that EDITOR transition.
+          const current = lockedFile.currentVersionId
+            ? await transaction.fileVersion.findUnique({
+                where: {
+                  fileId_id: {
+                    fileId: lockedFile.id,
+                    id: lockedFile.currentVersionId,
+                  },
+                },
+                select: { source: true },
+              })
+            : null;
+          if (!current || current.source === FileVersionSource.EDITOR) {
+            throw new ConflictException('File version changed before upload completed');
+          }
         }
         const versionNumber = lockedFile.versionCounter + 1;
         const version = await transaction.fileVersion.create({
@@ -329,7 +350,7 @@ export class FilesService {
         name: true,
         createdAt: true,
         updatedAt: true,
-        ...(includeFile ? { file: { select: { id: true } } } : {}),
+        ...(includeFile ? { file: { select: { id: true, currentVersionId: true } } } : {}),
       },
     });
     if (!node) {
@@ -345,7 +366,9 @@ export class FilesService {
     }
     return {
       ...node,
-      ...(includeFile ? { fileId: node.file?.id } : {}),
+      ...(includeFile
+        ? { fileId: node.file?.id, currentVersionId: node.file?.currentVersionId }
+        : {}),
       capabilities: resolved.capabilities,
     };
   }

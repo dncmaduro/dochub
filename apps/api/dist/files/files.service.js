@@ -127,7 +127,7 @@ let FilesService = FilesService_1 = class FilesService {
         try {
             return await this.database.prisma.$transaction(async (transaction) => {
                 const target = await this.requireEditableFile(actorUserId, nodeId, transaction);
-                const lockedFiles = await transaction.$queryRaw `SELECT "id", "versionCounter"
+                const lockedFiles = await transaction.$queryRaw `SELECT "id", "versionCounter", "currentVersionId"
           FROM "File"
           WHERE "id" = ${target.fileId}::uuid
             AND "nodeId" = ${nodeId}::uuid
@@ -135,6 +135,22 @@ let FilesService = FilesService_1 = class FilesService {
                 const lockedFile = lockedFiles[0];
                 if (!lockedFile) {
                     throw new ConflictException('File metadata is unavailable');
+                }
+                if (lockedFile.currentVersionId !== earlyTarget.currentVersionId) {
+                    const current = lockedFile.currentVersionId
+                        ? await transaction.fileVersion.findUnique({
+                            where: {
+                                fileId_id: {
+                                    fileId: lockedFile.id,
+                                    id: lockedFile.currentVersionId,
+                                },
+                            },
+                            select: { source: true },
+                        })
+                        : null;
+                    if (!current || current.source === FileVersionSource.EDITOR) {
+                        throw new ConflictException('File version changed before upload completed');
+                    }
                 }
                 const versionNumber = lockedFile.versionCounter + 1;
                 const version = await transaction.fileVersion.create({
@@ -222,7 +238,7 @@ let FilesService = FilesService_1 = class FilesService {
                 name: true,
                 createdAt: true,
                 updatedAt: true,
-                ...(includeFile ? { file: { select: { id: true } } } : {}),
+                ...(includeFile ? { file: { select: { id: true, currentVersionId: true } } } : {}),
             },
         });
         if (!node) {
@@ -234,7 +250,9 @@ let FilesService = FilesService_1 = class FilesService {
         }
         return {
             ...node,
-            ...(includeFile ? { fileId: node.file?.id } : {}),
+            ...(includeFile
+                ? { fileId: node.file?.id, currentVersionId: node.file?.currentVersionId }
+                : {}),
             capabilities: resolved.capabilities,
         };
     }

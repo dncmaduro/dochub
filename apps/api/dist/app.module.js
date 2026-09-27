@@ -5,13 +5,35 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 import { Module } from '@nestjs/common';
+import { AdminModule } from './admin/admin.module.js';
+import { AuthorizationModule } from './authorization/authorization.module.js';
+import { AuthModule } from './auth/auth.module.js';
 import { DatabaseModule } from './database/database.module.js';
+import { FilesModule } from './files/files.module.js';
 import { HealthController } from './health/health.controller.js';
+import { NodesModule } from './nodes/nodes.module.js';
+import { PermissionsModule } from './permissions/permissions.module.js';
+import { TrashModule } from './trash/trash.module.js';
+import { SharingModule } from './sharing/sharing.module.js';
+import { SearchModule } from './search/search.module.js';
+import { EditorModule } from './editor/editor.module.js';
 let AppModule = class AppModule {
 };
 AppModule = __decorate([
     Module({
-        imports: [DatabaseModule],
+        imports: [
+            DatabaseModule,
+            AuthModule,
+            AdminModule,
+            AuthorizationModule,
+            NodesModule,
+            PermissionsModule,
+            FilesModule,
+            TrashModule,
+            SharingModule,
+            SearchModule,
+            EditorModule,
+        ],
         controllers: [HealthController],
     })
 ], AppModule);

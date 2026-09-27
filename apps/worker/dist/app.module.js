@@ -5,12 +5,13 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 import { Module } from '@nestjs/common';
-import { DatabaseModule } from './database/database.module.js';
+import { RetentionModule } from './retention/retention.module.js';
+import { FileProcessingModule } from './file-processing/file-processing.module.js';
 let AppModule = class AppModule {
 };
 AppModule = __decorate([
     Module({
-        imports: [DatabaseModule],
+        imports: [RetentionModule, FileProcessingModule],
     })
 ], AppModule);
 export { AppModule };

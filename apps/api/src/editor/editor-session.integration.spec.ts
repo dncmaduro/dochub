@@ -1,9 +1,14 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import { DocumentRole, NodeType, prisma, UserStatus } from '@dochub/database';
+import { LocalFileStorage, type StorageService } from '@dochub/storage';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DatabaseService } from '../database/database.service.js';
+import { FilesService } from '../files/files.service.js';
+import type { FileValidationService } from '../files/file-validation.service.js';
 import type { EditorConfig } from './editor.config.js';
 import { EditorSessionService } from './editor-session.service.js';
 
@@ -25,6 +30,8 @@ withDb('EditorSessionService integration', () => {
   };
   const database = { prisma } as unknown as DatabaseService;
   const authorization = new DocumentAuthorizationService(database);
+  const objectStorage = new LocalFileStorage('/tmp/dochub-editor-storage');
+  const permanentKeys: string[] = [];
   const service = new EditorSessionService(
     database,
     authorization,
@@ -36,6 +43,23 @@ withDb('EditorSessionService integration', () => {
       root: '/tmp/dochub-editor-storage',
       driver: 'local',
     },
+    objectStorage,
+  );
+  const files = new FilesService(
+    database,
+    authorization,
+    {
+      validate: async (upload) => ({
+        originalFilename: upload.originalFilename,
+        nodeName: upload.originalFilename.replace(/\.docx$/, ''),
+        normalizedNodeName: upload.originalFilename.replace(/\.docx$/, ''),
+        extension: 'docx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        sizeBytes: upload.sizeBytes,
+        sha256: upload.sha256,
+      }),
+    } as FileValidationService,
+    objectStorage,
   );
 
   async function version(number: number) {
@@ -111,6 +135,8 @@ withDb('EditorSessionService integration', () => {
     await prisma.user.deleteMany({
       where: { id: { in: [actorId, outsiderId] } },
     });
+    await Promise.all(permanentKeys.map((key) => objectStorage.delete(key)));
+    await rm('/tmp/dochub-editor-test/editor', { recursive: true, force: true });
     await prisma.$disconnect();
   });
 
@@ -239,6 +265,360 @@ withDb('EditorSessionService integration', () => {
     });
     expect(firstRow.baseVersionId).toBe(versionIds[0]);
     expect(secondRow.baseVersionId).toBe(v2);
+  });
+
+  it('finalizes staged EDIT bytes as one immutable editor version', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    const baseVersionId = (
+      await prisma.editorSession.findUniqueOrThrow({
+        where: { id: created.session.id },
+        select: { baseVersionId: true },
+      })
+    ).baseVersionId;
+    const artifactId = randomUUID();
+    const bytes = Buffer.from('after edit');
+    const stagedPath = path.join(
+      '/tmp/dochub-editor-test', 'editor', created.session.id, artifactId,
+    );
+    await mkdir(path.dirname(stagedPath), { recursive: true });
+    await writeFile(stagedPath, bytes);
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    await prisma.editorSession.update({
+      where: { id: created.session.id },
+      data: {
+        stagedArtifactId: artifactId, stagedSizeBytes: BigInt(bytes.length),
+        stagedSha256: digest, stagedAt: new Date(),
+      },
+    });
+    const finalizer = service as unknown as {
+      finalizeStagedDocument(id: string): Promise<void>;
+    };
+    await Promise.all([
+      finalizer.finalizeStagedDocument(created.session.id),
+      finalizer.finalizeStagedDocument(created.session.id),
+    ]);
+    const finalized = await prisma.editorSession.findUniqueOrThrow({
+      where: { id: created.session.id },
+      include: { finalizedFileVersion: true, file: true },
+    });
+    expect(finalized.status).toBe('CLOSED');
+    expect(finalized.finalizedFileVersion).toMatchObject({
+      source: 'EDITOR', sourceVersionId: baseVersionId,
+      sha256: digest,
+    });
+    expect(finalized.file.currentVersionId).toBe(finalized.finalizedFileVersionId);
+    expect(finalized.file.versionCounter).toBe(
+      finalized.finalizedFileVersion!.versionNumber,
+    );
+    expect(await objectStorage.exists(finalized.finalizedFileVersion!.storageKey)).toBe(true);
+    await expect(
+      prisma.fileProcessingTask.findMany({
+        where: { fileVersionId: finalized.finalizedFileVersionId! },
+      }),
+    ).resolves.toHaveLength(1);
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { resourceId: finalized.finalizedFileVersionId },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit).toMatchObject({
+      actorType: 'USER', actorId, action: 'FILE_VERSION_CREATED',
+      resourceType: 'FILE_VERSION', result: 'SUCCESS',
+    });
+    expect(JSON.stringify(audit.metadata)).not.toMatch(/after edit|editor\/|token|jwt|http/i);
+    permanentKeys.push(finalized.finalizedFileVersion!.storageKey);
+    versionIds.push(finalized.finalizedFileVersionId!);
+    await expect(finalizer.finalizeStagedDocument(created.session.id)).resolves.toBeUndefined();
+    expect(await prisma.fileVersion.count({ where: { fileId } })).toBe(
+      finalized.file.versionCounter,
+    );
+  });
+
+  it.each(['missing', 'sha-mismatch', 'size-mismatch'] as const)(
+    'rejects a %s staged artifact without advancing the file',
+    async (failure) => {
+      await prisma.permissionEntry.updateMany({
+        where: { nodeId, userId: actorId }, data: { role: DocumentRole.EDITOR },
+      });
+      const created = await service.create(actorId, nodeId, 'EDIT');
+      const artifactId = randomUUID();
+      const bytes = Buffer.from('staged validation failure');
+      const pathname = path.join('/tmp/dochub-editor-test', 'editor', created.session.id, artifactId);
+      if (failure !== 'missing') {
+        await mkdir(path.dirname(pathname), { recursive: true });
+        await writeFile(pathname, bytes);
+      }
+      await prisma.editorSession.update({
+        where: { id: created.session.id },
+        data: {
+          stagedArtifactId: artifactId,
+          stagedSha256: failure === 'sha-mismatch'
+            ? '0'.repeat(64) : createHash('sha256').update(bytes).digest('hex'),
+          stagedSizeBytes: failure === 'size-mismatch'
+            ? BigInt(bytes.length + 1) : BigInt(bytes.length),
+          stagedAt: new Date(),
+        },
+      });
+      const before = await prisma.file.findUniqueOrThrow({ where: { id: fileId } });
+      const count = await prisma.fileVersion.count({ where: { fileId } });
+      const finalizer = service as unknown as { finalizeStagedDocument(id: string): Promise<void> };
+      await expect(finalizer.finalizeStagedDocument(created.session.id)).rejects.toBeTruthy();
+      await expect(prisma.file.findUniqueOrThrow({ where: { id: fileId } })).resolves.toMatchObject(before);
+      await expect(prisma.fileVersion.count({ where: { fileId } })).resolves.toBe(count);
+    },
+  );
+
+  it('preserves staged bytes when permanent editor storage write fails', async () => {
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    const artifactId = randomUUID();
+    const bytes = Buffer.from('retryable storage failure');
+    const pathname = path.join('/tmp/dochub-editor-test', 'editor', created.session.id, artifactId);
+    await mkdir(path.dirname(pathname), { recursive: true });
+    await writeFile(pathname, bytes);
+    await prisma.editorSession.update({
+      where: { id: created.session.id },
+      data: {
+        stagedArtifactId: artifactId, stagedSizeBytes: BigInt(bytes.length),
+        stagedSha256: createHash('sha256').update(bytes).digest('hex'), stagedAt: new Date(),
+      },
+    });
+    const failingStorage: StorageService = {
+      putStream: async () => { throw new Error('storage unavailable'); },
+      openReadStream: objectStorage.openReadStream.bind(objectStorage),
+      stat: objectStorage.stat.bind(objectStorage),
+      exists: objectStorage.exists.bind(objectStorage),
+      delete: objectStorage.delete.bind(objectStorage),
+    };
+    const failingService = new EditorSessionService(
+      database, authorization, new JwtService(), config,
+      { uploadTempRoot: '/tmp/dochub-editor-test', uploadMaxBytes: 1024 * 1024, root: '/tmp/dochub-editor-storage', driver: 'local' },
+      failingStorage,
+    );
+    const before = await prisma.file.findUniqueOrThrow({ where: { id: fileId } });
+    await expect((failingService as unknown as { finalizeStagedDocument(id: string): Promise<void> }).finalizeStagedDocument(created.session.id)).rejects.toBeTruthy();
+    await expect(prisma.file.findUniqueOrThrow({ where: { id: fileId } })).resolves.toMatchObject(before);
+    await expect(stat(pathname)).resolves.toBeDefined();
+    await expect(prisma.editorSession.findUniqueOrThrow({ where: { id: created.session.id } })).resolves.toMatchObject({ finalizedFileVersionId: null, stagedArtifactId: artifactId });
+  });
+
+  it('removes the permanent orphan and preserves staging when database finalization fails', async () => {
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    const artifactId = randomUUID();
+    const bytes = Buffer.from('database compensation retry');
+    const pathname = path.join('/tmp/dochub-editor-test', 'editor', created.session.id, artifactId);
+    await mkdir(path.dirname(pathname), { recursive: true });
+    await writeFile(pathname, bytes);
+    await prisma.editorSession.update({ where: { id: created.session.id }, data: {
+      stagedArtifactId: artifactId, stagedSizeBytes: BigInt(bytes.length),
+      stagedSha256: createHash('sha256').update(bytes).digest('hex'), stagedAt: new Date(),
+    } });
+    let writtenKey: string | undefined;
+    const recordingStorage: StorageService = {
+      putStream: async (key, stream) => { writtenKey = key; await objectStorage.putStream(key, stream); },
+      openReadStream: objectStorage.openReadStream.bind(objectStorage), stat: objectStorage.stat.bind(objectStorage),
+      exists: objectStorage.exists.bind(objectStorage), delete: objectStorage.delete.bind(objectStorage),
+    };
+    const failingDatabase = {
+      prisma: new Proxy(prisma, { get(target, property, receiver) {
+        if (property === '$transaction') return async () => { throw new Error('transaction unavailable'); };
+        return Reflect.get(target, property, receiver);
+      } }),
+    } as unknown as DatabaseService;
+    const failingService = new EditorSessionService(
+      failingDatabase, authorization, new JwtService(), config,
+      { uploadTempRoot: '/tmp/dochub-editor-test', uploadMaxBytes: 1024 * 1024, root: '/tmp/dochub-editor-storage', driver: 'local' },
+      recordingStorage,
+    );
+    const before = await prisma.file.findUniqueOrThrow({ where: { id: fileId } });
+    await expect((failingService as unknown as { finalizeStagedDocument(id: string): Promise<void> }).finalizeStagedDocument(created.session.id)).rejects.toBeTruthy();
+    expect(writtenKey).toBeTruthy();
+    await expect(objectStorage.exists(writtenKey!)).resolves.toBe(false);
+    await expect(stat(pathname)).resolves.toBeDefined();
+    await expect(prisma.file.findUniqueOrThrow({ where: { id: fileId } })).resolves.toMatchObject(before);
+    await expect(prisma.editorSession.findUniqueOrThrow({ where: { id: created.session.id } })).resolves.toMatchObject({ finalizedFileVersionId: null, finalizedAt: null, stagedArtifactId: artifactId });
+  });
+
+  it.each(['edit-revoked', 'actor-suspended', 'node-trashed'] as const)(
+    'preserves staged bytes when finalization is blocked by %s',
+    async (blocker) => {
+      await prisma.permissionEntry.updateMany({ where: { nodeId, userId: actorId }, data: { role: DocumentRole.EDITOR } });
+      await prisma.user.update({ where: { id: actorId }, data: { status: UserStatus.ACTIVE } });
+      const created = await service.create(actorId, nodeId, 'EDIT');
+      const artifactId = randomUUID();
+      const bytes = Buffer.from(`blocked finalization ${blocker}`);
+      const pathname = path.join('/tmp/dochub-editor-test', 'editor', created.session.id, artifactId);
+      await mkdir(path.dirname(pathname), { recursive: true });
+      await writeFile(pathname, bytes);
+      await prisma.editorSession.update({ where: { id: created.session.id }, data: {
+        stagedArtifactId: artifactId, stagedSizeBytes: BigInt(bytes.length),
+        stagedSha256: createHash('sha256').update(bytes).digest('hex'), stagedAt: new Date(),
+      } });
+      let operationId: string | undefined;
+      if (blocker === 'edit-revoked') {
+        await prisma.permissionEntry.updateMany({ where: { nodeId, userId: actorId }, data: { role: DocumentRole.VIEWER } });
+      } else if (blocker === 'actor-suspended') {
+        await prisma.user.update({ where: { id: actorId }, data: { status: UserStatus.SUSPENDED } });
+      } else {
+        operationId = randomUUID();
+        await prisma.trashOperation.create({ data: { id: operationId, rootNodeId: nodeId, trashedById: actorId, expiresAt: new Date(Date.now() + 60_000) } });
+        await prisma.node.update({ where: { id: nodeId }, data: { trashOperationId: operationId } });
+      }
+      const before = await prisma.file.findUniqueOrThrow({ where: { id: fileId } });
+      const finalizer = service as unknown as { finalizeStagedDocument(id: string): Promise<void> };
+      await expect(finalizer.finalizeStagedDocument(created.session.id)).rejects.toBeTruthy();
+      await expect(prisma.file.findUniqueOrThrow({ where: { id: fileId } })).resolves.toMatchObject(before);
+      await expect(stat(pathname)).resolves.toBeDefined();
+      await expect(prisma.editorSession.findUniqueOrThrow({ where: { id: created.session.id } })).resolves.toMatchObject({ finalizedFileVersionId: null, finalizedAt: null, stagedArtifactId: artifactId });
+      if (operationId) {
+        await expect(prisma.node.findUniqueOrThrow({ where: { id: nodeId } })).resolves.toMatchObject({ trashOperationId: operationId });
+        await prisma.node.update({ where: { id: nodeId }, data: { trashOperationId: null } });
+        await prisma.trashOperation.delete({ where: { id: operationId } });
+      }
+      await prisma.user.update({ where: { id: actorId }, data: { status: UserStatus.ACTIVE } });
+      await prisma.permissionEntry.updateMany({ where: { nodeId, userId: actorId }, data: { role: DocumentRole.EDITOR } });
+    },
+  );
+
+  it('keeps a failed save retryable through status 4 and finalizes its later callback', async () => {
+    await prisma.permissionEntry.updateMany({ where: { nodeId, userId: actorId }, data: { role: DocumentRole.EDITOR } });
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    const callback = new URL((created.config.editorConfig as { callbackUrl: string }).callbackUrl);
+    const capability = callback.searchParams.get('capability')!;
+    const artifactId = randomUUID();
+    const bytes = Buffer.from('status four retry');
+    const pathname = path.join('/tmp/dochub-editor-test', 'editor', created.session.id, artifactId);
+    await mkdir(path.dirname(pathname), { recursive: true });
+    await writeFile(pathname, bytes);
+    await prisma.editorSession.update({ where: { id: created.session.id }, data: {
+      stagedArtifactId: artifactId, stagedSizeBytes: BigInt(bytes.length),
+      stagedSha256: createHash('sha256').update(bytes).digest('hex'), stagedAt: new Date(),
+    } });
+    const failingStorage: StorageService = {
+      putStream: async () => { throw new Error('temporary storage failure'); },
+      openReadStream: objectStorage.openReadStream.bind(objectStorage), stat: objectStorage.stat.bind(objectStorage),
+      exists: objectStorage.exists.bind(objectStorage), delete: objectStorage.delete.bind(objectStorage),
+    };
+    const failingService = new EditorSessionService(
+      database, authorization, new JwtService(), config,
+      { uploadTempRoot: '/tmp/dochub-editor-test', uploadMaxBytes: 1024 * 1024, root: '/tmp/dochub-editor-storage', driver: 'local' },
+      failingStorage,
+    );
+    const token = (status: number) => new JwtService().sign(
+      { status, key: created.config.document.key },
+      { secret: config.jwtSecret, algorithm: 'HS256' },
+    );
+    await expect(failingService.handleCallback(created.session.id, capability, {
+      status: 2, key: created.config.document.key, token: token(2),
+    })).resolves.toEqual({ error: 1 });
+    await expect(stat(pathname)).resolves.toBeDefined();
+    await expect(service.handleCallback(created.session.id, capability, {
+      status: 4, key: created.config.document.key, token: token(4),
+    })).resolves.toEqual({ error: 0 });
+    await expect(prisma.editorSession.findUniqueOrThrow({ where: { id: created.session.id } })).resolves.toMatchObject({ status: 'ACTIVE', finalizedFileVersionId: null });
+    await expect(service.handleCallback(created.session.id, capability, {
+      status: 2, key: created.config.document.key, token: token(2),
+    })).resolves.toEqual({ error: 0 });
+    const finalized = await prisma.editorSession.findUniqueOrThrow({ where: { id: created.session.id }, include: { finalizedFileVersion: true } });
+    expect(finalized).toMatchObject({ status: 'CLOSED', finalizedAt: expect.any(Date) });
+    expect(finalized.finalizedFileVersionId).toBe(finalized.finalizedFileVersion!.id);
+    permanentKeys.push(finalized.finalizedFileVersion!.storageKey);
+    versionIds.push(finalized.finalizedFileVersionId!);
+    await expect(stat(pathname)).rejects.toBeTruthy();
+    const count = await prisma.fileVersion.count({ where: { fileId } });
+    await expect(service.handleCallback(created.session.id, capability, {
+      status: 2, key: created.config.document.key, token: token(2),
+    })).resolves.toEqual({ error: 0 });
+    await expect(prisma.fileVersion.count({ where: { fileId } })).resolves.toBe(count);
+  });
+
+  it('rejects a second editor session that becomes stale after another save', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId }, data: { role: DocumentRole.EDITOR },
+    });
+    const [first, second] = await Promise.all([
+      service.create(actorId, nodeId, 'EDIT'),
+      service.create(actorId, nodeId, 'EDIT'),
+    ]);
+    const stage = async (sessionId: string, contents: string) => {
+      const artifactId = randomUUID();
+      const bytes = Buffer.from(contents);
+      const pathname = path.join('/tmp/dochub-editor-test', 'editor', sessionId, artifactId);
+      await mkdir(path.dirname(pathname), { recursive: true });
+      await writeFile(pathname, bytes);
+      await prisma.editorSession.update({
+        where: { id: sessionId },
+        data: {
+          stagedArtifactId: artifactId, stagedSizeBytes: BigInt(bytes.length),
+          stagedSha256: createHash('sha256').update(bytes).digest('hex'), stagedAt: new Date(),
+        },
+      });
+      return pathname;
+    };
+    await stage(first.session.id, 'first editor wins');
+    const stalePath = await stage(second.session.id, 'stale editor edit');
+    const finalizer = service as unknown as { finalizeStagedDocument(id: string): Promise<void> };
+    await finalizer.finalizeStagedDocument(first.session.id);
+    const winner = await prisma.editorSession.findUniqueOrThrow({
+      where: { id: first.session.id }, include: { finalizedFileVersion: true },
+    });
+    permanentKeys.push(winner.finalizedFileVersion!.storageKey);
+    versionIds.push(winner.finalizedFileVersionId!);
+    await expect(finalizer.finalizeStagedDocument(second.session.id)).rejects.toBeTruthy();
+    const file = await prisma.file.findUniqueOrThrow({ where: { id: fileId } });
+    expect(file.currentVersionId).toBe(winner.finalizedFileVersionId);
+    expect(file.versionCounter).toBe(winner.finalizedFileVersion!.versionNumber);
+    expect(await prisma.fileVersion.count({ where: { fileId } })).toBe(file.versionCounter);
+    await expect(stat(stalePath)).resolves.toBeDefined();
+  });
+
+  it('allows exactly one concurrent upload or editor transition from the same base', async () => {
+    const editor = await service.create(actorId, nodeId, 'EDIT');
+    const artifactId = randomUUID();
+    const editedBytes = Buffer.from('editor race edit');
+    const editorPath = path.join('/tmp/dochub-editor-test', 'editor', editor.session.id, artifactId);
+    await mkdir(path.dirname(editorPath), { recursive: true });
+    await writeFile(editorPath, editedBytes);
+    await prisma.editorSession.update({
+      where: { id: editor.session.id },
+      data: {
+        stagedArtifactId: artifactId, stagedSizeBytes: BigInt(editedBytes.length),
+        stagedSha256: createHash('sha256').update(editedBytes).digest('hex'), stagedAt: new Date(),
+      },
+    });
+    const uploadPath = path.join('/tmp/dochub-editor-test', `upload-${randomUUID()}.docx`);
+    const uploadBytes = Buffer.from('upload race edit');
+    await writeFile(uploadPath, uploadBytes);
+    const finalizer = service as unknown as { finalizeStagedDocument(id: string): Promise<void> };
+    const [editorResult, uploadResult] = await Promise.allSettled([
+      finalizer.finalizeStagedDocument(editor.session.id),
+      files.createVersion(actorId, nodeId, {
+        tempPath: uploadPath, originalFilename: 'race.docx',
+        declaredMimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        sizeBytes: BigInt(uploadBytes.length),
+        sha256: createHash('sha256').update(uploadBytes).digest('hex'), parentId: null,
+      }),
+    ]);
+    expect([editorResult, uploadResult].filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const current = await prisma.file.findUniqueOrThrow({ where: { id: fileId } });
+    const versions = await prisma.fileVersion.findMany({ where: { fileId }, orderBy: { versionNumber: 'asc' } });
+    expect(versions).toHaveLength(current.versionCounter);
+    expect(versions.at(-1)?.id).toBe(current.currentVersionId);
+    expect(new Set(versions.map((version) => version.versionNumber)).size).toBe(versions.length);
+    if (editorResult.status === 'fulfilled') {
+      const row = await prisma.editorSession.findUniqueOrThrow({ where: { id: editor.session.id }, include: { finalizedFileVersion: true } });
+      permanentKeys.push(row.finalizedFileVersion!.storageKey);
+      versionIds.push(row.finalizedFileVersionId!);
+      await expect(stat(uploadPath)).resolves.toBeDefined();
+    } else {
+      await expect(stat(editorPath)).resolves.toBeDefined();
+      const winning = versions.at(-1)!;
+      permanentKeys.push(winning.storageKey);
+      versionIds.push(winning.id);
+    }
+    await rm(uploadPath, { force: true });
   });
 
   it('validates fetch capabilities before a caller can open storage', async () => {

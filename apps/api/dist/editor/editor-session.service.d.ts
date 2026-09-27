@@ -1,4 +1,5 @@
 import { JwtService } from '@nestjs/jwt';
+import type { StorageService } from '@dochub/storage';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { type StorageConfig } from '../storage/storage.config.js';
@@ -9,7 +10,9 @@ export declare class EditorSessionService {
     private readonly jwt;
     private readonly config;
     private readonly storage;
-    constructor(database: DatabaseService, authorization: DocumentAuthorizationService, jwt: JwtService, config: EditorConfig | undefined, storage: StorageConfig);
+    private readonly objectStorage;
+    private readonly logger;
+    constructor(database: DatabaseService, authorization: DocumentAuthorizationService, jwt: JwtService, config: EditorConfig | undefined, storage: StorageConfig, objectStorage: StorageService);
     static documentKey(versionId: string): string;
     create(actorUserId: string, nodeId: string, mode?: 'VIEW' | 'EDIT'): Promise<{
         session: {
@@ -41,6 +44,10 @@ export declare class EditorSessionService {
     private callbackPayload;
     private callbackSession;
     private stageEditedDocument;
+    private finalizeStagedDocument;
+    private commitEditorVersion;
+    private stagedPath;
+    private assertStagedArtifact;
     private signFetchToken;
     private signCallbackToken;
     private requireConfig;
