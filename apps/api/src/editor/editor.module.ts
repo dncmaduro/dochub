@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthorizationModule } from '../authorization/authorization.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { DatabaseModule } from '../database/database.module.js';
+import { CollectionsModule } from '../collections/collections.module.js';
 import { FilesModule } from '../files/files.module.js';
 import { StorageModule } from '../storage/storage.module.js';
 import { EDITOR_CONFIG, loadEditorConfig } from './editor.config.js';
@@ -15,6 +16,7 @@ import { EditorSessionService } from './editor-session.service.js';
     DatabaseModule,
     FilesModule,
     StorageModule,
+    CollectionsModule,
   ],
   controllers: [EditorController],
   providers: [

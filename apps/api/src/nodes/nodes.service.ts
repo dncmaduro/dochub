@@ -18,6 +18,7 @@ import {
 } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
+import { CollectionsService } from '../collections/collections.service.js';
 import {
   CreateFolderDto,
   MoveNodeDto,
@@ -63,6 +64,7 @@ export class NodesService {
   constructor(
     private readonly database: DatabaseService,
     private readonly authorization: DocumentAuthorizationService,
+    private readonly collections?: CollectionsService,
   ) {}
 
   async createFolder(
@@ -169,6 +171,7 @@ export class NodesService {
   ): Promise<NodePage> {
     const parent = await this.requireVisibleNode(actorUserId, parentId);
     this.requireFolder(parent.node);
+    void this.collections?.recordRecent(actorUserId, parentId).catch(() => undefined);
     const groupIds = await this.authorization.findUserGroupIds(actorUserId);
     if (groupIds === null) {
       throw new NotFoundException('Node not found');

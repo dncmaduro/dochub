@@ -14,6 +14,7 @@ import type { Response } from 'express';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
+import { CollectionsService } from '../collections/collections.service.js';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
 import { parseSingleByteRange, type ByteRange } from './byte-range.js';
 
@@ -31,6 +32,7 @@ export class FileReadService {
     private readonly database: DatabaseService,
     private readonly authorization: DocumentAuthorizationService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    private readonly collections?: CollectionsService,
   ) {}
 
   async open(
@@ -60,7 +62,9 @@ export class FileReadService {
         'You do not have the required document capability',
       );
     }
-    return this.openAuthorized(nodeId, rangeHeader, versionId);
+    const binary = await this.openAuthorized(nodeId, rangeHeader, versionId);
+    void this.collections?.recordRecent(actorUserId, nodeId).catch(() => undefined);
+    return binary;
   }
 
   /** Opens a current (or supplied historical) version after a caller has authorized the Node. */

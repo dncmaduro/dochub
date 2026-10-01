@@ -11,6 +11,7 @@ import { TrashModule } from './trash/trash.module.js';
 import { SharingModule } from './sharing/sharing.module.js';
 import { SearchModule } from './search/search.module.js';
 import { EditorModule } from './editor/editor.module.js';
+import { CollectionsModule } from './collections/collections.module.js';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { EditorModule } from './editor/editor.module.js';
     SharingModule,
     SearchModule,
     EditorModule,
+    CollectionsModule,
   ],
   controllers: [HealthController],
 })

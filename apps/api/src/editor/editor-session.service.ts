@@ -33,6 +33,7 @@ import type { StorageService } from '@dochub/storage';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
+import { CollectionsService } from '../collections/collections.service.js';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
 import {
   STORAGE_CONFIG,
@@ -72,6 +73,7 @@ export class EditorSessionService {
     @Inject(EDITOR_CONFIG) private readonly config: EditorConfig | undefined,
     @Inject(STORAGE_CONFIG) private readonly storage: StorageConfig,
     @Inject(STORAGE_SERVICE) private readonly objectStorage: StorageService,
+    private readonly collections?: CollectionsService,
   ) {}
 
   static documentKey(versionId: string): string {
@@ -201,6 +203,7 @@ export class EditorSessionService {
       secret: config.jwtSecret,
       algorithm: 'HS256',
     });
+    void this.collections?.recordRecent(actorUserId, nodeId).catch(() => undefined);
     return {
       session: {
         id: session.id,
