@@ -26,6 +26,10 @@ export interface SearchPage {
   items: SearchItem[];
   nextCursor: string | null;
 }
+export interface CollectionItem extends Node {
+  favoritedAt?: string;
+  lastAccessedAt?: string;
+}
 export interface EditorSession {
   session: { id: string };
   documentServer: { apiUrl: string };
@@ -171,6 +175,24 @@ export class ApiClient {
     const parameters = new URLSearchParams({ q: query });
     if (cursor) parameters.set("cursor", cursor);
     return this.request<SearchPage>(`/search?${parameters}`, { signal });
+  }
+  async listRecent() {
+    return this.request<{ items: CollectionItem[] }>("/recent");
+  }
+  async listFavorites() {
+    return this.request<{ items: CollectionItem[] }>("/favorites");
+  }
+  async addFavorite(nodeId: string) {
+    return this.request<{ nodeId: string; favorited: boolean }>(
+      `/nodes/${nodeId}/favorite`,
+      { method: "POST" },
+    );
+  }
+  async removeFavorite(nodeId: string) {
+    return this.request<{ nodeId: string; favorited: boolean }>(
+      `/nodes/${nodeId}/favorite`,
+      { method: "DELETE" },
+    );
   }
   async createFolder(name: string, parentId: string | null) {
     return this.request<Node>("/folders", {

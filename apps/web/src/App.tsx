@@ -14,6 +14,7 @@ import {
   ApiClient,
   ApiError,
   type Breadcrumb,
+  type CollectionItem,
   type DocumentRole,
   type EditorSession,
   type FileVersion,
@@ -39,6 +40,8 @@ function currentFolderId() {
 function currentRoute() {
   if (window.location.pathname === "/trash") return "trash";
   if (window.location.pathname === "/search") return "search";
+  if (window.location.pathname === "/recent") return "recent";
+  if (window.location.pathname === "/favorites") return "favorites";
   return "drive";
 }
 function currentSearchQuery() {
@@ -54,6 +57,13 @@ function navigate(folderId: string | null) {
 function navigateTrash() {
   if (window.location.pathname !== "/trash") {
     window.history.pushState({}, "", "/trash");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
+function navigateCollection(route: "recent" | "favorites") {
+  const path = `/${route}`;
+  if (window.location.pathname !== path) {
+    window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
@@ -177,6 +187,13 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
       </>
     ),
     search: <circle cx="10.8" cy="10.8" r="6.3" />,
+    recent: (
+      <>
+        <circle cx="12" cy="12" r="8.25" />
+        <path d="M12 7.5v4.8l3.1 1.9" />
+      </>
+    ),
+    star: <path d="m12 3.6 2.55 5.16 5.7.83-4.13 4.03.98 5.68L12 16.62 6.9 19.3l.98-5.68-4.13-4.03 5.7-.83L12 3.6Z" />,
   };
   return (
     <svg
@@ -237,7 +254,7 @@ function App() {
       (session) => {
         if (!active) return;
         if (
-          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search)$/i.test(
+          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search|\/recent|\/favorites)$/i.test(
             window.location.pathname,
           )
         )
@@ -265,6 +282,10 @@ function App() {
       <TrashApp />
     ) : location.route === "search" ? (
       <SearchApp query={location.searchQuery} />
+    ) : location.route === "recent" ? (
+      <CollectionApp kind="recent" />
+    ) : location.route === "favorites" ? (
+      <CollectionApp kind="favorites" />
     ) : (
       <DriveApp systemRole={systemRole!} />
     )
@@ -345,6 +366,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
   const [versionNode, setVersionNode] = useState<Node | null>(null);
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const uploadInput = useRef<HTMLInputElement>(null);
   const load = useCallback(async (id: string | null) => {
     setStatus("loading");
@@ -373,6 +395,16 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [folderId, load]);
+  useEffect(() => {
+    let active = true;
+    void api.listFavorites().then(
+      (page) => active && setFavoriteIds(new Set(page.items.map((item) => item.id))),
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, []);
   async function createFolder(name: string) {
     const node = await api.createFolder(name, folderId);
     setNodes((items) => [...items, node].sort(compareNodes));
@@ -419,6 +451,24 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
     setNodes((items) => items.filter((item) => item.id !== node.id));
     setNotice({ tone: "success", message: `Moved “${node.name}” to Trash.` });
   }
+  async function toggleFavorite(node: Node) {
+    const isFavorite = favoriteIds.has(node.id);
+    try {
+      await (isFavorite ? api.removeFavorite(node.id) : api.addFavorite(node.id));
+      setFavoriteIds((current) => {
+        const next = new Set(current);
+        if (isFavorite) next.delete(node.id);
+        else next.add(node.id);
+        return next;
+      });
+      setNotice({
+        tone: "success",
+        message: isFavorite ? "Removed from favorites." : "Added to favorites.",
+      });
+    } catch (requestError) {
+      setNotice({ tone: "error", message: displayError(requestError) });
+    }
+  }
   const canPlaceAtRoot = systemRole === "ADMIN";
   const canCreateHere = folderId !== null || canPlaceAtRoot;
   return (
@@ -436,6 +486,14 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
           >
             <Icon name="folder" />
             <span>Files</span>
+          </button>
+          <button className="nav-item" type="button" onClick={() => navigateCollection("recent")}>
+            <Icon name="recent" />
+            <span>Recent</span>
+          </button>
+          <button className="nav-item" type="button" onClick={() => navigateCollection("favorites")}>
+            <Icon name="star" />
+            <span>Favorites</span>
           </button>
           <button className="nav-item" type="button" onClick={navigateTrash}>
             <Icon name="trash" />
@@ -511,6 +569,8 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
               onVersions={setVersionNode}
               onOpen={openFile}
               onNotice={setNotice}
+              favoriteIds={favoriteIds}
+              onFavorite={toggleFavorite}
             />
           )}
         </section>
@@ -599,6 +659,9 @@ function FileList({
   onVersions,
   onOpen,
   onNotice,
+  favoriteIds,
+  onFavorite,
+  dateLabel = "Modified",
 }: {
   nodes: Node[];
   onFolder: (id: string) => void;
@@ -608,6 +671,9 @@ function FileList({
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
   onNotice: (notice: Notice) => void;
+  favoriteIds: ReadonlySet<string>;
+  onFavorite: (node: Node) => void;
+  dateLabel?: string;
 }) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   return (
@@ -616,7 +682,7 @@ function FileList({
         <thead>
           <tr>
             <th scope="col">Name</th>
-            <th scope="col">Modified</th>
+            <th scope="col">{dateLabel}</th>
             <th scope="col">
               <span className="visually-hidden">Actions</span>
             </th>
@@ -639,6 +705,8 @@ function FileList({
               onVersions={onVersions}
               onOpen={onOpen}
               onNotice={onNotice}
+              isFavorite={favoriteIds.has(node.id)}
+              onFavorite={onFavorite}
             />
           ))}
         </tbody>
@@ -658,6 +726,8 @@ function FileRow({
   onVersions,
   onOpen,
   onNotice,
+  isFavorite,
+  onFavorite,
 }: {
   node: Node;
   menuOpen: boolean;
@@ -670,6 +740,8 @@ function FileRow({
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
   onNotice: (notice: Notice) => void;
+  isFavorite: boolean;
+  onFavorite: (node: Node) => void;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const isFolder = node.type === "FOLDER";
@@ -711,6 +783,17 @@ function FileRow({
         </button>
         {menuOpen && (
           <RowMenu trigger={trigger} onClose={onCloseMenu}>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onCloseMenu();
+                onFavorite(node);
+              }}
+            >
+              <Icon name="star" size={16} />
+              {isFavorite ? "Remove from favorites" : "Add to favorites"}
+            </button>
             <button
               type="button"
               role="menuitem"
@@ -1270,6 +1353,131 @@ type SearchLocation = {
   truncated: boolean;
 };
 
+function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
+  const [items, setItems] = useState<CollectionItem[]>([]);
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState<Notice>(null);
+  const [editor, setEditor] = useState<EditorSession | null>(null);
+  const [renameNode, setRenameNode] = useState<Node | null>(null);
+  const [shareNode, setShareNode] = useState<Node | null>(null);
+  const [trashNode, setTrashNode] = useState<Node | null>(null);
+  const [versionNode, setVersionNode] = useState<Node | null>(null);
+
+  const load = useCallback(async () => {
+    setStatus("loading");
+    setError("");
+    try {
+      const [page, favorites] = await Promise.all([
+        kind === "recent" ? api.listRecent() : api.listFavorites(),
+        kind === "recent" ? api.listFavorites() : Promise.resolve(null),
+      ]);
+      setItems(page.items);
+      setFavoriteIds(new Set((favorites?.items ?? page.items).map((item) => item.id)));
+      setStatus("ready");
+    } catch (requestError) {
+      setError(displayError(requestError));
+      setStatus("error");
+    }
+  }, [kind]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  async function openFile(node: Node) {
+    try {
+      if (isOfficeFile(node.name) && hasCapability(node, "PREVIEW")) {
+        setEditor(await api.createEditorSession(node.id));
+      } else if (hasCapability(node, "DOWNLOAD")) {
+        await api.download(node);
+      }
+    } catch (requestError) {
+      setNotice({ tone: "error", message: displayError(requestError) });
+    }
+  }
+
+  async function rename(node: Node, name: string) {
+    const updated = await api.renameNode(node.id, name);
+    setItems((current) => current.map((item) => item.id === node.id ? { ...item, ...updated } : item));
+    setNotice({ tone: "success", message: "Name updated." });
+  }
+
+  async function moveToTrash(node: Node) {
+    await api.moveToTrash(node.id);
+    setItems((current) => current.filter((item) => item.id !== node.id));
+    setFavoriteIds((current) => {
+      const next = new Set(current);
+      next.delete(node.id);
+      return next;
+    });
+    setNotice({ tone: "success", message: `Moved “${node.name}” to Trash.` });
+  }
+
+  async function toggleFavorite(node: Node) {
+    const isFavorite = favoriteIds.has(node.id);
+    try {
+      await (isFavorite ? api.removeFavorite(node.id) : api.addFavorite(node.id));
+      setFavoriteIds((current) => {
+        const next = new Set(current);
+        if (isFavorite) next.delete(node.id);
+        else next.add(node.id);
+        return next;
+      });
+      if (isFavorite && kind === "favorites")
+        setItems((current) => current.filter((item) => item.id !== node.id));
+      setNotice({ tone: "success", message: isFavorite ? "Removed from favorites." : "Added to favorites." });
+    } catch (requestError) {
+      setNotice({ tone: "error", message: displayError(requestError) });
+    }
+  }
+
+  const displayItems: Node[] = items.map((item) => ({
+    ...item,
+    updatedAt: kind === "recent" ? item.lastAccessedAt ?? item.updatedAt : item.favoritedAt ?? item.updatedAt,
+  }));
+  const title = kind === "recent" ? "Recent" : "Favorites";
+  const emptyTitle = kind === "recent" ? "No recent files yet" : "No favorites yet";
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand"><Icon name="drive" size={22} /><span>Docs Hub</span></div>
+        <nav aria-label="Main navigation">
+          <button className="nav-item" type="button" onClick={() => navigate(null)}><Icon name="folder" /><span>Files</span></button>
+          <button className={`nav-item${kind === "recent" ? " is-active" : ""}`} type="button" onClick={() => navigateCollection("recent")}><Icon name="recent" /><span>Recent</span></button>
+          <button className={`nav-item${kind === "favorites" ? " is-active" : ""}`} type="button" onClick={() => navigateCollection("favorites")}><Icon name="star" /><span>Favorites</span></button>
+          <button className="nav-item" type="button" onClick={navigateTrash}><Icon name="trash" /><span>Trash</span></button>
+        </nav>
+      </aside>
+      <main className="drive-main">
+        <header className="topbar">
+          <h1 className="page-title">{title}</h1>
+          <SearchInput query="" />
+          <div className="toolbar-actions"><button type="button" className="button" onClick={() => void load()} aria-label={`Refresh ${title}`}><Icon name="refresh" /></button></div>
+        </header>
+        <section className="drive-content" aria-label={title}>
+          {status === "loading" && <LoadingRows label={`Loading ${title.toLowerCase()}`} />}
+          {status === "error" && <CollectionError title={title} message={error} onRetry={() => void load()} />}
+          {status === "ready" && displayItems.length === 0 && <SearchState title={emptyTitle} />}
+          {status === "ready" && displayItems.length > 0 && <FileList nodes={displayItems} onFolder={(id) => navigate(id)} onRename={setRenameNode} onShare={setShareNode} onTrash={setTrashNode} onVersions={setVersionNode} onOpen={openFile} onNotice={setNotice} favoriteIds={favoriteIds} onFavorite={toggleFavorite} dateLabel={kind === "recent" ? "Last opened" : "Added"} />}
+        </section>
+      </main>
+      <Toast notice={notice} onDismiss={() => setNotice(null)} />
+      {renameNode && <NameDialog title="Rename" action="Save" initialValue={renameNode.name} onClose={() => setRenameNode(null)} onSubmit={(name) => rename(renameNode, name)} />}
+      {shareNode && <ShareDialog node={shareNode} onClose={() => setShareNode(null)} onNotice={setNotice} />}
+      {trashNode && <ConfirmDialog title="Move to Trash" message={`Move “${trashNode.name}” to Trash?`} action="Move to Trash" onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
+      {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
+      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} />}
+    </div>
+  );
+}
+
+function CollectionError({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
+  return <div className="content-state"><h1>Couldn’t load {title.toLowerCase()}.</h1><p>{message}</p><button type="button" className="button" onClick={onRetry}>Retry</button></div>;
+}
+
 function SearchApp({ query }: { query: string }) {
   const normalizedQuery = query.trim();
   const [items, setItems] = useState<SearchItem[]>([]);
@@ -1409,6 +1617,8 @@ function SearchApp({ query }: { query: string }) {
         <div className="brand"><Icon name="drive" size={22} /><span>Docs Hub</span></div>
         <nav aria-label="Main navigation">
           <button className="nav-item is-active" type="button" onClick={() => navigate(null)}><Icon name="folder" /><span>Files</span></button>
+          <button className="nav-item" type="button" onClick={() => navigateCollection("recent")}><Icon name="recent" /><span>Recent</span></button>
+          <button className="nav-item" type="button" onClick={() => navigateCollection("favorites")}><Icon name="star" /><span>Favorites</span></button>
           <button className="nav-item" type="button" onClick={navigateTrash}><Icon name="trash" /><span>Trash</span></button>
         </nav>
       </aside>
@@ -1518,6 +1728,8 @@ function TrashApp() {
         <div className="brand"><Icon name="drive" size={22} /><span>Docs Hub</span></div>
         <nav aria-label="Main navigation">
           <button className="nav-item" type="button" onClick={() => navigate(null)}><Icon name="folder" /><span>Files</span></button>
+          <button className="nav-item" type="button" onClick={() => navigateCollection("recent")}><Icon name="recent" /><span>Recent</span></button>
+          <button className="nav-item" type="button" onClick={() => navigateCollection("favorites")}><Icon name="star" /><span>Favorites</span></button>
           <button className="nav-item is-active" type="button" onClick={navigateTrash}><Icon name="trash" /><span>Trash</span></button>
         </nav>
       </aside>
