@@ -20,6 +20,7 @@ import {
   type Node,
   type PermissionEntry,
   type PermissionsState,
+  type SearchItem,
   type SharingPrincipal,
   type SharingState,
   type SystemRole,
@@ -36,7 +37,12 @@ function currentFolderId() {
   );
 }
 function currentRoute() {
-  return window.location.pathname === "/trash" ? "trash" : "drive";
+  if (window.location.pathname === "/trash") return "trash";
+  if (window.location.pathname === "/search") return "search";
+  return "drive";
+}
+function currentSearchQuery() {
+  return new URLSearchParams(window.location.search).get("q") ?? "";
 }
 function navigate(folderId: string | null) {
   const path = folderId ? `/drive/${folderId}` : "/drive";
@@ -48,6 +54,15 @@ function navigate(folderId: string | null) {
 function navigateTrash() {
   if (window.location.pathname !== "/trash") {
     window.history.pushState({}, "", "/trash");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
+function navigateSearch(query: string) {
+  const parameters = new URLSearchParams();
+  if (query) parameters.set("q", query);
+  const path = `/search${parameters.size ? `?${parameters}` : ""}`;
+  if (`${window.location.pathname}${window.location.search}` !== path) {
+    window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
@@ -161,6 +176,7 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
         <path d="M13.8 10.2a4 4 0 0 0-5.6-.1l-2 2a4 4 0 0 0 5.7 5.6l1.1-1.1" />
       </>
     ),
+    search: <circle cx="10.8" cy="10.8" r="6.3" />,
   };
   return (
     <svg
@@ -174,6 +190,7 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
       aria-hidden="true"
     >
       {paths[name]}
+      {name === "search" && <path d="m16 16 4.3 4.3" />}
     </svg>
   );
 }
@@ -210,19 +227,22 @@ function Toast({
 function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [systemRole, setSystemRole] = useState<SystemRole | null>(null);
-  const [route, setRoute] = useState(currentRoute);
+  const [location, setLocation] = useState(() => ({
+    route: currentRoute(),
+    searchQuery: currentSearchQuery(),
+  }));
   useEffect(() => {
     let active = true;
     void api.refresh().then(
       (session) => {
         if (!active) return;
         if (
-          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash)$/i.test(
+          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search)$/i.test(
             window.location.pathname,
           )
         )
           window.history.replaceState({}, "", "/drive");
-        setRoute(currentRoute());
+        setLocation({ route: currentRoute(), searchQuery: currentSearchQuery() });
         setSystemRole(session.systemRole);
         setAuthenticated(true);
       },
@@ -233,15 +253,18 @@ function App() {
     };
   }, []);
   useEffect(() => {
-    const onPopState = () => setRoute(currentRoute());
+    const onPopState = () =>
+      setLocation({ route: currentRoute(), searchQuery: currentSearchQuery() });
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   if (authenticated === null)
     return <div className="auth-state">Checking your session…</div>;
   return authenticated ? (
-    route === "trash" ? (
+    location.route === "trash" ? (
       <TrashApp />
+    ) : location.route === "search" ? (
+      <SearchApp query={location.searchQuery} />
     ) : (
       <DriveApp systemRole={systemRole!} />
     )
@@ -261,6 +284,49 @@ function SignIn() {
         </a>
       </section>
     </main>
+  );
+}
+
+function SearchInput({ query }: { query: string }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [value, setValue] = useState(query);
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    navigateSearch(value.trim());
+  }
+
+  function clearOrBlur() {
+    if (value) {
+      setValue("");
+      navigateSearch("");
+    } else {
+      input.current?.blur();
+    }
+  }
+
+  return (
+    <form className="shell-search" role="search" onSubmit={submit}>
+      <Icon name="search" size={17} />
+      <label className="visually-hidden" htmlFor="drive-search">
+        Search files
+      </label>
+      <input
+        id="drive-search"
+        ref={input}
+        type="search"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            clearOrBlur();
+          }
+        }}
+        placeholder="Search files"
+        maxLength={200}
+      />
+    </form>
   );
 }
 
@@ -380,6 +446,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
       <main className="drive-main">
         <header className="topbar">
           <Breadcrumbs items={breadcrumbs} folderId={folderId} />
+          <SearchInput query="" />
           <div className="toolbar-actions">
             <button
               type="button"
@@ -1197,6 +1264,222 @@ function PermissionRow({
     </div>
   );
 }
+
+type SearchLocation = {
+  items: Breadcrumb[];
+  truncated: boolean;
+};
+
+function SearchApp({ query }: { query: string }) {
+  const normalizedQuery = query.trim();
+  const [items, setItems] = useState<SearchItem[]>([]);
+  const [locations, setLocations] = useState<Record<string, SearchLocation | null>>({});
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error" | "invalid">("idle");
+  const [error, setError] = useState("");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [notice, setNotice] = useState<Notice>(null);
+  const [editor, setEditor] = useState<EditorSession | null>(null);
+  const requestId = useRef(0);
+
+  const loadLocations = useCallback(
+    async (searchItems: SearchItem[], activeRequest: number, signal: AbortSignal) => {
+      const resolved = await Promise.all(
+        searchItems.map(async (item) => {
+          try {
+            return [item.id, await api.breadcrumbPage(item.id, signal)] as const;
+          } catch {
+            return [item.id, null] as const;
+          }
+        }),
+      );
+      if (requestId.current !== activeRequest || signal.aborted) return;
+      setLocations((current) => {
+        const next = { ...current };
+        for (const location of resolved) next[location[0]] = location[1];
+        return next;
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const activeRequest = ++requestId.current;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setItems([]);
+      setLocations({});
+      setNextCursor(null);
+      setLoadingMore(false);
+      setError("");
+      if (!normalizedQuery) {
+        setStatus("idle");
+        return;
+      }
+      if (normalizedQuery.length > 200) {
+        setStatus("invalid");
+        return;
+      }
+      setStatus("loading");
+      void api.search(normalizedQuery, undefined, controller.signal).then(
+        (page) => {
+          if (requestId.current !== activeRequest || controller.signal.aborted) return;
+          setItems(page.items);
+          setNextCursor(page.nextCursor);
+          setStatus("ready");
+          void loadLocations(page.items, activeRequest, controller.signal);
+        },
+        (requestError: unknown) => {
+          if (requestId.current !== activeRequest || controller.signal.aborted) return;
+          setError(displayError(requestError));
+          setStatus("error");
+        },
+      );
+    }, 0);
+    return () => {
+      if (requestId.current === activeRequest) requestId.current += 1;
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [loadLocations, normalizedQuery]);
+
+  async function retry() {
+    navigateSearch(normalizedQuery);
+    const activeRequest = requestId.current;
+    const controller = new AbortController();
+    setStatus("loading");
+    setError("");
+    try {
+      const page = await api.search(normalizedQuery, undefined, controller.signal);
+      if (requestId.current !== activeRequest) return;
+      setItems(page.items);
+      setNextCursor(page.nextCursor);
+      setLocations({});
+      setStatus("ready");
+      void loadLocations(page.items, activeRequest, controller.signal);
+    } catch (requestError) {
+      if (requestId.current !== activeRequest) return;
+      setError(displayError(requestError));
+      setStatus("error");
+    }
+  }
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    const activeRequest = requestId.current;
+    const controller = new AbortController();
+    setLoadingMore(true);
+    try {
+      const page = await api.search(normalizedQuery, nextCursor, controller.signal);
+      if (requestId.current !== activeRequest) return;
+      const newItems = page.items.filter(
+        (item) => !items.some((current) => current.id === item.id),
+      );
+      setItems((current) => [...current, ...newItems]);
+      setNextCursor(page.nextCursor);
+      void loadLocations(newItems, activeRequest, controller.signal);
+    } catch (requestError) {
+      if (requestId.current !== activeRequest) return;
+      setNotice({ tone: "error", message: displayError(requestError) });
+    } finally {
+      if (requestId.current === activeRequest) setLoadingMore(false);
+    }
+  }
+
+  async function openItem(item: SearchItem) {
+    if (item.type === "FOLDER") {
+      navigate(item.id);
+      return;
+    }
+    try {
+      const node = await api.getNode(item.id);
+      if (isOfficeFile(node.name) && hasCapability(node, "PREVIEW")) {
+        setEditor(await api.createEditorSession(node.id));
+      } else if (hasCapability(node, "DOWNLOAD")) {
+        await api.downloadNode(node.id, node.name);
+      }
+    } catch (requestError) {
+      setNotice({ tone: "error", message: displayError(requestError) });
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand"><Icon name="drive" size={22} /><span>Docs Hub</span></div>
+        <nav aria-label="Main navigation">
+          <button className="nav-item is-active" type="button" onClick={() => navigate(null)}><Icon name="folder" /><span>Files</span></button>
+          <button className="nav-item" type="button" onClick={navigateTrash}><Icon name="trash" /><span>Trash</span></button>
+        </nav>
+      </aside>
+      <main className="drive-main">
+        <header className="topbar">
+          <h1 className="page-title">Search</h1>
+          <SearchInput key={query} query={query} />
+          <div className="toolbar-actions" />
+        </header>
+        <section className="drive-content" aria-label="Search results">
+          {status === "idle" && <SearchState title="Search files" message="Enter a file or folder name, or words from an indexed document." />}
+          {status === "invalid" && <SearchState title="Search query is too long" message="Search queries can be up to 200 characters." />}
+          {status === "loading" && <LoadingRows label="Loading search results" />}
+          {status === "error" && <SearchError message={error} onRetry={() => void retry()} />}
+          {status === "ready" && items.length === 0 && <SearchState title={`No files found for “${normalizedQuery}”`} />}
+          {status === "ready" && items.length > 0 && (
+            <>
+              <SearchResultsTable items={items} locations={locations} onOpen={openItem} />
+              {nextCursor && <div className="search-more"><button type="button" className="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? "Loading…" : "Load more"}</button></div>}
+            </>
+          )}
+        </section>
+      </main>
+      <Toast notice={notice} onDismiss={() => setNotice(null)} />
+      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} />}
+    </div>
+  );
+}
+
+function searchLocationLabel(location: SearchLocation | null | undefined) {
+  if (location === undefined) return "Loading location…";
+  if (location === null) return "Location unavailable";
+  const parents = location.items.slice(0, -1).map((item) => item.name);
+  if (!parents.length) return location.truncated ? "Shared location" : "Files";
+  return `${location.truncated ? "… / " : ""}${parents.join(" / ")}`;
+}
+
+function SearchResultsTable({
+  items,
+  locations,
+  onOpen,
+}: {
+  items: SearchItem[];
+  locations: Record<string, SearchLocation | null>;
+  onOpen: (item: SearchItem) => void;
+}) {
+  return (
+    <div className="file-table-wrap">
+      <table className="file-table search-table">
+        <thead><tr><th scope="col">Name</th><th scope="col">Location</th><th scope="col">Type</th><th scope="col">Modified</th></tr></thead>
+        <tbody>{items.map((item) => (
+          <tr key={item.id}>
+            <td><button type="button" className="file-name" onClick={() => void onOpen(item)}><Icon name={item.type === "FOLDER" ? "folder" : "file"} size={19} /><span>{item.name}</span></button></td>
+            <td className="search-location" title={searchLocationLabel(locations[item.id])}>{searchLocationLabel(locations[item.id])}</td>
+            <td className="search-type">{item.type === "FOLDER" ? "Folder" : "File"}</td>
+            <td className="modified">{formatDate(item.updatedAt)}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function SearchState({ title, message }: { title: string; message?: string }) {
+  return <div className="content-state search-state"><h1>{title}</h1>{message && <p>{message}</p>}</div>;
+}
+
+function SearchError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div className="content-state search-state"><h1>Couldn’t search files.</h1><p>{message}</p><button type="button" className="button" onClick={onRetry}>Retry</button></div>;
+}
+
 function TrashApp() {
   const [items, setItems] = useState<TrashItem[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -1241,6 +1524,7 @@ function TrashApp() {
       <main className="drive-main">
         <header className="topbar">
           <h1 className="page-title">Trash</h1>
+          <SearchInput query="" />
           <div className="toolbar-actions"><button type="button" className="button" onClick={() => void load()} aria-label="Refresh Trash"><Icon name="refresh" /></button></div>
         </header>
         <section className="drive-content" aria-label="Trash">
@@ -1581,9 +1865,9 @@ function ErrorState({
     </div>
   );
 }
-function LoadingRows() {
+function LoadingRows({ label = "Loading files" }: { label?: string }) {
   return (
-    <div className="loading-list" aria-label="Loading files">
+    <div className="loading-list" aria-label={label}>
       <span />
       <span />
       <span />

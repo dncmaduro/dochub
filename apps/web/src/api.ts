@@ -12,6 +12,20 @@ export interface Breadcrumb {
   name: string;
   type: "FILE" | "FOLDER";
 }
+export interface BreadcrumbPage {
+  items: Breadcrumb[];
+  truncated: boolean;
+}
+export interface SearchItem {
+  id: string;
+  type: "FILE" | "FOLDER";
+  name: string;
+  updatedAt: string;
+}
+export interface SearchPage {
+  items: SearchItem[];
+  nextCursor: string | null;
+}
 export interface EditorSession {
   session: { id: string };
   documentServer: { apiUrl: string };
@@ -148,15 +162,24 @@ export class ApiClient {
     );
   }
   async breadcrumb(nodeId: string) {
-    return (
-      await this.request<{ items: Breadcrumb[] }>(`/nodes/${nodeId}/breadcrumb`)
-    ).items;
+    return (await this.breadcrumbPage(nodeId)).items;
+  }
+  async breadcrumbPage(nodeId: string, signal?: AbortSignal) {
+    return this.request<BreadcrumbPage>(`/nodes/${nodeId}/breadcrumb`, { signal });
+  }
+  async search(query: string, cursor?: string, signal?: AbortSignal) {
+    const parameters = new URLSearchParams({ q: query });
+    if (cursor) parameters.set("cursor", cursor);
+    return this.request<SearchPage>(`/search?${parameters}`, { signal });
   }
   async createFolder(name: string, parentId: string | null) {
     return this.request<Node>("/folders", {
       method: "POST",
       body: JSON.stringify({ name, parentId }),
     });
+  }
+  async getNode(nodeId: string) {
+    return this.request<Node>(`/nodes/${nodeId}`);
   }
   async renameNode(nodeId: string, name: string) {
     return this.request<Node>(`/nodes/${nodeId}`, {
@@ -283,6 +306,10 @@ export class ApiClient {
 
   async download(node: Node) {
     return this.downloadPath(`/nodes/${node.id}/download`, node.name);
+  }
+
+  async downloadNode(nodeId: string, name: string) {
+    return this.downloadPath(`/nodes/${nodeId}/download`, name);
   }
 
   async downloadVersion(node: Node, version: FileVersion) {

@@ -71,6 +71,47 @@
   background: var(--surface);
   border-bottom: 1px solid var(--border-subtle);
 }
+.shell-search {
+  display: flex;
+  flex: 1 1 280px;
+  align-items: center;
+  gap: 7px;
+  min-width: 180px;
+  max-width: 460px;
+  height: 34px;
+  margin-inline: auto;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f8f9fa;
+  color: var(--muted);
+}
+.shell-search:focus-within {
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.shell-search input {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.shell-search input::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+.page-title {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 500;
+}
 .breadcrumbs {
   display: flex;
   min-width: 0;
@@ -175,6 +216,15 @@
 .file-table th:last-child {
   width: 52px;
 }
+.search-table th:nth-child(2) {
+  width: 30%;
+}
+.search-table th:nth-child(3) {
+  width: 90px;
+}
+.search-table th:nth-child(4) {
+  width: 138px;
+}
 .file-table td {
   height: 48px;
   padding: 0 16px;
@@ -235,6 +285,21 @@
 .modified {
   color: var(--muted);
   white-space: nowrap;
+}
+.search-location,
+.search-type {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 14px;
+}
+.search-state {
+  padding-block: 72px;
 }
 .row-actions {
   position: relative;
@@ -941,6 +1006,15 @@ summary:focus-visible {
     flex-direction: column;
     padding: 10px 14px;
   }
+  .shell-search {
+    order: 3;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+  }
+  .page-title {
+    flex: none;
+  }
   .toolbar-actions {
     width: 100%;
   }
@@ -956,6 +1030,10 @@ summary:focus-visible {
   }
   .file-table th:nth-child(2),
   .file-table td:nth-child(2) {
+    display: none;
+  }
+  .search-table th:nth-child(3),
+  .search-table td:nth-child(3) {
     display: none;
   }
   .trash-table th:nth-child(3),
