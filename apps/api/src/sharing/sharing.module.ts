@@ -7,6 +7,7 @@ import { FilesModule } from '../files/files.module.js';
 import { ShareController } from './share.controller.js';
 import { ShareResolutionService } from './share-resolution.service.js';
 import { SharingController } from './sharing.controller.js';
+import { SharingDirectoryController } from './sharing-directory.controller.js';
 import { SharingService } from './sharing.service.js';
 
 @Module({
@@ -17,7 +18,7 @@ import { SharingService } from './sharing.service.js';
     DatabaseModule,
     FilesModule,
   ],
-  controllers: [SharingController, ShareController],
+  controllers: [SharingController, SharingDirectoryController, ShareController],
   providers: [SharingService, ShareResolutionService],
 })
 export class SharingModule {}

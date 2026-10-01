@@ -24,6 +24,8 @@ describeWithDatabase('SharingService integration', () => {
   const viewerId = randomUUID();
   const invisibleId = randomUUID();
   const adminId = randomUUID();
+  const suspendedId = randomUUID();
+  const directoryGroupId = randomUUID();
   const nodeIds = new Set<string>();
   const operationIds = new Set<string>();
   const database = { prisma } as unknown as DatabaseService;
@@ -87,7 +89,22 @@ describeWithDatabase('SharingService integration', () => {
           status: UserStatus.ACTIVE,
           systemRole: SystemRole.ADMIN,
         },
+        {
+          id: suspendedId,
+          email: `sharing-suspended-${suffix}@example.test`,
+          normalizedEmail: `sharing-suspended-${suffix}@example.test`,
+          displayName: 'Suspended directory user',
+          status: UserStatus.SUSPENDED,
+        },
       ],
+    });
+    await prisma.group.create({
+      data: {
+        id: directoryGroupId,
+        name: `Directory group ${suffix}`,
+        normalizedName: `directory group ${suffix}`,
+        createdById: ownerId,
+      },
     });
     nodeId = await node('sharing-node');
     trashedNodeId = await node('sharing-trashed');
@@ -121,10 +138,47 @@ describeWithDatabase('SharingService integration', () => {
       where: { id: { in: [...operationIds] } },
     });
     await prisma.node.deleteMany({ where: { id: { in: ids } } });
+    await prisma.group.deleteMany({ where: { id: directoryGroupId } });
     await prisma.user.deleteMany({
-      where: { id: { in: [ownerId, viewerId, invisibleId, adminId] } },
+      where: {
+        id: { in: [ownerId, viewerId, invisibleId, adminId, suspendedId] },
+      },
     });
     await prisma.$disconnect();
+  });
+
+  it('finds minimal active directory principals without granting document access', async () => {
+    const principals = await sharing.findPrincipals(
+      ownerId,
+      `directory group ${suffix}`,
+    );
+    expect(principals.items).toEqual([
+      {
+        type: 'GROUP',
+        id: directoryGroupId,
+        name: `Directory group ${suffix}`,
+      },
+    ]);
+    const users = await sharing.findPrincipals(ownerId, 'sharing owner');
+    expect(users.items).toContainEqual({
+      type: 'USER',
+      id: ownerId,
+      displayName: 'Sharing owner',
+      email: `sharing-owner-${suffix}@example.test`,
+    });
+    expect(JSON.stringify([...principals.items, ...users.items])).not.toContain(
+      'systemRole',
+    );
+    expect(JSON.stringify(principals.items)).not.toContain('description');
+    await expect(
+      sharing.findPrincipals(ownerId, `sharing-suspended-${suffix}`),
+    ).resolves.toEqual({ items: [] });
+    await expect(sharing.findPrincipals(ownerId, 'sharing')).resolves.toEqual(
+      expect.objectContaining({ items: expect.any(Array) }),
+    );
+    await expect(sharing.getState(viewerId, nodeId)).resolves.toMatchObject({
+      canManageSharing: false,
+    });
   });
 
   it('reports safe state and enforces normal VIEW/SHARE authorization', async () => {

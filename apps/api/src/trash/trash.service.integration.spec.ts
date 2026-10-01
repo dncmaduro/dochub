@@ -235,6 +235,67 @@ describeWithDatabase('TrashService integration', () => {
       status: 404,
     });
   });
+  it('lists only actionable trash roots and removes restored or purged operations', async () => {
+    const root = await node(null, 'listed-root');
+    const child = await node(root.id, 'listed-child');
+    await prisma.permissionEntry.createMany({
+      data: [
+        { nodeId: root.id, userId: actorId, role: DocumentRole.OWNER },
+        { nodeId: root.id, userId: viewerId, role: DocumentRole.VIEWER },
+        { nodeId: root.id, userId: editorId, role: DocumentRole.EDITOR },
+      ],
+    });
+    const operation = await service.trash(actorId, root.id);
+
+    const ownerItems = (await service.list(actorId)).items.filter(
+      (item) => item.trashOperationId === operation.operation.id,
+    );
+    expect(ownerItems).toEqual([
+      expect.objectContaining({
+        trashOperationId: operation.operation.id,
+        rootNodeId: root.id,
+        name: root.name,
+        canRestore: true,
+        canPurge: true,
+      }),
+    ]);
+    expect(ownerItems.map((item) => item.rootNodeId)).not.toContain(child.id);
+    await expect(service.list(viewerId)).resolves.toMatchObject({ items: [] });
+    expect(
+      (await service.list(editorId)).items.some(
+        (item) => item.trashOperationId === operation.operation.id,
+      ),
+    ).toBe(true);
+    await expect(service.list(invisibleId)).resolves.toMatchObject({
+      items: [],
+    });
+
+    await service.restore(actorId, operation.operation.id);
+    expect(
+      (await service.list(actorId)).items.some(
+        (item) => item.trashOperationId === operation.operation.id,
+      ),
+    ).toBe(false);
+
+    const purgedRoot = await node(null, 'listed-purged-root');
+    await prisma.permissionEntry.create({
+      data: {
+        nodeId: purgedRoot.id,
+        userId: actorId,
+        role: DocumentRole.OWNER,
+      },
+    });
+    const purged = await service.trash(actorId, purgedRoot.id);
+    await prisma.trashOperation.update({
+      where: { id: purged.operation.id },
+      data: { status: TrashOperationStatus.PURGED, purgedAt: new Date() },
+    });
+    expect(
+      (await service.list(actorId)).items.some(
+        (item) => item.trashOperationId === purged.operation.id,
+      ),
+    ).toBe(false);
+  });
   it('keeps an older nested trash operation and counts only newly tagged nodes', async () => {
     const a = await node(null, 'a'),
       b = await node(a.id, 'b'),

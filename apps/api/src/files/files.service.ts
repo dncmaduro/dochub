@@ -68,6 +68,22 @@ export interface UploadResponse {
   };
 }
 
+export interface FileVersionListResponse {
+  nodeId: string;
+  items: Array<{
+    id: string;
+    versionNumber: number;
+    source: FileVersionSource;
+    sourceVersionId: string | null;
+    originalFilename: string;
+    mimeType: string;
+    extension: string | null;
+    sizeBytes: string;
+    createdAt: Date;
+    isCurrent: boolean;
+  }>;
+}
+
 @Injectable()
 export class FilesService {
   private readonly logger = new Logger(FilesService.name);
@@ -286,6 +302,156 @@ export class FilesService {
     }
   }
 
+  async listVersions(
+    actorUserId: string,
+    nodeId: string,
+  ): Promise<FileVersionListResponse> {
+    this.assertUuid(nodeId, 'Invalid node ID');
+    const target = await this.requireVersionedFile(actorUserId, nodeId);
+    const versions = await this.database.prisma.fileVersion.findMany({
+      where: { fileId: target.fileId },
+      select: {
+        id: true,
+        versionNumber: true,
+        source: true,
+        sourceVersionId: true,
+        originalFilename: true,
+        mimeType: true,
+        extension: true,
+        sizeBytes: true,
+        createdAt: true,
+      },
+      orderBy: [{ versionNumber: 'desc' }, { id: 'desc' }],
+    });
+    return {
+      nodeId,
+      items: versions.map((version) => ({
+        ...version,
+        sizeBytes: version.sizeBytes.toString(),
+        isCurrent: version.id === target.currentVersionId,
+      })),
+    };
+  }
+
+  async restoreVersion(
+    actorUserId: string,
+    nodeId: string,
+    sourceVersionId: string,
+  ): Promise<UploadResponse> {
+    this.assertUuid(nodeId, 'Invalid node ID');
+    this.assertUuid(sourceVersionId, 'Invalid version ID');
+    const earlyTarget = await this.requireVersionedFile(actorUserId, nodeId);
+    this.requireCapability(
+      earlyTarget.capabilities,
+      DocumentCapability.RESTORE_VERSION,
+    );
+    const source = await this.database.prisma.fileVersion.findFirst({
+      where: { id: sourceVersionId, fileId: earlyTarget.fileId },
+      select: {
+        id: true,
+        storageKey: true,
+        originalFilename: true,
+        mimeType: true,
+        extension: true,
+        sizeBytes: true,
+        sha256: true,
+      },
+    });
+    if (!source) throw new NotFoundException('File version not found');
+
+    const versionId = randomUUID();
+    const storageKey = this.storageKey(earlyTarget.fileId, versionId);
+    const sourceStream = await this.storage.openReadStream(source.storageKey);
+    await this.storage.putStream(storageKey, sourceStream);
+    try {
+      const physical = await this.storage.stat(storageKey);
+      if (physical.sizeBytes !== source.sizeBytes) {
+        throw new ConflictException('Restored version bytes are unavailable');
+      }
+      return await this.database.prisma.$transaction(async (transaction) => {
+        const target = await this.requireVersionedFile(
+          actorUserId,
+          nodeId,
+          transaction,
+        );
+        this.requireCapability(
+          target.capabilities,
+          DocumentCapability.RESTORE_VERSION,
+        );
+        const lockedFiles = await transaction.$queryRaw<
+          Array<{ id: string; versionCounter: number }>
+        >`SELECT "id", "versionCounter" FROM "File"
+          WHERE "id" = ${target.fileId}::uuid
+            AND "nodeId" = ${nodeId}::uuid
+          FOR UPDATE`;
+        const lockedFile = lockedFiles[0];
+        if (!lockedFile) {
+          throw new ConflictException('File metadata is unavailable');
+        }
+        const lockedSource = await transaction.fileVersion.findFirst({
+          where: { id: sourceVersionId, fileId: lockedFile.id },
+          select: {
+            originalFilename: true,
+            mimeType: true,
+            extension: true,
+            sizeBytes: true,
+            sha256: true,
+          },
+        });
+        if (!lockedSource) throw new NotFoundException('File version not found');
+        const versionNumber = lockedFile.versionCounter + 1;
+        const version = await transaction.fileVersion.create({
+          data: {
+            id: versionId,
+            fileId: lockedFile.id,
+            versionNumber,
+            storageKey,
+            originalFilename: lockedSource.originalFilename,
+            mimeType: lockedSource.mimeType,
+            extension: lockedSource.extension,
+            sizeBytes: lockedSource.sizeBytes,
+            sha256: lockedSource.sha256,
+            source: FileVersionSource.RESTORE,
+            sourceVersionId,
+            createdById: actorUserId,
+          },
+        });
+        await transaction.file.update({
+          where: { id: lockedFile.id },
+          data: { versionCounter: versionNumber, currentVersionId: versionId },
+        });
+        await this.createTextExtractionTask(
+          transaction,
+          versionId,
+          lockedSource.mimeType,
+        );
+        await this.writeAudit(transaction, {
+          actorUserId,
+          action: 'FILE_VERSION_RESTORED',
+          resourceType: 'FILE_VERSION',
+          resourceId: versionId,
+          metadata: {
+            fileId: lockedFile.id,
+            nodeId,
+            versionNumber,
+            sourceVersionId,
+            mimeType: lockedSource.mimeType,
+            sizeBytes: lockedSource.sizeBytes.toString(),
+          },
+        });
+        return this.response(
+          target,
+          { id: lockedFile.id, currentVersionId: versionId },
+          version,
+          target.capabilities,
+        );
+      });
+    } catch (error) {
+      await this.deleteOrphan(storageKey);
+      throw error;
+    }
+  }
+
   private async assertInitialDestination(
     actorUserId: string,
     parentId: string | null,
@@ -332,6 +498,21 @@ export class FilesService {
       throw new ConflictException('File metadata is unavailable');
     }
     this.requireCapability(node.capabilities, DocumentCapability.EDIT);
+    return node as VisibleNode & { fileId: string };
+  }
+
+  private async requireVersionedFile(
+    actorUserId: string,
+    nodeId: string,
+    client: DocumentAuthorizationClient = this.database.prisma,
+  ): Promise<VisibleNode & { fileId: string }> {
+    const node = await this.requireVisibleNode(actorUserId, nodeId, client, true);
+    if (node.type !== NodeType.FILE) {
+      throw new ConflictException('A folder has no file versions');
+    }
+    if (!node.fileId) {
+      throw new ConflictException('File metadata is unavailable');
+    }
     return node as VisibleNode & { fileId: string };
   }
 
@@ -433,7 +614,7 @@ export class FilesService {
     transaction: Prisma.TransactionClient,
     input: {
       actorUserId: string;
-      action: 'FILE_UPLOADED' | 'FILE_VERSION_CREATED';
+      action: 'FILE_UPLOADED' | 'FILE_VERSION_CREATED' | 'FILE_VERSION_RESTORED';
       resourceType: 'NODE' | 'FILE_VERSION';
       resourceId: string;
       metadata: Prisma.InputJsonValue;

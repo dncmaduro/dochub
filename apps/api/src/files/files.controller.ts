@@ -57,6 +57,23 @@ export class FilesController {
     }
   }
 
+  @Get('nodes/:nodeId/versions')
+  listVersions(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('nodeId') nodeId: string,
+  ) {
+    return this.files.listVersions(auth.userId, nodeId);
+  }
+
+  @Post('nodes/:nodeId/versions/:versionId/restore')
+  restoreVersion(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('nodeId') nodeId: string,
+    @Param('versionId') versionId: string,
+  ) {
+    return this.files.restoreVersion(auth.userId, nodeId, versionId);
+  }
+
   @Get('nodes/:nodeId/content')
   async currentContent(
     @CurrentAuth() auth: AuthPrincipal,

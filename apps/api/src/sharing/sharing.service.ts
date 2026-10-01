@@ -7,7 +7,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { AuditActorType, AuditResult, Prisma } from '@dochub/database';
+import { AuditActorType, AuditResult, Prisma, UserStatus } from '@dochub/database';
 import { AUTH_CONFIG, type AuthConfig } from '../auth/auth.config.js';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
@@ -30,6 +30,43 @@ export class SharingService {
     private readonly authorization: DocumentAuthorizationService,
     @Inject(AUTH_CONFIG) private readonly config: AuthConfig,
   ) {}
+
+  async findPrincipals(actorId: string, query: string) {
+    // The access-token guard has already established an active authenticated
+    // actor. The lookup itself grants nothing; permission mutation still uses
+    // the node's OWNER-level authorization in PermissionsService.
+    void actorId;
+    const [users, groups] = await Promise.all([
+      this.database.prisma.user.findMany({
+        where: {
+          status: UserStatus.ACTIVE,
+          OR: [
+            { displayName: { contains: query, mode: 'insensitive' } },
+            { email: { contains: query, mode: 'insensitive' } },
+          ],
+        },
+        select: { id: true, displayName: true, email: true },
+        orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
+        take: 10,
+      }),
+      this.database.prisma.group.findMany({
+        where: { name: { contains: query, mode: 'insensitive' } },
+        select: { id: true, name: true },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        take: 10,
+      }),
+    ]);
+    return {
+      items: [
+        ...users.map((user) => ({ type: 'USER' as const, ...user })),
+        ...groups.map((group) => ({ type: 'GROUP' as const, ...group })),
+      ].sort((left, right) => {
+        const leftName = left.type === 'USER' ? left.displayName : left.name;
+        const rightName = right.type === 'USER' ? right.displayName : right.name;
+        return leftName.localeCompare(rightName) || left.id.localeCompare(right.id);
+      }),
+    };
+  }
 
   async getState(actorId: string, nodeId: string): Promise<SharingState> {
     return this.withSerializableRetry(async (tx) => {

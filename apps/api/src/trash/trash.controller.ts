@@ -1,6 +1,7 @@
 import {
   Controller,
   Delete,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
@@ -15,6 +16,11 @@ import { TrashService } from './trash.service.js';
 @UseGuards(AccessTokenGuard)
 export class TrashController {
   constructor(private readonly trash: TrashService) {}
+
+  @Get('trash')
+  list(@CurrentAuth() auth: AuthPrincipal) {
+    return this.trash.list(auth.userId);
+  }
 
   @Delete('nodes/:nodeId')
   moveToTrash(

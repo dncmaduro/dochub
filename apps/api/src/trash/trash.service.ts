@@ -30,6 +30,58 @@ export class TrashService {
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     @Inject(TRASH_CONFIG) private readonly config: TrashConfig,
   ) {}
+
+  async list(actorId: string) {
+    const operations = await this.database.prisma.trashOperation.findMany({
+      where: { status: TrashOperationStatus.ACTIVE, rootNodeId: { not: null } },
+      select: {
+        id: true,
+        rootNodeId: true,
+        trashedAt: true,
+        expiresAt: true,
+        rootNode: {
+          select: { id: true, name: true, type: true, trashOperationId: true },
+        },
+      },
+      orderBy: [{ trashedAt: 'desc' }, { id: 'desc' }],
+    });
+    const items = [] as Array<{
+      trashOperationId: string;
+      rootNodeId: string;
+      name: string;
+      type: NodeType;
+      trashedAt: Date;
+      expiresAt: Date;
+      canRestore: boolean;
+      canPurge: boolean;
+    }>;
+    for (const operation of operations) {
+      const root = operation.rootNode;
+      if (!root || root.trashOperationId !== operation.id) continue;
+      const capabilities = await this.authorization.resolveTrashCapabilities(
+        actorId,
+        root.id,
+      );
+      if (
+        !capabilities.capabilities.has(DocumentCapability.VIEW) ||
+        !capabilities.capabilities.has(DocumentCapability.DELETE)
+      ) {
+        continue;
+      }
+      items.push({
+        trashOperationId: operation.id,
+        rootNodeId: root.id,
+        name: root.name,
+        type: root.type,
+        trashedAt: operation.trashedAt,
+        expiresAt: operation.expiresAt,
+        canRestore: true,
+        canPurge: true,
+      });
+    }
+    return { items };
+  }
+
   async trash(actorId: string, nodeId: string) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
