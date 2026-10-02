@@ -9,6 +9,13 @@ services:
       POSTGRES_PASSWORD: dochub_dev
     ports:
       - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dochub -d dochub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine

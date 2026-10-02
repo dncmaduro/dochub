@@ -1,6 +1,7 @@
 import {
   type ChangeEvent,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -241,6 +242,48 @@ function Toast({
   );
 }
 
+function useDialogFocus() {
+  const dialog = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusable = () =>
+      Array.from(
+        dialog.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [href], [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((element) => element.offsetParent !== null);
+    const initial = dialog.current?.querySelector<HTMLElement>(
+      "[data-dialog-initial-focus]",
+    );
+    (initial ?? focusable()[0])?.focus();
+
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", trapFocus);
+    return () => {
+      document.removeEventListener("keydown", trapFocus);
+      opener?.focus();
+    };
+  }, []);
+
+  return dialog;
+}
+
 function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [systemRole, setSystemRole] = useState<SystemRole | null>(null);
@@ -348,6 +391,53 @@ function SearchInput({ query }: { query: string }) {
         maxLength={200}
       />
     </form>
+  );
+}
+
+type SidebarRoute = "drive" | "recent" | "favorites" | "trash" | null;
+
+function Sidebar({ active }: { active: SidebarRoute }) {
+  return (
+    <aside className="sidebar">
+      <div className="brand">
+        <Icon name="drive" size={22} />
+        <span>Docs Hub</span>
+      </div>
+      <nav aria-label="Main navigation">
+        <button
+          className={`nav-item${active === "drive" ? " is-active" : ""}`}
+          type="button"
+          onClick={() => navigate(null)}
+        >
+          <Icon name="folder" />
+          <span>Files</span>
+        </button>
+        <button
+          className={`nav-item${active === "recent" ? " is-active" : ""}`}
+          type="button"
+          onClick={() => navigateCollection("recent")}
+        >
+          <Icon name="recent" />
+          <span>Recent</span>
+        </button>
+        <button
+          className={`nav-item${active === "favorites" ? " is-active" : ""}`}
+          type="button"
+          onClick={() => navigateCollection("favorites")}
+        >
+          <Icon name="star" />
+          <span>Favorites</span>
+        </button>
+        <button
+          className={`nav-item${active === "trash" ? " is-active" : ""}`}
+          type="button"
+          onClick={navigateTrash}
+        >
+          <Icon name="trash" />
+          <span>Trash</span>
+        </button>
+      </nav>
+    </aside>
   );
 }
 
@@ -473,34 +563,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   const canCreateHere = folderId !== null || canPlaceAtRoot;
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <Icon name="drive" size={22} />
-          <span>Docs Hub</span>
-        </div>
-        <nav aria-label="Main navigation">
-          <button
-            className="nav-item is-active"
-            type="button"
-            onClick={() => navigate(null)}
-          >
-            <Icon name="folder" />
-            <span>Files</span>
-          </button>
-          <button className="nav-item" type="button" onClick={() => navigateCollection("recent")}>
-            <Icon name="recent" />
-            <span>Recent</span>
-          </button>
-          <button className="nav-item" type="button" onClick={() => navigateCollection("favorites")}>
-            <Icon name="star" />
-            <span>Favorites</span>
-          </button>
-          <button className="nav-item" type="button" onClick={navigateTrash}>
-            <Icon name="trash" />
-            <span>Trash</span>
-          </button>
-        </nav>
-      </aside>
+      <Sidebar active="drive" />
       <main className="drive-main">
         <header className="topbar">
           <Breadcrumbs items={breadcrumbs} folderId={folderId} />
@@ -508,7 +571,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
           <div className="toolbar-actions">
             <button
               type="button"
-              className="button"
+              className="icon-button"
               onClick={() => void load(folderId)}
               aria-label="Refresh folder"
             >
@@ -894,6 +957,27 @@ function RowMenu({
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ top: -9999, left: -9999 });
+  function moveMenuFocus(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const items = Array.from(
+      menu.current?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]:not(:disabled)',
+      ) ?? [],
+    );
+    if (!items.length) return;
+    event.preventDefault();
+    if (event.key === "Home") {
+      items[0].focus();
+      return;
+    }
+    if (event.key === "End") {
+      items[items.length - 1].focus();
+      return;
+    }
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const offset = event.key === "ArrowDown" ? 1 : -1;
+    items[(current + offset + items.length) % items.length].focus();
+  }
   useLayoutEffect(() => {
     const place = () => {
       const anchor = trigger.current;
@@ -925,12 +1009,20 @@ function RowMenu({
     };
   }, [onClose, trigger]);
   useEffect(() => {
+    const firstItem = menu.current?.querySelector<HTMLButtonElement>(
+      '[role="menuitem"]:not(:disabled)',
+    );
+    firstItem?.focus();
+  }, []);
+  useEffect(() => {
     const dismiss = (event: PointerEvent) => {
       if (
         !menu.current?.contains(event.target as globalThis.Node) &&
         !trigger.current?.contains(event.target as globalThis.Node)
-      )
+      ) {
         onClose();
+        trigger.current?.focus();
+      }
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -947,7 +1039,13 @@ function RowMenu({
     };
   }, [onClose, trigger]);
   return createPortal(
-    <div ref={menu} className="row-menu" role="menu" style={position}>
+    <div
+      ref={menu}
+      className="row-menu"
+      role="menu"
+      style={position}
+      onKeyDown={moveMenuFocus}
+    >
       {children}
     </div>,
     document.body,
@@ -976,6 +1074,7 @@ function ShareDialog({
   const [addOpen, setAddOpen] = useState(false);
   const addButton = useRef<HTMLButtonElement>(null);
   const principalSearch = useRef<HTMLInputElement>(null);
+  const dialog = useDialogFocus();
 
   const load = useCallback(async () => {
     setError("");
@@ -1097,7 +1196,7 @@ function ShareDialog({
 
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section className="dialog share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
+      <section ref={dialog} className="dialog share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
         <header className="dialog-header">
           <div><h2 id="share-dialog-title">Share “{node.name}”</h2></div>
           <button type="button" className="icon-button" aria-label="Close sharing" onClick={onClose}>
@@ -1442,20 +1541,12 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   const emptyTitle = kind === "recent" ? "No recent files yet" : "No favorites yet";
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><Icon name="drive" size={22} /><span>Docs Hub</span></div>
-        <nav aria-label="Main navigation">
-          <button className="nav-item" type="button" onClick={() => navigate(null)}><Icon name="folder" /><span>Files</span></button>
-          <button className={`nav-item${kind === "recent" ? " is-active" : ""}`} type="button" onClick={() => navigateCollection("recent")}><Icon name="recent" /><span>Recent</span></button>
-          <button className={`nav-item${kind === "favorites" ? " is-active" : ""}`} type="button" onClick={() => navigateCollection("favorites")}><Icon name="star" /><span>Favorites</span></button>
-          <button className="nav-item" type="button" onClick={navigateTrash}><Icon name="trash" /><span>Trash</span></button>
-        </nav>
-      </aside>
+      <Sidebar active={kind} />
       <main className="drive-main">
         <header className="topbar">
           <h1 className="page-title">{title}</h1>
           <SearchInput query="" />
-          <div className="toolbar-actions"><button type="button" className="button" onClick={() => void load()} aria-label={`Refresh ${title}`}><Icon name="refresh" /></button></div>
+          <div className="toolbar-actions"><button type="button" className="icon-button" onClick={() => void load()} aria-label={`Refresh ${title}`}><Icon name="refresh" /></button></div>
         </header>
         <section className="drive-content" aria-label={title}>
           {status === "loading" && <LoadingRows label={`Loading ${title.toLowerCase()}`} />}
@@ -1613,15 +1704,7 @@ function SearchApp({ query }: { query: string }) {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><Icon name="drive" size={22} /><span>Docs Hub</span></div>
-        <nav aria-label="Main navigation">
-          <button className="nav-item is-active" type="button" onClick={() => navigate(null)}><Icon name="folder" /><span>Files</span></button>
-          <button className="nav-item" type="button" onClick={() => navigateCollection("recent")}><Icon name="recent" /><span>Recent</span></button>
-          <button className="nav-item" type="button" onClick={() => navigateCollection("favorites")}><Icon name="star" /><span>Favorites</span></button>
-          <button className="nav-item" type="button" onClick={navigateTrash}><Icon name="trash" /><span>Trash</span></button>
-        </nav>
-      </aside>
+      <Sidebar active={null} />
       <main className="drive-main">
         <header className="topbar">
           <h1 className="page-title">Search</h1>
@@ -1724,25 +1807,17 @@ function TrashApp() {
   }
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><Icon name="drive" size={22} /><span>Docs Hub</span></div>
-        <nav aria-label="Main navigation">
-          <button className="nav-item" type="button" onClick={() => navigate(null)}><Icon name="folder" /><span>Files</span></button>
-          <button className="nav-item" type="button" onClick={() => navigateCollection("recent")}><Icon name="recent" /><span>Recent</span></button>
-          <button className="nav-item" type="button" onClick={() => navigateCollection("favorites")}><Icon name="star" /><span>Favorites</span></button>
-          <button className="nav-item is-active" type="button" onClick={navigateTrash}><Icon name="trash" /><span>Trash</span></button>
-        </nav>
-      </aside>
+      <Sidebar active="trash" />
       <main className="drive-main">
         <header className="topbar">
           <h1 className="page-title">Trash</h1>
           <SearchInput query="" />
-          <div className="toolbar-actions"><button type="button" className="button" onClick={() => void load()} aria-label="Refresh Trash"><Icon name="refresh" /></button></div>
+          <div className="toolbar-actions"><button type="button" className="icon-button" onClick={() => void load()} aria-label="Refresh Trash"><Icon name="refresh" /></button></div>
         </header>
         <section className="drive-content" aria-label="Trash">
           {status === "loading" && <LoadingRows />}
           {status === "error" && <ErrorState message={error} onRetry={() => void load()} />}
-          {status === "ready" && items.length === 0 && <div className="content-state"><h1>Trash is empty.</h1></div>}
+          {status === "ready" && items.length === 0 && <div className="content-state"><h1>Trash is empty</h1></div>}
           {status === "ready" && items.length > 0 && (
             <div className="file-table-wrap"><table className="file-table trash-table">
               <colgroup><col /><col className="trash-date-column" /><col className="trash-expiry-column" /><col className="trash-menu-column" /></colgroup>
@@ -1821,6 +1896,7 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
   const [versions, setVersions] = useState<FileVersion[] | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState<string | null>(null);
+  const dialog = useDialogFocus();
   const load = useCallback(async () => {
     setError("");
     try {
@@ -1856,7 +1932,7 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
   }
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section className="dialog version-dialog" role="dialog" aria-modal="true" aria-labelledby="version-dialog-title">
+      <section ref={dialog} className="dialog version-dialog" role="dialog" aria-modal="true" aria-labelledby="version-dialog-title">
         <header className="dialog-header">
           <div><h2 id="version-dialog-title">Version history</h2><p>{node.name}</p></div>
           <button type="button" className="icon-button" aria-label="Close version history" onClick={onClose}><Icon name="close" /></button>
@@ -1902,6 +1978,17 @@ function ConfirmDialog({
   onNotice: (notice: Notice) => void;
 }) {
   const [pending, setPending] = useState(false);
+  const dialog = useDialogFocus();
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !pending) {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [onClose, pending]);
   async function confirm() {
     setPending(true);
     try {
@@ -1916,14 +2003,20 @@ function ConfirmDialog({
   return (
     <div className="dialog-backdrop" role="presentation">
       <section
+        ref={dialog}
         className="dialog confirm-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
       >
-        <h2 id="confirm-dialog-title">{title}</h2>
-        <p>{message}</p>
-        <div className="dialog-actions">
+        <header className="dialog-header">
+          <div><h2 id="confirm-dialog-title">{title}</h2></div>
+          <button type="button" className="icon-button" aria-label={`Close ${title}`} disabled={pending} onClick={onClose}>
+            <Icon name="close" />
+          </button>
+        </header>
+        <div className="dialog-body"><p>{message}</p></div>
+        <footer className="dialog-actions">
           <button
             type="button"
             className="button"
@@ -1934,13 +2027,13 @@ function ConfirmDialog({
           </button>
           <button
             type="button"
-            className="button button-danger"
+            className={`button${action === "Restore" ? " button-primary" : " button-danger"}`}
             disabled={pending}
             onClick={() => void confirm()}
           >
-            {pending ? "Moving…" : action}
+            {pending ? `${action}…` : action}
           </button>
-        </div>
+        </footer>
       </section>
     </div>
   );
@@ -1962,9 +2055,20 @@ function NameDialog({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
+  const dialog = useDialogFocus();
   useEffect(() => {
     input.current?.focus();
   }, []);
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !pending) {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [onClose, pending]);
   async function submit(event: FormEvent) {
     event.preventDefault();
     const value = name.trim();
@@ -1986,17 +2090,24 @@ function NameDialog({
   return (
     <div className="dialog-backdrop" role="presentation">
       <section
-        className="dialog"
+        ref={dialog}
+        className="dialog name-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="name-dialog-title"
       >
+        <header className="dialog-header">
+          <div><h2 id="name-dialog-title">{title}</h2></div>
+          <button type="button" className="icon-button" aria-label={`Close ${title}`} disabled={pending} onClick={onClose}>
+            <Icon name="close" />
+          </button>
+        </header>
         <form onSubmit={submit}>
-          <h2 id="name-dialog-title">{title}</h2>
           <label htmlFor="node-name">Name</label>
           <input
             id="node-name"
             ref={input}
+            data-dialog-initial-focus
             value={name}
             onChange={(event) => setName(event.target.value)}
             maxLength={255}
@@ -2040,8 +2151,7 @@ function EmptyState({
 }) {
   return (
     <div className="content-state">
-      <Icon name="folder" size={30} />
-      <h1>No files in this folder.</h1>
+      <h1>No files here</h1>
       {canCreateHere && (
         <div>
           <button type="button" className="button" onClick={onFolder}>
@@ -2079,11 +2189,8 @@ function ErrorState({
 }
 function LoadingRows({ label = "Loading files" }: { label?: string }) {
   return (
-    <div className="loading-list" aria-label={label}>
-      <span />
-      <span />
-      <span />
-      <span />
+    <div className="loading-list" role="status">
+      <span>{label}…</span>
     </div>
   );
 }
