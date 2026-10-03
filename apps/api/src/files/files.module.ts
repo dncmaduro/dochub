@@ -9,15 +9,18 @@ import { FileReadService } from './file-read.service.js';
 import { FilesController } from './files.controller.js';
 import { FilesService } from './files.service.js';
 import { MultipartUploadService } from './multipart-upload.service.js';
+import { PreviewController } from './preview.controller.js';
+import { PreviewService } from './preview.service.js';
 
 @Module({
   imports: [AuthModule, AuthorizationModule, DatabaseModule, StorageModule, CollectionsModule],
-  controllers: [FilesController],
+  controllers: [FilesController, PreviewController],
   providers: [
     FilesService,
     MultipartUploadService,
     FileValidationService,
     FileReadService,
+    PreviewService,
   ],
   exports: [FileReadService],
 })

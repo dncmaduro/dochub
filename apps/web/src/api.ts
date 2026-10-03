@@ -6,6 +6,7 @@ export interface Node {
   createdAt: string;
   updatedAt: string;
   capabilities: string[];
+  processing?: { contentSearch: "READY" | "PROCESSING" | "FAILED" } | null;
 }
 export interface Breadcrumb {
   id: string;
@@ -35,6 +36,7 @@ export interface EditorSession {
   documentServer: { apiUrl: string };
   config: Record<string, unknown>;
 }
+export interface PreviewSession { sessionId: string; nodeId: string; contentUrl: string; expiresAt: string; mimeType: string; filename: string; size: string; }
 export type DocumentRole = "VIEWER" | "EDITOR" | "OWNER";
 export interface SharingState {
   nodeId: string;
@@ -214,6 +216,10 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ mode: "VIEW" }),
     });
+  }
+  async createPreviewSession(nodeId: string) {
+    const result = await this.request<PreviewSession | { previewable: false }>(`/nodes/${nodeId}/preview-session`, { method: "POST" });
+    return "previewable" in result ? null : { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` };
   }
   async closeEditorSession(sessionId: string) {
     await this.request<void>(`/editor-sessions/${sessionId}/close`, {

@@ -29,6 +29,12 @@ export class AuthCookieService {
     return options;
   }
 
+  previewOptions(sessionId: string): CookieOptions {
+    const options = this.baseOptions(`/preview/${sessionId}/content`, 'lax');
+    options.maxAge = 5 * 60 * 1000;
+    return options;
+  }
+
   private baseOptions(
     path: string,
     sameSite: CookieOptions['sameSite'],

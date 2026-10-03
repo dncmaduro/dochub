@@ -1,5 +1,6 @@
 import { NodeType } from '@dochub/database';
 import { DocumentCapability } from '../authorization/document-capability.js';
+import type { ProcessingStatus } from '../common/file-processing-state.js';
 
 export interface NodeResponse {
   id: string;
@@ -9,6 +10,7 @@ export interface NodeResponse {
   createdAt: Date;
   updatedAt: Date;
   capabilities: DocumentCapability[];
+  processing: { contentSearch: ProcessingStatus } | null;
 }
 
 export interface NodePage {

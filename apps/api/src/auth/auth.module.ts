@@ -46,6 +46,7 @@ import {
     AuthSessionService,
     AccessTokenGuard,
     OptionalAccessTokenGuard,
+    AuthCookieService,
   ],
 })
 export class AuthModule {}

@@ -7,6 +7,7 @@ import {
 import {
   AuditActorType,
   AuditResult,
+  FileProcessingTaskType,
   NodeType,
   Prisma,
   SystemRole,
@@ -19,6 +20,7 @@ import {
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
 import { CollectionsService } from '../collections/collections.service.js';
+import { contentSearchStatus } from '../common/file-processing-state.js';
 import {
   CreateFolderDto,
   MoveNodeDto,
@@ -45,6 +47,19 @@ const nodeSelect = {
   inheritPermissions: true,
   createdAt: true,
   updatedAt: true,
+  file: {
+    select: {
+      currentVersion: {
+        select: {
+          mimeType: true,
+          processingTasks: {
+            where: { type: FileProcessingTaskType.TEXT_EXTRACTION },
+            select: { status: true },
+          },
+        },
+      },
+    },
+  },
 } satisfies Prisma.NodeSelect;
 
 type SelectedNode = Prisma.NodeGetPayload<{ select: typeof nodeSelect }>;
@@ -570,6 +585,10 @@ export class NodesService {
       capabilities: Object.values(DocumentCapability).filter((capability) =>
         capabilities.has(capability),
       ),
+      processing: (() => {
+        const contentSearch = contentSearchStatus(node.file?.currentVersion);
+        return contentSearch ? { contentSearch } : null;
+      })(),
     };
   }
 

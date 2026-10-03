@@ -21,6 +21,7 @@ import {
   type FileVersion,
   type Node,
   type PermissionEntry,
+  type PreviewSession,
   type PermissionsState,
   type SearchItem,
   type SharingPrincipal,
@@ -87,6 +88,26 @@ function hasCapability(node: Node, capability: string) {
 }
 function isOfficeFile(name: string) {
   return /\.(docx?|xlsx?|pptx?)$/i.test(name);
+}
+async function openFileActivation(
+  node: Node,
+  setEditor: (session: EditorSession) => void,
+  setPreview: (session: PreviewSession) => void,
+  onError: (notice: Notice) => void,
+) {
+  try {
+    if (isOfficeFile(node.name) && hasCapability(node, "PREVIEW")) {
+      setEditor(await api.createEditorSession(node.id));
+      return;
+    }
+    if (hasCapability(node, "PREVIEW")) {
+      const session = await api.createPreviewSession(node.id);
+      if (session) { setPreview(session); return; }
+    }
+    if (hasCapability(node, "DOWNLOAD")) await api.download(node);
+  } catch (error) {
+    onError({ tone: "error", message: displayError(error) });
+  }
 }
 function formatDate(value: string) {
   const date = new Date(value);
@@ -394,6 +415,22 @@ function SearchInput({ query }: { query: string }) {
   );
 }
 
+function PageHeader({
+  title,
+  children,
+}: {
+  title: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <header className="topbar">
+      <div className="page-context">{title}</div>
+      <SearchInput query="" />
+      <div className="toolbar-actions">{children}</div>
+    </header>
+  );
+}
+
 type SidebarRoute = "drive" | "recent" | "favorites" | "trash" | null;
 
 function Sidebar({ active }: { active: SidebarRoute }) {
@@ -453,6 +490,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [editor, setEditor] = useState<EditorSession | null>(null);
+  const [preview, setPreview] = useState<PreviewSession | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
   const [versionNode, setVersionNode] = useState<Node | null>(null);
@@ -526,15 +564,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
     }
   }
   async function openFile(node: Node) {
-    try {
-      if (isOfficeFile(node.name) && hasCapability(node, "PREVIEW")) {
-        setEditor(await api.createEditorSession(node.id));
-        return;
-      }
-      if (hasCapability(node, "DOWNLOAD")) await api.download(node);
-    } catch (requestError) {
-      setNotice({ tone: "error", message: displayError(requestError) });
-    }
+    await openFileActivation(node, setEditor, setPreview, setNotice);
   }
   async function moveToTrash(node: Node) {
     await api.moveToTrash(node.id);
@@ -565,10 +595,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
     <div className="app-shell">
       <Sidebar active="drive" />
       <main className="drive-main">
-        <header className="topbar">
-          <Breadcrumbs items={breadcrumbs} folderId={folderId} />
-          <SearchInput query="" />
-          <div className="toolbar-actions">
+        <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />}>
             <button
               type="button"
               className="icon-button"
@@ -607,8 +634,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
                 Root creation requires an administrator.
               </span>
             )}
-          </div>
-        </header>
+        </PageHeader>
         <Toast notice={notice} onDismiss={() => setNotice(null)} />
         <section className="drive-content" aria-label="Files">
           {status === "loading" && <LoadingRows />}
@@ -682,6 +708,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
       {editor && (
         <EditorDialog session={editor} onClose={() => setEditor(null)} />
       )}
+      {preview && <PreviewDialog session={preview} onClose={() => setPreview(null)} onDownload={() => void api.downloadNode(preview.nodeId, preview.filename)} />}
     </div>
   );
 }
@@ -831,6 +858,12 @@ function FileRow({
           <Icon name={isFolder ? "folder" : "file"} size={19} />
           <span>{node.name}</span>
         </button>
+        {node.processing?.contentSearch === "PROCESSING" && (
+          <span className="processing-note">Content search processing</span>
+        )}
+        {node.processing?.contentSearch === "FAILED" && (
+          <span className="processing-note processing-failed">Content search processing failed</span>
+        )}
       </td>
       <td className="modified">{formatDate(node.updatedAt)}</td>
       <td className="row-actions">
@@ -839,13 +872,15 @@ function FileRow({
           type="button"
           className="icon-button"
           aria-label={`Actions for ${node.name}`}
+          aria-haspopup="menu"
+          aria-controls={menuOpen ? `file-menu-${node.id}` : undefined}
           aria-expanded={menuOpen}
           onClick={onToggleMenu}
         >
           <Icon name="more" />
         </button>
         {menuOpen && (
-          <RowMenu trigger={trigger} onClose={onCloseMenu}>
+          <RowMenu id={`file-menu-${node.id}`} trigger={trigger} onClose={onCloseMenu}>
             <button
               type="button"
               role="menuitem"
@@ -947,10 +982,12 @@ function FileRow({
   );
 }
 function RowMenu({
+  id,
   trigger,
   onClose,
   children,
 }: {
+  id: string;
   trigger: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   children: ReactNode;
@@ -1000,7 +1037,10 @@ function RowMenu({
       setPosition({ top, left });
     };
     place();
-    const closeForViewportChange = () => onClose();
+    const closeForViewportChange = () => {
+      onClose();
+      trigger.current?.focus();
+    };
     window.addEventListener("resize", closeForViewportChange);
     window.addEventListener("scroll", closeForViewportChange, true);
     return () => {
@@ -1038,8 +1078,18 @@ function RowMenu({
       document.removeEventListener("keydown", escape);
     };
   }, [onClose, trigger]);
+  useEffect(() => {
+    const menuElement = menu.current;
+    const triggerElement = trigger.current;
+    return () => {
+      if (document.activeElement && menuElement?.contains(document.activeElement)) {
+        triggerElement?.focus();
+      }
+    };
+  }, [trigger]);
   return createPortal(
     <div
+      id={id}
       ref={menu}
       className="row-menu"
       role="menu"
@@ -1437,7 +1487,7 @@ function PermissionRow({
       </select>
       <button
         type="button"
-        className="text-button"
+        className="text-button text-button-danger"
         disabled={disabled}
         onClick={onRemove}
       >
@@ -1459,6 +1509,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
   const [editor, setEditor] = useState<EditorSession | null>(null);
+  const [preview, setPreview] = useState<PreviewSession | null>(null);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
@@ -1487,15 +1538,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   }, [load]);
 
   async function openFile(node: Node) {
-    try {
-      if (isOfficeFile(node.name) && hasCapability(node, "PREVIEW")) {
-        setEditor(await api.createEditorSession(node.id));
-      } else if (hasCapability(node, "DOWNLOAD")) {
-        await api.download(node);
-      }
-    } catch (requestError) {
-      setNotice({ tone: "error", message: displayError(requestError) });
-    }
+    await openFileActivation(node, setEditor, setPreview, setNotice);
   }
 
   async function rename(node: Node, name: string) {
@@ -1543,11 +1586,11 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
     <div className="app-shell">
       <Sidebar active={kind} />
       <main className="drive-main">
-        <header className="topbar">
-          <h1 className="page-title">{title}</h1>
-          <SearchInput query="" />
-          <div className="toolbar-actions"><button type="button" className="icon-button" onClick={() => void load()} aria-label={`Refresh ${title}`}><Icon name="refresh" /></button></div>
-        </header>
+        <PageHeader title={<h1 className="page-title">{title}</h1>}>
+          <button type="button" className="icon-button" onClick={() => void load()} aria-label={`Refresh ${title}`}>
+            <Icon name="refresh" />
+          </button>
+        </PageHeader>
         <section className="drive-content" aria-label={title}>
           {status === "loading" && <LoadingRows label={`Loading ${title.toLowerCase()}`} />}
           {status === "error" && <CollectionError title={title} message={error} onRetry={() => void load()} />}
@@ -1561,6 +1604,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       {trashNode && <ConfirmDialog title="Move to Trash" message={`Move “${trashNode.name}” to Trash?`} action="Move to Trash" onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
       {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
       {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} />}
+      {preview && <PreviewDialog session={preview} onClose={() => setPreview(null)} onDownload={() => void api.downloadNode(preview.nodeId, preview.filename)} />}
     </div>
   );
 }
@@ -1707,7 +1751,7 @@ function SearchApp({ query }: { query: string }) {
       <Sidebar active={null} />
       <main className="drive-main">
         <header className="topbar">
-          <h1 className="page-title">Search</h1>
+          <div className="page-context"><h1 className="page-title">Search</h1></div>
           <SearchInput key={query} query={query} />
           <div className="toolbar-actions" />
         </header>
@@ -1809,11 +1853,11 @@ function TrashApp() {
     <div className="app-shell">
       <Sidebar active="trash" />
       <main className="drive-main">
-        <header className="topbar">
-          <h1 className="page-title">Trash</h1>
-          <SearchInput query="" />
-          <div className="toolbar-actions"><button type="button" className="icon-button" onClick={() => void load()} aria-label="Refresh Trash"><Icon name="refresh" /></button></div>
-        </header>
+        <PageHeader title={<h1 className="page-title">Trash</h1>}>
+          <button type="button" className="icon-button" onClick={() => void load()} aria-label="Refresh Trash">
+            <Icon name="refresh" />
+          </button>
+        </PageHeader>
         <section className="drive-content" aria-label="Trash">
           {status === "loading" && <LoadingRows />}
           {status === "error" && <ErrorState message={error} onRetry={() => void load()} />}
@@ -1877,13 +1921,15 @@ function TrashRow({
           type="button"
           className="icon-button"
           aria-label={`Actions for ${item.name}`}
+          aria-haspopup="menu"
+          aria-controls={menuOpen ? `trash-menu-${item.trashOperationId}` : undefined}
           aria-expanded={menuOpen}
           onClick={onToggleMenu}
         >
           <Icon name="more" />
         </button>
         {menuOpen && (
-          <RowMenu trigger={trigger} onClose={onCloseMenu}>
+          <RowMenu id={`trash-menu-${item.trashOperationId}`} trigger={trigger} onClose={onCloseMenu}>
             {item.canRestore && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onConfirm("restore"); }}>Restore</button>}
             {item.canPurge && <button type="button" role="menuitem" className="menu-danger" onClick={() => { onCloseMenu(); onConfirm("purge"); }}>Delete permanently</button>}
           </RowMenu>
@@ -2260,6 +2306,66 @@ function EditorDialog({
             className="editor-frame"
           />
         )}
+      </section>
+    </div>
+  );
+}
+
+function PreviewDialog({
+  session,
+  onClose,
+  onDownload,
+}: {
+  session: PreviewSession;
+  onClose: () => void;
+  onDownload: () => void;
+}) {
+  const dialog = useDialogFocus();
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [onClose]);
+  const type = session.mimeType.toLowerCase();
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section
+        ref={dialog}
+        className="preview-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Preview ${session.filename}`}
+      >
+        <header>
+          <span>{session.filename}</span>
+          <div>
+            <button type="button" className="button" onClick={onDownload}>
+              Download
+            </button>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Close preview"
+              onClick={onClose}
+            >
+              <Icon name="close" />
+            </button>
+          </div>
+        </header>
+        <div className="preview-content">
+          {type.startsWith("image/") ? (
+            <img src={session.contentUrl} alt={session.filename} />
+          ) : type.startsWith("video/") ? (
+            <video src={session.contentUrl} controls preload="metadata" />
+          ) : (
+            <iframe title={session.filename} src={session.contentUrl} />
+          )}
+        </div>
       </section>
     </div>
   );
