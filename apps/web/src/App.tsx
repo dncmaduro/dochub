@@ -2283,8 +2283,12 @@ function EditorDialog({
   onClose: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<{ destroyEditor?: () => void } | undefined>(
+    undefined,
+  );
   const closeTimer = useRef<number | undefined>(undefined);
   const [error, setError] = useState("");
+  const mountId = `onlyoffice-editor-${session.session.id}`;
   const documentTitle = (() => {
     const document = session.config.document;
     if (!document || typeof document !== "object" || !("title" in document))
@@ -2292,21 +2296,26 @@ function EditorDialog({
     return typeof document.title === "string" ? document.title : "Document editor";
   })();
   useEffect(() => {
+    const mount = container.current;
     if (closeTimer.current !== undefined) {
       window.clearTimeout(closeTimer.current);
       closeTimer.current = undefined;
     }
-    let editor: { destroyEditor?: () => void } | undefined;
     let script: HTMLScriptElement | undefined;
+    let scriptLoaded = false;
+    let cancelled = false;
     const start = () => {
       try {
-        if (!window.DocsAPI || !container.current) throw new Error();
-        editor = new window.DocsAPI.DocEditor(
-          container.current.id,
+        if (cancelled || !window.DocsAPI || !mount) return;
+        // Document Server owns this node. A new session must never inherit an
+        // iframe that a previous instance creates asynchronously.
+        mount.replaceChildren();
+        editorRef.current = new window.DocsAPI.DocEditor(
+          mountId,
           session.config,
         );
       } catch {
-        setError("The document editor could not be opened.");
+        if (!cancelled) setError("The document editor could not be opened.");
       }
     };
     if (window.DocsAPI) start();
@@ -2314,13 +2323,25 @@ function EditorDialog({
       script = document.createElement("script");
       script.src = session.documentServer.apiUrl;
       script.async = true;
-      script.onload = start;
-      script.onerror = () => setError("The document editor is unavailable.");
+      script.onload = () => {
+        scriptLoaded = true;
+        start();
+      };
+      script.onerror = () => {
+        if (!cancelled) setError("The document editor is unavailable.");
+      };
       document.head.append(script);
     }
     return () => {
-      editor?.destroyEditor?.();
-      if (script) script.remove();
+      cancelled = true;
+      // Keep a successfully loaded DocsAPI script: DocsAPI remains global and
+      // removing its defining element while reusing that global corrupts the
+      // next editor initialization in some browsers. An unfinished load is
+      // still removed so its callback cannot mount after cleanup.
+      if (script && !scriptLoaded) script.remove();
+      editorRef.current?.destroyEditor?.();
+      editorRef.current = undefined;
+      mount?.replaceChildren();
       // Strict Mode immediately replays effects in development. Deferring the
       // close lets the replacement effect cancel it, while a real unmount
       // still closes the server-side session.
@@ -2329,7 +2350,7 @@ function EditorDialog({
         void api.closeEditorSession(session.session.id).catch(() => undefined);
       }, 0);
     };
-  }, [session]);
+  }, [mountId, session]);
   return (
     <div className="editor-backdrop">
       <section
@@ -2353,7 +2374,7 @@ function EditorDialog({
           <div className="editor-error">{error}</div>
         ) : (
           <div
-            id="onlyoffice-editor"
+            id={mountId}
             ref={container}
             className="editor-frame"
           />
