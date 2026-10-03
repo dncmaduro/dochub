@@ -42,6 +42,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Wait for Tika
         run: curl --fail --retry 18 --retry-delay 5 http://localhost:9998/version
+      - name: Generate database client
+        run: pnpm --filter @dochub/database exec prisma generate
+      - name: Build database package
+        run: pnpm --filter @dochub/database build
       - name: Apply test migrations
         run: pnpm --filter @dochub/database exec prisma migrate deploy
       - run: pnpm --filter api test
@@ -49,8 +53,7 @@ jobs:
       - run: pnpm --filter api lint
       - run: pnpm --filter worker lint
       - run: pnpm --filter web lint
-      - run: pnpm --filter web build
-      - run: pnpm build
+      - run: pnpm -r --filter '!@dochub/database' build
 
   deploy:
     needs: ci
