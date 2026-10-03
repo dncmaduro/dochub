@@ -45,4 +45,43 @@ describe('TikaClient', () => {
       retryable: true,
     });
   });
+
+  it.each([
+    [400, false],
+    [429, true],
+    [503, true],
+  ])('classifies Tika HTTP %i as retryable=%s', async (status, retryable) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(null, { status })),
+    );
+    await expect(
+      client().extractPlainText(Readable.from('source'), 'application/pdf'),
+    ).rejects.toMatchObject({
+      name: TikaClientError.name,
+      retryable,
+    });
+  });
+
+  it('bounds a hung request with a retryable timeout', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: URL, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () =>
+              reject(new Error('aborted')),
+            );
+          }),
+      ),
+    );
+    const timed = new TikaClient(new URL('http://tika.example:9998'), 1, 100);
+    await expect(
+      timed.extractPlainText(Readable.from('source'), 'application/pdf'),
+    ).rejects.toMatchObject({
+      name: TikaClientError.name,
+      retryable: true,
+      message: 'Tika request timed out',
+    });
+  });
 });

@@ -352,6 +352,7 @@ model FileProcessingTask {
   startedAt      DateTime?
   availableAt    DateTime                 @default(now())
   leaseExpiresAt DateTime?
+  leaseToken     String?                  @db.Uuid
   completedAt    DateTime?
   createdAt      DateTime                 @default(now())
   fileVersion    FileVersion              @relation("FileVersionProcessingTasks", fields: [fileVersionId], references: [id], onDelete: Cascade)

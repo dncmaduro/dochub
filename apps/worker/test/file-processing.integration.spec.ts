@@ -152,6 +152,26 @@ describe('file processing with PostgreSQL, LocalFileStorage, and Tika', () => {
     });
   }
 
+  type ClaimedTask = {
+    id: string;
+    fileVersionId: string;
+    attemptCount: number;
+    leaseToken: string;
+  };
+
+  const internals = (worker: FileProcessingService) =>
+    worker as unknown as {
+      claimTasks(): Promise<ClaimedTask[]>;
+      complete(task: ClaimedTask): Promise<void>;
+      fail(task: ClaimedTask, error: unknown): Promise<void>;
+      writeCurrentDocument(
+        task: ClaimedTask,
+        fileId: string,
+        versionId: string,
+        content: string,
+      ): Promise<void>;
+    };
+
   it('backfills one current searchable version idempotently and indexes it through real Tika', async () => {
     const current = await version();
     const worker = service();
@@ -194,15 +214,9 @@ describe('file processing with PostgreSQL, LocalFileStorage, and Tika', () => {
             type: FileProcessingTaskType.TEXT_EXTRACTION,
           },
         });
-        await (
-          worker as unknown as {
-            writeCurrentDocument(
-              fileId: string,
-              versionId: string,
-              content: string,
-            ): Promise<void>;
-          }
-        ).writeCurrentDocument(v1.fileId, v2.id, 'version two');
+        await service({
+          extractPlainText: vi.fn().mockResolvedValue('version two'),
+        }).runCycle();
         return 'version one';
       }),
     };
@@ -261,5 +275,129 @@ describe('file processing with PostgreSQL, LocalFileStorage, and Tika', () => {
         where: { fileId: current.fileId },
       }),
     ).resolves.toMatchObject({ fileVersionId: current.id });
+  });
+
+  it('atomically gives two concurrent claimers one owner', async () => {
+    const current = await version();
+    await database.fileProcessingTask.create({
+      data: {
+        fileVersionId: current.id,
+        type: FileProcessingTaskType.TEXT_EXTRACTION,
+      },
+    });
+    const [left, right] = await Promise.all([
+      internals(service()).claimTasks(),
+      internals(service()).claimTasks(),
+    ]);
+    expect(left.length + right.length).toBe(1);
+    const task = await database.fileProcessingTask.findUniqueOrThrow({
+      where: {
+        fileVersionId_type: {
+          fileVersionId: current.id,
+          type: FileProcessingTaskType.TEXT_EXTRACTION,
+        },
+      },
+    });
+    expect(task).toMatchObject({ status: 'PROCESSING', attemptCount: 1 });
+    expect(task.leaseToken).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  it('reclaims an expired lease and fences the stale owner', async () => {
+    const current = await version();
+    await database.fileProcessingTask.create({
+      data: {
+        fileVersionId: current.id,
+        type: FileProcessingTaskType.TEXT_EXTRACTION,
+      },
+    });
+    const first = (await internals(service()).claimTasks())[0]!;
+    await database.fileProcessingTask.update({
+      where: { id: first.id },
+      data: { leaseExpiresAt: new Date(Date.now() - 1) },
+    });
+    const second = (await internals(service()).claimTasks())[0]!;
+    expect(second.leaseToken).not.toBe(first.leaseToken);
+    expect(second.attemptCount).toBe(2);
+    const worker = internals(service());
+    await worker.writeCurrentDocument(
+      second,
+      current.fileId,
+      current.id,
+      'new owner content',
+    );
+    await worker.complete(second);
+    await worker.writeCurrentDocument(
+      first,
+      current.fileId,
+      current.id,
+      'stale owner content',
+    );
+    await worker.fail(first, new Error('late worker'));
+    await expect(
+      database.fileProcessingTask.findUniqueOrThrow({
+        where: { id: first.id },
+      }),
+    ).resolves.toMatchObject({
+      status: 'COMPLETED',
+      attemptCount: 2,
+      leaseToken: null,
+    });
+    await expect(
+      database.searchDocument.findUniqueOrThrow({
+        where: { fileId: current.fileId },
+      }),
+    ).resolves.toMatchObject({ contentText: 'new owner content' });
+  });
+
+  it('treats a missing immutable storage object as terminal without writing search state', async () => {
+    const current = await version();
+    await storage.delete(`processing/${current.fileId}/${current.id}`);
+    await database.fileProcessingTask.create({
+      data: {
+        fileVersionId: current.id,
+        type: FileProcessingTaskType.TEXT_EXTRACTION,
+      },
+    });
+    expect(await service().runCycle()).toBe(1);
+    await expect(
+      database.fileProcessingTask.findUniqueOrThrow({
+        where: {
+          fileVersionId_type: {
+            fileVersionId: current.id,
+            type: FileProcessingTaskType.TEXT_EXTRACTION,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: 'FAILED',
+      attemptCount: 1,
+      lastError: 'STORAGE_NOT_FOUND',
+    });
+    await expect(
+      database.searchDocument.findUnique({ where: { fileId: current.fileId } }),
+    ).resolves.toBeNull();
+  });
+
+  it('does not resurrect a purged version when an already-claimed worker finishes', async () => {
+    const current = await version();
+    await database.fileProcessingTask.create({
+      data: {
+        fileVersionId: current.id,
+        type: FileProcessingTaskType.TEXT_EXTRACTION,
+      },
+    });
+    const claimed = (await internals(service()).claimTasks())[0]!;
+    await database.file.update({
+      where: { id: current.fileId },
+      data: { currentVersionId: null },
+    });
+    await database.fileVersion.delete({ where: { id: current.id } });
+    await internals(service()).complete(claimed);
+    await expect(
+      database.fileProcessingTask.findUnique({ where: { id: claimed.id } }),
+    ).resolves.toBeNull();
+    await expect(
+      database.searchDocument.findUnique({ where: { fileId: current.fileId } }),
+    ).resolves.toBeNull();
   });
 });

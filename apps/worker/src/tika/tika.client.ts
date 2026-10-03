@@ -40,7 +40,7 @@ export class TikaClient {
       if (!response.ok) {
         throw new TikaClientError(
           `Tika returned HTTP ${response.status}`,
-          response.status >= 500,
+          response.status >= 500 || [408, 425, 429].includes(response.status),
         );
       }
       if (!response.body) return '';

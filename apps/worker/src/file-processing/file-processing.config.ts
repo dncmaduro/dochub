@@ -27,14 +27,27 @@ export function loadFileProcessingConfig(
   }
   if (!['http:', 'https:'].includes(tikaUrl.protocol))
     throw new Error('TIKA_URL must be an absolute HTTP(S) URL');
+  const tikaRequestTimeoutSeconds = integer(
+    'TIKA_REQUEST_TIMEOUT_SECONDS',
+    60,
+    600,
+  );
+  const leaseSeconds = integer('FILE_PROCESSING_LEASE_SECONDS', 300, 3600);
+  // Tika is the only potentially long-running operation and is deadline-bound.
+  // Keep a margin so a valid worker cannot lose ownership while its request is
+  // still within the configured deadline.
+  if (leaseSeconds <= tikaRequestTimeoutSeconds + 30)
+    throw new Error(
+      'FILE_PROCESSING_LEASE_SECONDS must exceed TIKA_REQUEST_TIMEOUT_SECONDS by at least 30 seconds',
+    );
   return {
     pollSeconds,
     batchSize: integer('FILE_PROCESSING_BATCH_SIZE', 20, 500),
     concurrency: integer('FILE_PROCESSING_CONCURRENCY', 2, 8),
-    leaseSeconds: integer('FILE_PROCESSING_LEASE_SECONDS', 300, 3600),
+    leaseSeconds,
     maxAttempts: integer('FILE_PROCESSING_MAX_ATTEMPTS', 5, 20),
     tikaUrl,
-    tikaRequestTimeoutSeconds: integer('TIKA_REQUEST_TIMEOUT_SECONDS', 60, 600),
+    tikaRequestTimeoutSeconds,
     tikaMaxTextBytes: integer(
       'TIKA_MAX_TEXT_BYTES',
       16 * 1024 * 1024,

@@ -9,11 +9,16 @@ import {
   isSearchableFileMimeType,
   type PrismaClient,
 } from '@dochub/database';
-import type { StorageService } from '@dochub/storage';
+import { StorageObjectNotFound, type StorageService } from '@dochub/storage';
 import { TikaClient, TikaClientError } from '../tika/tika.client.js';
 import type { FileProcessingConfig } from './file-processing.config.js';
 
-type ClaimedTask = { id: string; fileVersionId: string; attemptCount: number };
+type ClaimedTask = {
+  id: string;
+  fileVersionId: string;
+  attemptCount: number;
+  leaseToken: string;
+};
 
 /** Bounded, leased text-extraction worker. Search API consumption is intentionally absent. */
 export class FileProcessingService
@@ -154,6 +159,9 @@ export class FileProcessingService
 
   private async claimTasks(): Promise<ClaimedTask[]> {
     const lease = new Date(Date.now() + this.config.leaseSeconds * 1000);
+    // One token per polling claim is sufficient: ownership checks always pair it
+    // with the task id, and every re-claim receives a fresh token.
+    const leaseToken = crypto.randomUUID();
     return this.database.$transaction(
       (tx) =>
         tx.$queryRaw<ClaimedTask[]>`
@@ -169,9 +177,10 @@ export class FileProcessingService
         UPDATE "FileProcessingTask" task
         SET "status" = ${FileProcessingTaskStatus.PROCESSING}::"FileProcessingTaskStatus",
             "attemptCount" = task."attemptCount" + 1,
-            "startedAt" = NOW(), "leaseExpiresAt" = ${lease}
+            "startedAt" = NOW(), "leaseExpiresAt" = ${lease},
+            "leaseToken" = ${leaseToken}::uuid
         FROM candidates WHERE task."id" = candidates."id"
-        RETURNING task."id", task."fileVersionId", task."attemptCount"
+        RETURNING task."id", task."fileVersionId", task."attemptCount", task."leaseToken"
       `,
     );
   }
@@ -193,7 +202,7 @@ export class FileProcessingService
         version.file.currentVersionId !== version.id ||
         !isSearchableFileMimeType(version.mimeType)
       ) {
-        await this.complete(task.id);
+        await this.complete(task);
         return;
       }
       const source = await this.storage.openReadStream(version.storageKey);
@@ -201,19 +210,34 @@ export class FileProcessingService
         source,
         version.mimeType,
       );
-      await this.writeCurrentDocument(version.fileId, version.id, content);
-      await this.complete(task.id);
+      await this.writeCurrentDocument(
+        task,
+        version.fileId,
+        version.id,
+        content,
+      );
+      await this.complete(task);
     } catch (error) {
       await this.fail(task, error);
     }
   }
 
   private async writeCurrentDocument(
+    task: ClaimedTask,
     fileId: string,
     versionId: string,
     content: string,
   ): Promise<void> {
     await this.database.$transaction(async (tx) => {
+      const owners = await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id" FROM "FileProcessingTask"
+        WHERE "id" = ${task.id}::uuid
+          AND "status" = ${FileProcessingTaskStatus.PROCESSING}::"FileProcessingTaskStatus"
+          AND "leaseToken" = ${task.leaseToken}::uuid
+          AND "leaseExpiresAt" > NOW()
+        FOR UPDATE
+      `;
+      if (!owners.length) return;
       const files = await tx.$queryRaw<{ currentVersionId: string | null }[]>`
         SELECT "currentVersionId" FROM "File" WHERE "id" = ${fileId}::uuid FOR UPDATE
       `;
@@ -228,48 +252,66 @@ export class FileProcessingService
     });
   }
 
-  private async complete(taskId: string): Promise<void> {
+  private async complete(task: ClaimedTask): Promise<void> {
     await this.database.fileProcessingTask.updateMany({
-      where: { id: taskId, status: FileProcessingTaskStatus.PROCESSING },
+      where: {
+        id: task.id,
+        status: FileProcessingTaskStatus.PROCESSING,
+        leaseToken: task.leaseToken,
+        leaseExpiresAt: { gt: new Date() },
+      },
       data: {
         status: FileProcessingTaskStatus.COMPLETED,
         completedAt: new Date(),
         leaseExpiresAt: null,
+        leaseToken: null,
         lastError: null,
       },
     });
   }
 
   private async fail(task: ClaimedTask, error: unknown): Promise<void> {
-    const retryable = !(error instanceof TikaClientError) || error.retryable;
+    const retryable =
+      error instanceof TikaClientError
+        ? error.retryable
+        : !(error instanceof StorageObjectNotFound);
     const retry = retryable && task.attemptCount < this.config.maxAttempts;
     const delaySeconds = Math.min(
       60 * 2 ** Math.max(0, task.attemptCount - 1),
       900,
     );
-    await this.database.fileProcessingTask.updateMany({
-      where: { id: task.id, status: FileProcessingTaskStatus.PROCESSING },
+    const result = await this.database.fileProcessingTask.updateMany({
+      where: {
+        id: task.id,
+        status: FileProcessingTaskStatus.PROCESSING,
+        leaseToken: task.leaseToken,
+        leaseExpiresAt: { gt: new Date() },
+      },
       data: retry
         ? {
             status: FileProcessingTaskStatus.PENDING,
             availableAt: new Date(Date.now() + delaySeconds * 1000),
             leaseExpiresAt: null,
+            leaseToken: null,
             lastError: this.errorCategory(error),
           }
         : {
             status: FileProcessingTaskStatus.FAILED,
             leaseExpiresAt: null,
+            leaseToken: null,
             lastError: this.errorCategory(error),
           },
     });
+    if (!result.count) return;
     this.logger.warn(
-      `File processing ${task.id}: ${this.errorCategory(error)}`,
+      `File processing task=${task.id} type=TEXT_EXTRACTION version=${task.fileVersionId} attempt=${task.attemptCount} transition=${retry ? 'PENDING' : 'FAILED'} error=${this.errorCategory(error)}`,
     );
   }
 
   private errorCategory(error: unknown): string {
     if (error instanceof TikaClientError)
       return error.retryable ? 'TIKA_RETRYABLE' : 'TIKA_REJECTED';
+    if (error instanceof StorageObjectNotFound) return 'STORAGE_NOT_FOUND';
     return 'STORAGE_OR_PROCESSING_ERROR';
   }
 }

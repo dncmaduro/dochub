@@ -10,11 +10,43 @@ startup/test scripts load the repository root `.env`; no additional env loader
 is used. Configure `DATABASE_URL`, `STORAGE_DRIVER=local`, and an absolute
 `STORAGE_ROOT` matching the API's binary storage in production.
 
-| Setting | Default | Validation |
-| --- | --- | --- |
-| `TRASH_RETENTION_POLL_SECONDS` | 60 | Positive finite seconds fitting a Node timer (maximum 2147483.647) |
-| `TRASH_RETENTION_BATCH_SIZE` | 20 | Integer 1–500 |
-| `TRASH_RETENTION_OPERATION_CONCURRENCY` | 1 | Integer 1–8 |
+## File processing reliability
+
+Only `TEXT_EXTRACTION` is operational: uploads, uploaded versions, restored
+versions, and finalized Office edits create its unique `(fileVersionId, type)`
+task in the same database transaction as the immutable version. The worker
+claims it with PostgreSQL `FOR UPDATE SKIP LOCKED`; it processes no other task
+enum values. At most `FILE_PROCESSING_BATCH_SIZE` tasks are claimed per poll and
+`FILE_PROCESSING_CONCURRENCY` tasks run concurrently.
+
+Each successful claim increments `attemptCount`, writes a UUID lease token, and
+sets a lease expiry. A worker can write the file-level `SearchDocument` or
+transition the task only while it still owns that token. Expired work is safely
+reclaimable; a delayed owner cannot overwrite a new owner. Search writes lock
+the file and require the matching current version, so a late historical version
+cannot replace newer searchable content. The upsert makes repeated extraction
+of a version deterministic.
+
+Tika/network/storage failures retry with 60s, 120s, 240s, 480s, then capped
+900s backoff, up to `FILE_PROCESSING_MAX_ATTEMPTS` claims. Missing immutable
+storage objects, non-retryable Tika 4xx, and oversized responses are terminal
+`FAILED` tasks. Tika 408/425/429 and 5xx responses retry.
+Failed tasks are not restarted automatically. Tika has a request deadline; the
+lease is required to exceed it by 30 seconds, so no heartbeat is needed for the
+bounded local-storage/Tika path. Shutdown stops new claims, waits for started
+operations, and safely leaves interrupted work for lease recovery.
+
+| Setting                                 | Default | Validation                                                         |
+| --------------------------------------- | ------- | ------------------------------------------------------------------ |
+| `TRASH_RETENTION_POLL_SECONDS`          | 60      | Positive finite seconds fitting a Node timer (maximum 2147483.647) |
+| `TRASH_RETENTION_BATCH_SIZE`            | 20      | Integer 1–500                                                      |
+| `TRASH_RETENTION_OPERATION_CONCURRENCY` | 1       | Integer 1–8                                                        |
+| `FILE_PROCESSING_POLL_SECONDS`          | 15      | Integer 1–2147483                                                  |
+| `FILE_PROCESSING_BATCH_SIZE`            | 20      | Integer 1–500                                                      |
+| `FILE_PROCESSING_CONCURRENCY`           | 2       | Integer 1–8                                                        |
+| `FILE_PROCESSING_LEASE_SECONDS`         | 300     | Integer 1–3600; exceeds Tika timeout by 30 seconds                 |
+| `FILE_PROCESSING_MAX_ATTEMPTS`          | 5       | Integer 1–20                                                       |
+| `TIKA_REQUEST_TIMEOUT_SECONDS`          | 60      | Integer 1–600                                                      |
 
 An immediate startup cycle selects expired ACTIVE operations (`expiresAt <= now`)
 and all PURGING operations. RESTORED, PURGED, and unexpired ACTIVE operations are

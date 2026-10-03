@@ -28,6 +28,15 @@ describe('file-processing configuration', () => {
     ).toThrow();
   });
 
+  it('keeps a lease longer than the bounded Tika operation', () => {
+    expect(() =>
+      loadFileProcessingConfig({
+        FILE_PROCESSING_LEASE_SECONDS: '90',
+        TIKA_REQUEST_TIMEOUT_SECONDS: '60',
+      }),
+    ).toThrow('FILE_PROCESSING_LEASE_SECONDS');
+  });
+
   it('limits extraction to trusted document MIME types', () => {
     expect(isSearchableFileMimeType('application/pdf')).toBe(true);
     expect(isSearchableFileMimeType('application/vnd.ms-excel')).toBe(true);
