@@ -290,18 +290,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.processing-note {
-  display: block;
-  margin-top: 2px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.processing-failed {
-  color: var(--danger);
-}
 .modified {
   color: var(--muted);
   white-space: nowrap;
@@ -960,6 +948,7 @@ summary:focus-visible {
   flex: 1;
   min-height: 0;
   place-items: center;
+  position: relative;
   overflow: auto;
   background: #f1f3f4;
 }
@@ -973,6 +962,32 @@ summary:focus-visible {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+.preview-loading {
+  position: absolute;
+  z-index: 1;
+  color: var(--muted);
+  font-size: 13px;
+}
+.preview-state {
+  display: grid;
+  max-width: 340px;
+  gap: 8px;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+.preview-state strong {
+  color: var(--text);
+  font-size: 14px;
+}
+.preview-state [role="alert"] {
+  color: var(--danger);
+}
+.preview-state .button {
+  justify-self: center;
+  margin-top: 4px;
 }
 .editor-dialog header {
   display: flex;

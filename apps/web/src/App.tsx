@@ -33,6 +33,18 @@ import "./App.css";
 
 const api = new ApiClient();
 type Notice = { tone: "error" | "success"; message: string } | null;
+type AvailablePreview = PreviewSession & { canDownload: boolean };
+type UnavailablePreview = {
+  unavailable: true;
+  nodeId: string;
+  filename: string;
+  canDownload: boolean;
+};
+type Preview = AvailablePreview | UnavailablePreview;
+
+function previewIsUnavailable(preview: Preview): preview is UnavailablePreview {
+  return "unavailable" in preview;
+}
 
 function currentFolderId() {
   return (
@@ -92,7 +104,7 @@ function isOfficeFile(name: string) {
 async function openFileActivation(
   node: Node,
   setEditor: (session: EditorSession) => void,
-  setPreview: (session: PreviewSession) => void,
+  setPreview: (preview: Preview) => void,
   onError: (notice: Notice) => void,
 ) {
   try {
@@ -102,7 +114,17 @@ async function openFileActivation(
     }
     if (hasCapability(node, "PREVIEW")) {
       const session = await api.createPreviewSession(node.id);
-      if (session) { setPreview(session); return; }
+      if (session) {
+        setPreview({ ...session, canDownload: hasCapability(node, "DOWNLOAD") });
+        return;
+      }
+      setPreview({
+        unavailable: true,
+        nodeId: node.id,
+        filename: node.name,
+        canDownload: hasCapability(node, "DOWNLOAD"),
+      });
+      return;
     }
     if (hasCapability(node, "DOWNLOAD")) await api.download(node);
   } catch (error) {
@@ -490,7 +512,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [editor, setEditor] = useState<EditorSession | null>(null);
-  const [preview, setPreview] = useState<PreviewSession | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
   const [versionNode, setVersionNode] = useState<Node | null>(null);
@@ -708,7 +730,14 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
       {editor && (
         <EditorDialog session={editor} onClose={() => setEditor(null)} />
       )}
-      {preview && <PreviewDialog session={preview} onClose={() => setPreview(null)} onDownload={() => void api.downloadNode(preview.nodeId, preview.filename)} />}
+      {preview && (
+        <PreviewDialog
+          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
+          preview={preview}
+          onClose={() => setPreview(null)}
+          onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
+        />
+      )}
     </div>
   );
 }
@@ -837,7 +866,7 @@ function FileRow({
   const isFolder = node.type === "FOLDER";
   const canOpen =
     isFolder ||
-    (isOfficeFile(node.name) && hasCapability(node, "PREVIEW")) ||
+    hasCapability(node, "PREVIEW") ||
     hasCapability(node, "DOWNLOAD");
   async function download() {
     try {
@@ -858,12 +887,6 @@ function FileRow({
           <Icon name={isFolder ? "folder" : "file"} size={19} />
           <span>{node.name}</span>
         </button>
-        {node.processing?.contentSearch === "PROCESSING" && (
-          <span className="processing-note">Content search processing</span>
-        )}
-        {node.processing?.contentSearch === "FAILED" && (
-          <span className="processing-note processing-failed">Content search processing failed</span>
-        )}
       </td>
       <td className="modified">{formatDate(node.updatedAt)}</td>
       <td className="row-actions">
@@ -906,23 +929,23 @@ function FileRow({
                 ? "Open folder"
                 : isOfficeFile(node.name) && hasCapability(node, "PREVIEW")
                   ? "Open"
-                  : "Download"}
+                  : hasCapability(node, "PREVIEW")
+                    ? "Preview"
+                    : "Download"}
             </button>
-            {!isFolder &&
-              hasCapability(node, "DOWNLOAD") &&
-              isOfficeFile(node.name) && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    onCloseMenu();
-                    void download();
-                  }}
-                >
-                  <Icon name="download" size={16} />
-                  Download
-                </button>
-              )}
+            {!isFolder && hasCapability(node, "DOWNLOAD") && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  onCloseMenu();
+                  void download();
+                }}
+              >
+                <Icon name="download" size={16} />
+                Download
+              </button>
+            )}
             {hasCapability(node, "RENAME") && (
               <button
                 type="button"
@@ -1509,7 +1532,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
   const [editor, setEditor] = useState<EditorSession | null>(null);
-  const [preview, setPreview] = useState<PreviewSession | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
@@ -1604,7 +1627,14 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       {trashNode && <ConfirmDialog title="Move to Trash" message={`Move “${trashNode.name}” to Trash?`} action="Move to Trash" onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
       {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
       {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} />}
-      {preview && <PreviewDialog session={preview} onClose={() => setPreview(null)} onDownload={() => void api.downloadNode(preview.nodeId, preview.filename)} />}
+      {preview && (
+        <PreviewDialog
+          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
+          preview={preview}
+          onClose={() => setPreview(null)}
+          onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
+        />
+      )}
     </div>
   );
 }
@@ -1623,6 +1653,7 @@ function SearchApp({ query }: { query: string }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [editor, setEditor] = useState<EditorSession | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
   const requestId = useRef(0);
 
   const loadLocations = useCallback(
@@ -1736,11 +1767,7 @@ function SearchApp({ query }: { query: string }) {
     }
     try {
       const node = await api.getNode(item.id);
-      if (isOfficeFile(node.name) && hasCapability(node, "PREVIEW")) {
-        setEditor(await api.createEditorSession(node.id));
-      } else if (hasCapability(node, "DOWNLOAD")) {
-        await api.downloadNode(node.id, node.name);
-      }
+      await openFileActivation(node, setEditor, setPreview, setNotice);
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
     }
@@ -1771,6 +1798,14 @@ function SearchApp({ query }: { query: string }) {
       </main>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
       {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} />}
+      {preview && (
+        <PreviewDialog
+          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
+          preview={preview}
+          onClose={() => setPreview(null)}
+          onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
+        />
+      )}
     </div>
   );
 }
@@ -2248,8 +2283,19 @@ function EditorDialog({
   onClose: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
   const [error, setError] = useState("");
+  const documentTitle = (() => {
+    const document = session.config.document;
+    if (!document || typeof document !== "object" || !("title" in document))
+      return "Document editor";
+    return typeof document.title === "string" ? document.title : "Document editor";
+  })();
   useEffect(() => {
+    if (closeTimer.current !== undefined) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = undefined;
+    }
     let editor: { destroyEditor?: () => void } | undefined;
     let script: HTMLScriptElement | undefined;
     const start = () => {
@@ -2275,7 +2321,13 @@ function EditorDialog({
     return () => {
       editor?.destroyEditor?.();
       if (script) script.remove();
-      void api.closeEditorSession(session.session.id).catch(() => undefined);
+      // Strict Mode immediately replays effects in development. Deferring the
+      // close lets the replacement effect cancel it, while a real unmount
+      // still closes the server-side session.
+      closeTimer.current = window.setTimeout(() => {
+        closeTimer.current = undefined;
+        void api.closeEditorSession(session.session.id).catch(() => undefined);
+      }, 0);
     };
   }, [session]);
   return (
@@ -2284,10 +2336,10 @@ function EditorDialog({
         className="editor-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="Document editor"
+        aria-label={`Document editor: ${documentTitle}`}
       >
         <header>
-          <span>Document editor</span>
+          <span>{documentTitle}</span>
           <button
             type="button"
             className="icon-button"
@@ -2312,15 +2364,20 @@ function EditorDialog({
 }
 
 function PreviewDialog({
-  session,
+  preview,
   onClose,
   onDownload,
 }: {
-  session: PreviewSession;
+  preview: Preview;
   onClose: () => void;
-  onDownload: () => void;
+  onDownload: () => Promise<void>;
 }) {
   const dialog = useDialogFocus();
+  const [state, setState] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [attempt, setAttempt] = useState(0);
+  const [downloadError, setDownloadError] = useState("");
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -2331,7 +2388,21 @@ function PreviewDialog({
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
   }, [onClose]);
-  const type = session.mimeType.toLowerCase();
+  const unavailable = previewIsUnavailable(preview);
+  const session = unavailable ? null : preview;
+  const type = session?.mimeType.toLowerCase();
+  const retry = () => {
+    setState("loading");
+    setAttempt((current) => current + 1);
+  };
+  async function download() {
+    setDownloadError("");
+    try {
+      await onDownload();
+    } catch (error) {
+      setDownloadError(displayError(error));
+    }
+  }
   return (
     <div className="dialog-backdrop" role="presentation">
       <section
@@ -2339,14 +2410,16 @@ function PreviewDialog({
         className="preview-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label={`Preview ${session.filename}`}
+        aria-label={`Preview ${preview.filename}`}
       >
         <header>
-          <span>{session.filename}</span>
+          <span>{preview.filename}</span>
           <div>
-            <button type="button" className="button" onClick={onDownload}>
-              Download
-            </button>
+            {preview.canDownload && (
+              <button type="button" className="button" onClick={() => void download()}>
+                Download
+              </button>
+            )}
             <button
               type="button"
               className="icon-button"
@@ -2357,16 +2430,55 @@ function PreviewDialog({
             </button>
           </div>
         </header>
-        <div className="preview-content">
-          {type.startsWith("image/") ? (
-            <img src={session.contentUrl} alt={session.filename} />
-          ) : type.startsWith("video/") ? (
-            <video src={session.contentUrl} controls preload="metadata" />
+        <div className="preview-content" aria-busy={state === "loading"}>
+          {unavailable ? (
+            <PreviewState
+              title="Preview unavailable"
+              message="This file type can’t be previewed here."
+              downloadError={downloadError}
+            />
+          ) : state === "error" ? (
+            <PreviewState
+              title="Preview is unavailable"
+              message="The file could not be loaded for preview."
+              onRetry={retry}
+              downloadError={downloadError}
+            />
           ) : (
-            <iframe title={session.filename} src={session.contentUrl} />
+            <>
+              {state === "loading" && <div className="preview-loading" role="status">Loading preview…</div>}
+              {type?.startsWith("image/") ? (
+                <img key={attempt} src={session!.contentUrl} alt={session!.filename} onLoad={() => setState("ready")} onError={() => setState("error")} />
+              ) : type?.startsWith("video/") ? (
+                <video key={attempt} src={session!.contentUrl} controls preload="metadata" onLoadedMetadata={() => setState("ready")} onError={() => setState("error")} />
+              ) : (
+                <iframe key={attempt} title={session!.filename} src={session!.contentUrl} onLoad={() => setState("ready")} onError={() => setState("error")} />
+              )}
+            </>
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function PreviewState({
+  title,
+  message,
+  onRetry,
+  downloadError,
+}: {
+  title: string;
+  message: string;
+  onRetry?: () => void;
+  downloadError: string;
+}) {
+  return (
+    <div className="preview-state" role="status">
+      <strong>{title}</strong>
+      <span>{message}</span>
+      {downloadError && <span role="alert">{downloadError}</span>}
+      {onRetry && <button type="button" className="button" onClick={onRetry}>Retry</button>}
     </div>
   );
 }

@@ -19,6 +19,8 @@ export class PreviewService {
   async create(userId: string, nodeId: string) {
     const capabilities = await this.authorization.resolveCapabilities(userId, nodeId);
     if (!capabilities.capabilities.has(DocumentCapability.VIEW)) throw new NotFoundException('Node not found');
+    if (!capabilities.capabilities.has(DocumentCapability.PREVIEW))
+      throw new ForbiddenException('You do not have the required document capability');
     const node = await this.database.prisma.node.findFirst({ where: { id: nodeId, trashOperationId: null }, select: { id: true, name: true, file: { select: { currentVersion: { select: { id: true, mimeType: true, sizeBytes: true } } } } } });
     const version = node?.file?.currentVersion;
     if (!node || !version) throw new NotFoundException('Node not found');
@@ -37,6 +39,8 @@ export class PreviewService {
     if (user?.status !== UserStatus.ACTIVE) throw new UnauthorizedException('Preview session is invalid');
     const capabilities = await this.authorization.resolveCapabilities(preview.sub, preview.nid);
     if (!capabilities.capabilities.has(DocumentCapability.VIEW)) throw new ForbiddenException('Preview access was revoked');
+    if (!capabilities.capabilities.has(DocumentCapability.PREVIEW))
+      throw new ForbiddenException('Preview access was revoked');
     const node = await this.database.prisma.node.findFirst({ where: { id: preview.nid, trashOperationId: null, file: { versions: { some: { id: preview.vid } } } }, select: { id: true } });
     if (!node) throw new NotFoundException('Preview is unavailable');
     return preview;
