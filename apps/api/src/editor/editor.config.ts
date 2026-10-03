@@ -27,6 +27,23 @@ function httpUrl(name: string, input: string): URL {
   }
 }
 
+function productionSecret(
+  name: string,
+  value: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (
+    env.NODE_ENV === 'production' &&
+    (/^(?:replace|change|test|dev|secret|password)/i.test(value) ||
+      /^(.)\1+$/.test(value))
+  ) {
+    throw new Error(
+      `${name} must not use a placeholder or repeated production secret`,
+    );
+  }
+  return value;
+}
+
 /** Undefined deliberately leaves unrelated API features available without ONLYOFFICE. */
 export function loadEditorConfig(
   env: NodeJS.ProcessEnv = process.env,
@@ -38,10 +55,15 @@ export function loadEditorConfig(
     env.ONLYOFFICE_FETCH_TOKEN_SECRET,
   ];
   if (fields.every((field) => !field?.trim())) return undefined;
-  const jwtSecret = value('ONLYOFFICE_JWT_SECRET', env.ONLYOFFICE_JWT_SECRET);
-  const fetchTokenSecret = value(
+  const jwtSecret = productionSecret(
+    'ONLYOFFICE_JWT_SECRET',
+    value('ONLYOFFICE_JWT_SECRET', env.ONLYOFFICE_JWT_SECRET),
+    env,
+  );
+  const fetchTokenSecret = productionSecret(
     'ONLYOFFICE_FETCH_TOKEN_SECRET',
-    env.ONLYOFFICE_FETCH_TOKEN_SECRET,
+    value('ONLYOFFICE_FETCH_TOKEN_SECRET', env.ONLYOFFICE_FETCH_TOKEN_SECRET),
+    env,
   );
   if (jwtSecret.length < 32 || fetchTokenSecret.length < 32)
     throw new Error('ONLYOFFICE secrets must be at least 32 characters');
@@ -77,15 +99,19 @@ export function loadEditorConfig(
     throw new Error(
       'ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS must be between 60 and 86400',
     );
+  const publicUrl = httpUrl(
+    'ONLYOFFICE_PUBLIC_URL',
+    value('ONLYOFFICE_PUBLIC_URL', env.ONLYOFFICE_PUBLIC_URL),
+  );
+  const internalApiUrl = httpUrl(
+    'ONLYOFFICE_INTERNAL_API_URL',
+    value('ONLYOFFICE_INTERNAL_API_URL', env.ONLYOFFICE_INTERNAL_API_URL),
+  );
+  if (env.NODE_ENV === 'production' && publicUrl.protocol !== 'https:')
+    throw new Error('ONLYOFFICE_PUBLIC_URL must use https in production');
   return {
-    publicUrl: httpUrl(
-      'ONLYOFFICE_PUBLIC_URL',
-      value('ONLYOFFICE_PUBLIC_URL', env.ONLYOFFICE_PUBLIC_URL),
-    ),
-    internalApiUrl: httpUrl(
-      'ONLYOFFICE_INTERNAL_API_URL',
-      value('ONLYOFFICE_INTERNAL_API_URL', env.ONLYOFFICE_INTERNAL_API_URL),
-    ),
+    publicUrl,
+    internalApiUrl,
     jwtSecret,
     fetchTokenSecret,
     fetchTokenTtlSeconds,

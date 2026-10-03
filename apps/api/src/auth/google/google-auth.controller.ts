@@ -105,9 +105,17 @@ export class GoogleAuthController {
   private callbackParameters(request: Request): URLSearchParams {
     const requestUrl = request.originalUrl ?? request.url;
     const queryStart = requestUrl.indexOf('?');
-    return new URLSearchParams(
+    const parameters = new URLSearchParams(
       queryStart === -1 ? '' : requestUrl.slice(queryStart + 1),
     );
+    const seen = new Set<string>();
+    for (const [name] of parameters) {
+      // OAuth callback parameters are single-valued. Rejecting duplicates avoids
+      // a disagreement between Express query parsing and the OIDC client.
+      if (seen.has(name)) throw this.authenticationFailed();
+      seen.add(name);
+    }
+    return parameters;
   }
 
   private clearFlowCookies(response: Response): void {

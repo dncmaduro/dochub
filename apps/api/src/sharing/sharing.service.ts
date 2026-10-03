@@ -7,7 +7,12 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { AuditActorType, AuditResult, Prisma, UserStatus } from '@dochub/database';
+import {
+  AuditActorType,
+  AuditResult,
+  Prisma,
+  UserStatus,
+} from '@dochub/database';
 import { AUTH_CONFIG, type AuthConfig } from '../auth/auth.config.js';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
@@ -62,8 +67,11 @@ export class SharingService {
         ...groups.map((group) => ({ type: 'GROUP' as const, ...group })),
       ].sort((left, right) => {
         const leftName = left.type === 'USER' ? left.displayName : left.name;
-        const rightName = right.type === 'USER' ? right.displayName : right.name;
-        return leftName.localeCompare(rightName) || left.id.localeCompare(right.id);
+        const rightName =
+          right.type === 'USER' ? right.displayName : right.name;
+        return (
+          leftName.localeCompare(rightName) || left.id.localeCompare(right.id)
+        );
       }),
     };
   }
@@ -203,7 +211,7 @@ export class SharingService {
     action: 'SHARE_LINK_CREATED' | 'SHARE_LINK_RESET',
     tx: Prisma.TransactionClient,
   ): Promise<ShareLinkResponse> {
-    const secret = createShareLinkSecret(this.config.webOrigin);
+    const secret = createShareLinkSecret(this.config.webOrigins[0]);
     const link = await tx.shareLink.create({
       data: { nodeId, createdById: actorId, tokenHash: secret.tokenHash },
       select: { id: true },

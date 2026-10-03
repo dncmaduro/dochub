@@ -20,7 +20,7 @@ withDatabase('preview HTTP integration', () => {
   let app: INestApplication, root: string, versionId: string, storageKey: string, accessToken: string, viewerAccessToken: string, deniedAccessToken: string, adminAccessToken: string;
   beforeAll(async () => {
     root = await mkdtemp(path.join(os.tmpdir(), 'dochub-preview-http-'));
-    Object.assign(process.env, { AUTH_ACCESS_TOKEN_SECRET: 'preview-http-test-secret', STORAGE_DRIVER: 'local', STORAGE_ROOT: root, UPLOAD_TEMP_ROOT: root, UPLOAD_MAX_BYTES: '1048576' });
+    Object.assign(process.env, { AUTH_ACCESS_TOKEN_SECRET: 'preview-http-test-secret', STORAGE_DRIVER: 'local', STORAGE_ROOT: root, UPLOAD_TEMP_ROOT: path.join(root, 'uploads'), UPLOAD_MAX_BYTES: '1048576' });
     app = (await Test.createTestingModule({ imports: [AppModule] }).compile()).createNestApplication(); app.use(cookieParser()); await app.init(); await app.listen(0, '127.0.0.1');
     await prisma.user.createMany({ data: [
       { id: userId, email: `preview-${suffix}@x.test`, normalizedEmail: `preview-${suffix}@x.test`, displayName: 'Preview HTTP', status: UserStatus.ACTIVE },

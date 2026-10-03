@@ -31,7 +31,7 @@ describeWithDatabase('SharingService integration', () => {
   const database = { prisma } as unknown as DatabaseService;
   const authorization = new DocumentAuthorizationService(database);
   const sharing = new SharingService(database, authorization, {
-    webOrigin: 'https://dochub.example.test/',
+    webOrigins: ['https://dochub.example.test'],
   } as never);
   let nodeId: string;
   let trashedNodeId: string;

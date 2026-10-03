@@ -27,9 +27,9 @@ async function temporaryUpload(
 
 afterEach(async () => {
   await Promise.all(
-    directories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
+    directories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
@@ -77,5 +77,26 @@ describe('FileValidationService', () => {
         await temporaryUpload('legacy.doc', Buffer.from('not an OLE file')),
       ),
     ).rejects.toMatchObject({ status: 415 });
+  });
+
+  it('keeps a client path out of metadata and rejects control characters and oversized names', async () => {
+    await expect(
+      service.validate(
+        await temporaryUpload('../../secret.pdf', Buffer.from('%PDF-1.7\n')),
+      ),
+    ).resolves.toMatchObject({ originalFilename: 'secret.pdf' });
+    await expect(
+      service.validate(
+        await temporaryUpload('line\nbreak.pdf', Buffer.from('%PDF-1.7\n')),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      service.validate(
+        await temporaryUpload(
+          `${'a'.repeat(256)}.pdf`,
+          Buffer.from('%PDF-1.7\n'),
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
   });
 });

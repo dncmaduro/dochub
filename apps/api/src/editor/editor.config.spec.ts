@@ -4,8 +4,8 @@ import { loadEditorConfig } from './editor.config.js';
 const env = {
   ONLYOFFICE_PUBLIC_URL: 'http://localhost:8082',
   ONLYOFFICE_INTERNAL_API_URL: 'http://host.docker.internal:3000',
-  ONLYOFFICE_JWT_SECRET: 'a'.repeat(32),
-  ONLYOFFICE_FETCH_TOKEN_SECRET: 'b'.repeat(32),
+  ONLYOFFICE_JWT_SECRET: 'c97d4cf49f3a85d7610b629e93a480bc',
+  ONLYOFFICE_FETCH_TOKEN_SECRET: '18e7094c535bb5ad2446dcb4e031d04d',
 };
 
 describe('editor configuration', () => {
@@ -25,5 +25,19 @@ describe('editor configuration', () => {
     expect(() =>
       loadEditorConfig({ ...env, ONLYOFFICE_FETCH_TOKEN_TTL_SECONDS: '2' }),
     ).toThrow('between 60 and 3600');
+  });
+
+  it('rejects insecure public document-server URLs and placeholder secrets in production', () => {
+    expect(() => loadEditorConfig({ ...env, NODE_ENV: 'production' })).toThrow(
+      'must use https',
+    );
+    expect(() =>
+      loadEditorConfig({
+        ...env,
+        NODE_ENV: 'production',
+        ONLYOFFICE_PUBLIC_URL: 'https://docs.example.test',
+        ONLYOFFICE_JWT_SECRET: 'replace-with-a-real-secret-value-now',
+      }),
+    ).toThrow('must not use a placeholder');
   });
 });

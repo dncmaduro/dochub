@@ -15,7 +15,37 @@ describe('loadAuthConfig', () => {
       refreshCookieName: 'dochub_refresh',
       refreshCookieSecure: false,
       refreshCookieSameSite: 'lax',
+      webOrigins: [],
     });
+  });
+
+  it('fails closed for weak production settings and accepts explicit HTTPS origins', () => {
+    const production = {
+      NODE_ENV: 'production',
+      AUTH_ACCESS_TOKEN_SECRET: 'c97d4cf49f3a85d7610b629e93a480bc',
+      AUTH_REFRESH_COOKIE_SECURE: 'true',
+      WEB_ORIGIN: 'https://app.example.test,https://admin.example.test',
+      GOOGLE_CLIENT_ID: 'client-id',
+      GOOGLE_CLIENT_SECRET: 'client-secret',
+      GOOGLE_REDIRECT_URI: 'https://api.example.test/auth/google/callback',
+      AUTH_LOGIN_SUCCESS_REDIRECT_URL: 'https://app.example.test/auth/callback',
+    };
+    expect(loadAuthConfig(production).webOrigins).toEqual([
+      'https://app.example.test',
+      'https://admin.example.test',
+    ]);
+    expect(() =>
+      loadAuthConfig({
+        ...production,
+        AUTH_ACCESS_TOKEN_SECRET: 'replace-with-secret-value-please',
+      }),
+    ).toThrow('high-entropy');
+    expect(() =>
+      loadAuthConfig({ ...production, AUTH_REFRESH_COOKIE_SECURE: 'false' }),
+    ).toThrow('must be true in production');
+    expect(() =>
+      loadAuthConfig({ ...production, WEB_ORIGIN: 'http://app.example.test' }),
+    ).toThrow('must use https');
   });
 
   it('rejects insecure SameSite=None cookies and invalid positive integers', () => {
@@ -51,6 +81,7 @@ describe('loadAuthConfig', () => {
         GOOGLE_CLIENT_SECRET: 'client-secret',
         GOOGLE_REDIRECT_URI: 'http://localhost:3000/auth/google/callback',
         AUTH_LOGIN_SUCCESS_REDIRECT_URL: 'http://localhost:5173/auth/callback',
+        WEB_ORIGIN: 'http://localhost:5173',
       }).google,
     ).toEqual({
       clientId: 'client-id',

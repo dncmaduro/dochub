@@ -9,7 +9,7 @@ export interface AuthConfig {
   refreshCookieSecure: boolean;
   refreshCookieSameSite: RefreshCookieSameSite;
   refreshCookieDomain?: string;
-  webOrigin?: string;
+  webOrigins: string[];
   google?: GoogleOidcConfig;
 }
 
@@ -95,6 +95,28 @@ function optionalValue(value: string | undefined): string | undefined {
   return normalized || undefined;
 }
 
+function isProduction(env: NodeJS.ProcessEnv): boolean {
+  return env.NODE_ENV === 'production';
+}
+
+function strongSecret(
+  name: string,
+  value: string,
+  production: boolean,
+): string {
+  if (!production) return value;
+  if (
+    value.length < 32 ||
+    /^(?:replace|change|test|dev|secret|password)/i.test(value) ||
+    /^(.)\1+$/.test(value)
+  ) {
+    throw new Error(
+      `${name} must be a non-placeholder, high-entropy secret of at least 32 characters in production`,
+    );
+  }
+  return value;
+}
+
 function absoluteHttpUrl(name: string, value: string): string {
   try {
     const url = new URL(value);
@@ -105,6 +127,40 @@ function absoluteHttpUrl(name: string, value: string): string {
   } catch {
     throw new Error(`${name} must be an absolute http(s) URL`);
   }
+}
+
+function webOrigins(env: NodeJS.ProcessEnv): string[] {
+  const raw = optionalValue(env.WEB_ORIGIN);
+  if (!raw) {
+    if (isProduction(env))
+      throw new Error('WEB_ORIGIN is required in production');
+    return [];
+  }
+  const origins = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!origins.length)
+    throw new Error('WEB_ORIGIN must contain at least one origin');
+  const normalized = origins.map((value) => {
+    const url = new URL(absoluteHttpUrl('WEB_ORIGIN', value));
+    if (
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash
+    )
+      throw new Error(
+        'WEB_ORIGIN must contain only origins, without paths or credentials',
+      );
+    if (isProduction(env) && url.protocol !== 'https:')
+      throw new Error('WEB_ORIGIN must use https in production');
+    return url.origin;
+  });
+  if (new Set(normalized).size !== normalized.length)
+    throw new Error('WEB_ORIGIN must not contain duplicate origins');
+  return normalized;
 }
 
 function googleOidcConfig(
@@ -165,10 +221,32 @@ export function loadAuthConfig(
     );
   }
 
+  const production = isProduction(env);
+  if (production && !refreshCookieSecure) {
+    throw new Error('AUTH_REFRESH_COOKIE_SECURE must be true in production');
+  }
+  const origins = webOrigins(env);
+  const google = googleOidcConfig(env);
+  if (production && !google) {
+    throw new Error('Google OIDC must be configured in production');
+  }
+  if (
+    google &&
+    (!origins.includes(new URL(google.loginSuccessRedirectUrl).origin) ||
+      (production &&
+        (new URL(google.redirectUri).protocol !== 'https:' ||
+          new URL(google.loginSuccessRedirectUrl).protocol !== 'https:')))
+  ) {
+    throw new Error(
+      'AUTH_LOGIN_SUCCESS_REDIRECT_URL must use an allowed WEB_ORIGIN and Google OIDC URLs must use https in production',
+    );
+  }
+
   return {
-    accessTokenSecret: requiredValue(
+    accessTokenSecret: strongSecret(
       'AUTH_ACCESS_TOKEN_SECRET',
-      env.AUTH_ACCESS_TOKEN_SECRET,
+      requiredValue('AUTH_ACCESS_TOKEN_SECRET', env.AUTH_ACCESS_TOKEN_SECRET),
+      production,
     ),
     accessTokenTtlSeconds: positiveInteger(
       'AUTH_ACCESS_TOKEN_TTL_SECONDS',
@@ -183,7 +261,7 @@ export function loadAuthConfig(
     refreshCookieSecure,
     refreshCookieSameSite,
     refreshCookieDomain: optionalValue(env.AUTH_REFRESH_COOKIE_DOMAIN),
-    webOrigin: optionalValue(env.WEB_ORIGIN),
-    google: googleOidcConfig(env),
+    webOrigins: origins,
+    google,
   };
 }

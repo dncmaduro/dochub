@@ -35,13 +35,20 @@ export function loadStorageConfig(
   if (env.STORAGE_DRIVER !== 'local') {
     throw new Error('STORAGE_DRIVER must be local');
   }
+  const root = requiredAbsolutePath('STORAGE_ROOT', env.STORAGE_ROOT);
+  const uploadTempRoot = requiredAbsolutePath(
+    'UPLOAD_TEMP_ROOT',
+    env.UPLOAD_TEMP_ROOT,
+  );
+  if (root === uploadTempRoot) {
+    throw new Error(
+      'STORAGE_ROOT and UPLOAD_TEMP_ROOT must be different paths',
+    );
+  }
   return {
     driver: 'local',
-    root: requiredAbsolutePath('STORAGE_ROOT', env.STORAGE_ROOT),
-    uploadTempRoot: requiredAbsolutePath(
-      'UPLOAD_TEMP_ROOT',
-      env.UPLOAD_TEMP_ROOT,
-    ),
+    root,
+    uploadTempRoot,
     uploadMaxBytes: positiveInteger('UPLOAD_MAX_BYTES', env.UPLOAD_MAX_BYTES),
   };
 }

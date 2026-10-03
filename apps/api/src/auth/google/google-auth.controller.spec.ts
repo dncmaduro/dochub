@@ -13,6 +13,7 @@ const config: AuthConfig = {
   refreshCookieName: 'dochub_refresh',
   refreshCookieSecure: false,
   refreshCookieSameSite: 'lax',
+  webOrigins: ['http://localhost:5173'],
   google: {
     clientId: 'client-id',
     clientSecret: 'client-secret',
@@ -74,7 +75,11 @@ describe('GoogleAuthController', () => {
   it('sets only the application refresh cookie and redirects to the fixed success URL', async () => {
     const { controller, googleAuth, response } = controllerFor();
     const request = {
-      query: { code: 'code', state: 'state', iss: 'https://accounts.google.com' },
+      query: {
+        code: 'code',
+        state: 'state',
+        iss: 'https://accounts.google.com',
+      },
       originalUrl:
         '/auth/google/callback?code=code&state=state&iss=https%3A%2F%2Faccounts.google.com&scope=openid%20email',
       cookies: {
@@ -88,8 +93,8 @@ describe('GoogleAuthController', () => {
 
     await controller.callback(request as never, response as never);
 
-    const authorizationInput = vi.mocked(googleAuth.completeAuthorization)
-      .mock.calls[0][0];
+    const authorizationInput = vi.mocked(googleAuth.completeAuthorization).mock
+      .calls[0][0];
     expect(authorizationInput).toMatchObject({
       code: 'code',
       state: 'state',
@@ -152,5 +157,23 @@ describe('GoogleAuthController', () => {
 
     expect(log).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate callback parameters before OIDC validation', async () => {
+    const { controller, googleAuth, response } = controllerFor();
+    const request = {
+      query: { code: ['one', 'two'], state: 'state' },
+      originalUrl: '/auth/google/callback?code=one&code=two&state=state',
+      cookies: {
+        dochub_google_state: 'state',
+        dochub_google_nonce: 'nonce',
+        dochub_google_verifier: 'verifier',
+      },
+      get: vi.fn(),
+    };
+    await expect(
+      controller.callback(request as never, response as never),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(googleAuth.completeAuthorization).not.toHaveBeenCalled();
   });
 });

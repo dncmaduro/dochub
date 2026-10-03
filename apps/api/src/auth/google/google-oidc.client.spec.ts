@@ -21,6 +21,7 @@ const config: AuthConfig = {
   refreshCookieName: 'dochub_refresh',
   refreshCookieSecure: false,
   refreshCookieSameSite: 'lax',
+  webOrigins: [],
   google: {
     clientId: 'client-id',
     clientSecret: 'client-secret',

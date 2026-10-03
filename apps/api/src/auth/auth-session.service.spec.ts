@@ -17,6 +17,7 @@ const config: AuthConfig = {
   refreshCookieName: 'dochub_refresh',
   refreshCookieSecure: false,
   refreshCookieSameSite: 'lax',
+  webOrigins: [],
 };
 
 function activeUser(status: UserStatus = UserStatus.ACTIVE) {
