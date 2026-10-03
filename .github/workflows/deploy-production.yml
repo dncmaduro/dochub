@@ -85,12 +85,32 @@ jobs:
           set -euo pipefail
           sha=$1
           cd /srv/dochub/app
-          test -z "$(git status --porcelain)"
+
+          echo "== Current checkout =="
+          git status --short || true
+          git rev-parse HEAD
+
+          echo "== Fetch target commit =="
           git fetch --quiet origin
           git cat-file -e "$sha^{commit}"
-          git checkout --detach --force "$sha"
-          test "$(git rev-parse HEAD)" = "$sha"
-          test -z "$(git status --porcelain)"
+
+          echo "== Reset tracked source to CI-validated SHA =="
+          git reset --hard "$sha"
+          git checkout --detach "$sha"
+
+          actual_sha="$(git rev-parse HEAD)"
+          if [ "$actual_sha" != "$sha" ]; then
+            echo "Expected SHA: $sha"
+            echo "Actual SHA:   $actual_sha"
+            exit 1
+          fi
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Production checkout is not clean after exact-SHA reset:"
+            git status --short
+            exit 1
+          fi
+
           ./scripts/deploy-production.sh /srv/dochub/.env.production
           printf 'Deployed SHA: '; git rev-parse HEAD
           REMOTE
