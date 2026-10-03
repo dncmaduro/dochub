@@ -52,6 +52,7 @@ function transactionMock() {
       create: vi.fn().mockResolvedValue(user()),
       findUnique: vi.fn().mockResolvedValue(user()),
       update: vi.fn().mockResolvedValue(user()),
+      count: vi.fn().mockResolvedValue(0),
     },
     group: {
       create: vi.fn().mockResolvedValue(group()),
@@ -63,6 +64,7 @@ function transactionMock() {
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
+    $executeRaw: vi.fn().mockResolvedValue(0),
   };
 }
 
@@ -123,7 +125,7 @@ describe('AdminService user mutations', () => {
       service.updateUser(actorId, actorId, { systemRole: SystemRole.MEMBER }),
     ).rejects.toBeInstanceOf(ConflictException);
     await expect(
-      service.updateUser(actorId, actorId, { status: 'SUSPENDED' }),
+      service.suspendUser(actorId, actorId),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
@@ -153,6 +155,28 @@ describe('AdminService user mutations', () => {
     const page = await service.listUsers({ limit: 1 });
     expect(page.items).toHaveLength(1);
     expect(page.nextCursor).toBeTypeOf('string');
+  });
+
+  it('returns an unbound suspended user to INVITED and keeps Google-bound users ACTIVE', async () => {
+    const transaction = transactionMock();
+    const { service } = serviceFor(transaction);
+    transaction.user.findUnique.mockResolvedValueOnce({
+      ...user({ status: UserStatus.SUSPENDED }),
+      authAccounts: [],
+    });
+    await service.reactivateUser(actorId, userId);
+    expect(transaction.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: UserStatus.INVITED } }),
+    );
+
+    transaction.user.findUnique.mockResolvedValueOnce({
+      ...user({ status: UserStatus.SUSPENDED }),
+      authAccounts: [{ id: 'google-account' }],
+    });
+    await service.reactivateUser(actorId, userId);
+    expect(transaction.user.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: { status: UserStatus.ACTIVE } }),
+    );
   });
 });
 

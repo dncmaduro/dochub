@@ -162,6 +162,7 @@ export class AdminService {
   ): Promise<AdminUserResponse> {
     const user = await this.database.prisma.$transaction(
       async (transaction) => {
+        await this.lockAdminMutations(transaction);
         const current = await transaction.user.findUnique({
           where: { id: userId },
           select: userSelect,
@@ -169,23 +170,10 @@ export class AdminService {
         if (!current) {
           throw new NotFoundException('User not found');
         }
-        if (
-          actorUserId === userId &&
-          ((current.systemRole === SystemRole.ADMIN &&
-            dto.systemRole === SystemRole.MEMBER) ||
-            (current.status === UserStatus.ACTIVE &&
-              dto.status === UserStatus.SUSPENDED))
-        ) {
-          throw new ConflictException(
-            'Administrators cannot remove their own administrative access',
-          );
-        }
-
         const data: Prisma.UserUpdateInput = {};
         const changes: {
           displayName?: { from: string; to: string };
           systemRole?: { from: SystemRole; to: SystemRole };
-          status?: { from: UserStatus; to: UserStatus };
         } = {};
         if (
           dto.displayName !== undefined &&
@@ -201,12 +189,14 @@ export class AdminService {
           dto.systemRole !== undefined &&
           dto.systemRole !== current.systemRole
         ) {
+          await this.assertActiveAdminRemains(
+            transaction,
+            current,
+            dto.systemRole,
+            current.status,
+          );
           data.systemRole = dto.systemRole;
           changes.systemRole = { from: current.systemRole, to: dto.systemRole };
-        }
-        if (dto.status !== undefined && dto.status !== current.status) {
-          data.status = dto.status;
-          changes.status = { from: current.status, to: dto.status };
         }
 
         if (Object.keys(data).length === 0) {
@@ -227,6 +217,62 @@ export class AdminService {
         return updated;
       },
     );
+    return this.userResponse(user);
+  }
+
+  async suspendUser(
+    actorUserId: string,
+    userId: string,
+  ): Promise<AdminUserResponse> {
+    return this.transitionUserStatus(actorUserId, userId, UserStatus.SUSPENDED);
+  }
+
+  async reactivateUser(
+    actorUserId: string,
+    userId: string,
+  ): Promise<AdminUserResponse> {
+    const user = await this.database.prisma.$transaction(async (transaction) => {
+      await this.lockAdminMutations(transaction);
+      const current = await transaction.user.findUnique({
+        where: { id: userId },
+        select: { ...userSelect, authAccounts: { where: { provider: AuthProvider.GOOGLE }, select: { id: true }, take: 1 } },
+      });
+      if (!current) throw new NotFoundException('User not found');
+      if (current.status !== UserStatus.SUSPENDED) return current;
+
+      // A person who has never bound Google remains pre-provisioned; they must
+      // complete the normal first-login flow rather than becoming ACTIVE early.
+      const status = current.authAccounts.length ? UserStatus.ACTIVE : UserStatus.INVITED;
+      const updated = await transaction.user.update({
+        where: { id: userId }, data: { status }, select: userSelect,
+      });
+      await this.writeAudit(transaction, {
+        actorUserId, action: 'USER_REACTIVATED', resourceType: 'USER', resourceId: userId,
+        metadata: { from: current.status, to: status },
+      });
+      return updated;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    return this.userResponse(user);
+  }
+
+  private async transitionUserStatus(
+    actorUserId: string,
+    userId: string,
+    nextStatus: UserStatus,
+  ): Promise<AdminUserResponse> {
+    const user = await this.database.prisma.$transaction(async (transaction) => {
+      await this.lockAdminMutations(transaction);
+      const current = await transaction.user.findUnique({ where: { id: userId }, select: userSelect });
+      if (!current) throw new NotFoundException('User not found');
+      if (current.status === nextStatus) return current;
+      await this.assertActiveAdminRemains(transaction, current, current.systemRole, nextStatus);
+      const updated = await transaction.user.update({ where: { id: userId }, data: { status: nextStatus }, select: userSelect });
+      await this.writeAudit(transaction, {
+        actorUserId, action: 'USER_SUSPENDED', resourceType: 'USER', resourceId: userId,
+        metadata: { from: current.status, to: nextStatus },
+      });
+      return updated;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     return this.userResponse(user);
   }
 
@@ -568,6 +614,27 @@ export class AdminService {
         metadata: input.metadata,
       },
     });
+  }
+
+  /** Serializes capability-removing admin mutations across API instances. */
+  private async lockAdminMutations(transaction: Prisma.TransactionClient): Promise<void> {
+    await transaction.$executeRaw`SELECT pg_advisory_xact_lock(35001)`;
+  }
+
+  private async assertActiveAdminRemains(
+    transaction: Prisma.TransactionClient,
+    current: Pick<Prisma.UserGetPayload<{ select: typeof userSelect }>, 'id' | 'status' | 'systemRole'>,
+    nextRole: SystemRole,
+    nextStatus: UserStatus,
+  ): Promise<void> {
+    if (current.status !== UserStatus.ACTIVE || current.systemRole !== SystemRole.ADMIN ||
+      (nextStatus === UserStatus.ACTIVE && nextRole === SystemRole.ADMIN)) return;
+    const remaining = await transaction.user.count({
+      where: { status: UserStatus.ACTIVE, systemRole: SystemRole.ADMIN, id: { not: current.id } },
+    });
+    if (remaining === 0) {
+      throw new ConflictException('At least one active administrator must remain');
+    }
   }
 
   private throwConflictForUnique(error: unknown, message: string): void {

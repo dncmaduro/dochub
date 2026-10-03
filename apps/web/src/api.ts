@@ -67,11 +67,15 @@ export interface AdminUser {
   displayName: string;
   email: string;
   status: string;
+  systemRole: SystemRole;
+  createdAt: string;
+  updatedAt: string;
 }
 export interface AdminGroup {
   id: string;
   name: string;
   description: string | null;
+  memberCount: number;
 }
 export interface SharingPrincipal {
   type: "USER" | "GROUP";
@@ -286,9 +290,22 @@ export class ApiClient {
   async listAdminUsers() {
     return this.request<{ items: AdminUser[] }>("/admin/users?limit=100");
   }
+  async createAdminUser(input: { email: string; displayName: string; systemRole: SystemRole }) {
+    return this.request<AdminUser>("/admin/users", { method: "POST", body: JSON.stringify(input) });
+  }
+  async updateAdminUser(userId: string, input: Partial<Pick<AdminUser, "displayName" | "systemRole">>) {
+    return this.request<AdminUser>(`/admin/users/${userId}`, { method: "PATCH", body: JSON.stringify(input) });
+  }
+  async suspendAdminUser(userId: string) { return this.request<AdminUser>(`/admin/users/${userId}/suspend`, { method: "POST" }); }
+  async reactivateAdminUser(userId: string) { return this.request<AdminUser>(`/admin/users/${userId}/reactivate`, { method: "POST" }); }
   async listAdminGroups() {
     return this.request<{ items: AdminGroup[] }>("/admin/groups?limit=100");
   }
+  async createAdminGroup(input: { name: string }) { return this.request<AdminGroup>("/admin/groups", { method: "POST", body: JSON.stringify(input) }); }
+  async updateAdminGroup(groupId: string, input: { name: string }) { return this.request<AdminGroup>(`/admin/groups/${groupId}`, { method: "PATCH", body: JSON.stringify(input) }); }
+  async listAdminGroupMembers(groupId: string) { return this.request<{ items: { user: AdminUser; addedAt: string }[] }>(`/admin/groups/${groupId}/members?limit=100`); }
+  async addAdminGroupMember(groupId: string, userId: string) { await this.request<void>(`/admin/groups/${groupId}/members`, { method: "POST", body: JSON.stringify({ userId }) }); }
+  async removeAdminGroupMember(groupId: string, userId: string) { await this.request<void>(`/admin/groups/${groupId}/members/${userId}`, { method: "DELETE" }); }
   async moveToTrash(nodeId: string) {
     return this.request<{ operation: { id: string } }>(`/nodes/${nodeId}`, {
       method: "DELETE",

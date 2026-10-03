@@ -2,7 +2,6 @@ import { Type } from 'class-transformer';
 import {
   IsEnum,
   IsEmail,
-  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -87,9 +86,6 @@ export class UpdateUserDto {
   @IsEnum(SystemRole)
   systemRole?: SystemRole;
 
-  @IsOptional()
-  @IsIn([UserStatus.ACTIVE, UserStatus.SUSPENDED])
-  status?: 'ACTIVE' | 'SUSPENDED';
 }
 
 export class CreateGroupDto {

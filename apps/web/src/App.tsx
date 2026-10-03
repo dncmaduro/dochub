@@ -15,6 +15,8 @@ import {
   ApiClient,
   ApiError,
   type Breadcrumb,
+  type AdminGroup,
+  type AdminUser,
   type CollectionItem,
   type DocumentRole,
   type EditorSession,
@@ -52,11 +54,20 @@ function currentFolderId() {
   );
 }
 function currentRoute() {
+  if (window.location.pathname === "/admin/users") return "admin-users";
+  if (window.location.pathname === "/admin/groups") return "admin-groups";
   if (window.location.pathname === "/trash") return "trash";
   if (window.location.pathname === "/search") return "search";
   if (window.location.pathname === "/recent") return "recent";
   if (window.location.pathname === "/favorites") return "favorites";
   return "drive";
+}
+function navigateAdmin(route: "users" | "groups") {
+  const path = `/admin/${route}`;
+  if (window.location.pathname !== path) {
+    window.history.pushState({}, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
 }
 function currentSearchQuery() {
   return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -340,7 +351,7 @@ function App() {
       (session) => {
         if (!active) return;
         if (
-          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search|\/recent|\/favorites)$/i.test(
+          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search|\/recent|\/favorites|\/admin\/(?:users|groups))$/i.test(
             window.location.pathname,
           )
         )
@@ -372,12 +383,50 @@ function App() {
       <CollectionApp kind="recent" />
     ) : location.route === "favorites" ? (
       <CollectionApp kind="favorites" />
+    ) : location.route === "admin-users" || location.route === "admin-groups" ? (
+      systemRole === "ADMIN" ? <AdminApp page={location.route === "admin-users" ? "users" : "groups"} /> : <AccessDenied />
     ) : (
       <DriveApp systemRole={systemRole!} />
     )
   ) : (
     <SignIn />
   );
+}
+function AccessDenied() {
+  return <main className="auth-state">You do not have access to administration.</main>;
+}
+
+function AdminApp({ page }: { page: "users" | "groups" }) {
+  return <div className="app-shell"><Sidebar active={`admin-${page}` as SidebarRoute} systemRole="ADMIN" /><main className="drive-main"><PageHeader title={<h1 className="page-title">Admin · {page === "users" ? "Users" : "Groups"}</h1>} /><section className="admin-content">{page === "users" ? <AdminUsers /> : <AdminGroups />}</section></main></div>;
+}
+
+function AdminUsers() {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [query, setQuery] = useState("");
+  const [notice, setNotice] = useState<Notice>(null);
+  const load = useCallback(async () => { try { setUsers((await api.listAdminUsers()).items); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }, []);
+  useEffect(() => { const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, [load]);
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form = new FormData(event.currentTarget);
+    try { const created = await api.createAdminUser({ email: String(form.get("email")), displayName: String(form.get("displayName")), systemRole: String(form.get("systemRole")) as SystemRole }); setUsers((items) => [created, ...items]); event.currentTarget.reset(); setNotice({ tone: "success", message: "User added. They can now sign in with this Google email." }); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); }
+  }
+  async function action(user: AdminUser, kind: "role" | "status") {
+    if (kind === "status" && user.status !== "SUSPENDED" && !window.confirm(`Suspend ${user.displayName}? They will not be able to sign in.`)) return;
+    try { const updated = kind === "role" ? await api.updateAdminUser(user.id, { systemRole: user.systemRole === "ADMIN" ? "MEMBER" : "ADMIN" }) : user.status === "SUSPENDED" ? await api.reactivateAdminUser(user.id) : await api.suspendAdminUser(user.id); setUsers((items) => items.map((item) => item.id === user.id ? updated : item)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); }
+  }
+  const matching = users.filter((user) => `${user.displayName} ${user.email}`.toLowerCase().includes(query.toLowerCase()));
+  return <><Toast notice={notice} onDismiss={() => setNotice(null)} /><form className="admin-form" onSubmit={create}><input required name="displayName" placeholder="Display name" maxLength={200} /><input required name="email" type="email" placeholder="Google email" maxLength={320} /><select name="systemRole" defaultValue="MEMBER"><option value="MEMBER">Member</option><option value="ADMIN">Admin</option></select><button className="button button-primary">Add user</button></form><input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search users" /><table className="admin-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{matching.map((user) => <tr key={user.id}><td>{user.displayName}</td><td>{user.email}</td><td>{user.systemRole}</td><td>{user.status}</td><td><button className="button" onClick={() => void action(user, "role")}>Make {user.systemRole === "ADMIN" ? "member" : "admin"}</button><button className="button" onClick={() => void action(user, "status")}>{user.status === "SUSPENDED" ? "Reactivate" : "Suspend"}</button></td></tr>)}</tbody></table></>;
+}
+
+function AdminGroups() {
+  const [groups, setGroups] = useState<AdminGroup[]>([]); const [members, setMembers] = useState<Record<string, AdminUser[]>>({}); const [users, setUsers] = useState<AdminUser[]>([]); const [notice, setNotice] = useState<Notice>(null);
+  const load = useCallback(async () => { try { const [groupPage, userPage] = await Promise.all([api.listAdminGroups(), api.listAdminUsers()]); setGroups(groupPage.items); setUsers(userPage.items); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }, []); useEffect(() => { const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, [load]);
+  async function create(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const name = String(new FormData(event.currentTarget).get("name")); try { const group = await api.createAdminGroup({ name }); setGroups((items) => [group, ...items]); event.currentTarget.reset(); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
+  async function toggleMembers(group: AdminGroup) { if (!members[group.id]) { try { const page = await api.listAdminGroupMembers(group.id); setMembers((all) => ({ ...all, [group.id]: page.items.map((item) => item.user) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } } else setMembers((all) => { const next = { ...all }; delete next[group.id]; return next; }); }
+  async function add(groupId: string, userId: string) { try { await api.addAdminGroupMember(groupId, userId); const page = await api.listAdminGroupMembers(groupId); setMembers((all) => ({ ...all, [groupId]: page.items.map((item) => item.user) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
+  async function remove(groupId: string, userId: string) { try { await api.removeAdminGroupMember(groupId, userId); setMembers((all) => ({ ...all, [groupId]: (all[groupId] ?? []).filter((user) => user.id !== userId) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
+  async function rename(group: AdminGroup) { const name = window.prompt("Group name", group.name); if (!name || name === group.name) return; try { const updated = await api.updateAdminGroup(group.id, { name }); setGroups((items) => items.map((item) => item.id === group.id ? updated : item)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
+  return <><Toast notice={notice} onDismiss={() => setNotice(null)} /><form className="admin-form" onSubmit={create}><input required name="name" placeholder="New group name" maxLength={200} /><button className="button button-primary">New group</button></form><table className="admin-table"><thead><tr><th>Group name</th><th>Members</th><th>Actions</th></tr></thead><tbody>{groups.map((group) => <><tr key={group.id}><td>{group.name}</td><td>{group.memberCount}</td><td><button className="button" onClick={() => void rename(group)}>Rename</button><button className="button" onClick={() => void toggleMembers(group)}>{members[group.id] ? "Close members" : "Manage members"}</button></td></tr>{members[group.id] && <tr key={`${group.id}-members`}><td colSpan={3}><select defaultValue="" onChange={(event) => { if (event.target.value) void add(group.id, event.target.value); event.currentTarget.value = ""; }}><option value="">Add a user…</option>{users.filter((user) => !members[group.id].some((member) => member.id === user.id)).map((user) => <option key={user.id} value={user.id}>{user.displayName} — {user.email}</option>)}</select>{members[group.id].map((user) => <div className="admin-member" key={user.id}>{user.displayName} <button className="button" onClick={() => void remove(group.id, user.id)}>Remove</button></div>)}</td></tr>}</>)}</tbody></table></>;
 }
 function SignIn() {
   return (
@@ -453,9 +502,9 @@ function PageHeader({
   );
 }
 
-type SidebarRoute = "drive" | "recent" | "favorites" | "trash" | null;
+type SidebarRoute = "drive" | "recent" | "favorites" | "trash" | "admin-users" | "admin-groups" | null;
 
-function Sidebar({ active }: { active: SidebarRoute }) {
+function Sidebar({ active, systemRole }: { active: SidebarRoute; systemRole?: SystemRole }) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -471,6 +520,10 @@ function Sidebar({ active }: { active: SidebarRoute }) {
           <Icon name="folder" />
           <span>Files</span>
         </button>
+        {systemRole === "ADMIN" && <>
+          <button className={`nav-item${active === "admin-users" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin("users")}><Icon name="folder" /><span>Admin · Users</span></button>
+          <button className={`nav-item${active === "admin-groups" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin("groups")}><Icon name="folder" /><span>Admin · Groups</span></button>
+        </>}
         <button
           className={`nav-item${active === "recent" ? " is-active" : ""}`}
           type="button"
@@ -615,7 +668,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   const canCreateHere = folderId !== null || canPlaceAtRoot;
   return (
     <div className="app-shell">
-      <Sidebar active="drive" />
+      <Sidebar active="drive" systemRole={systemRole} />
       <main className="drive-main">
         <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />}>
             <button

@@ -48,4 +48,14 @@ export class AdminUsersController {
   ) {
     return this.admin.updateUser(auth.userId, params.userId, dto);
   }
+
+  @Post(':userId/suspend')
+  suspend(@CurrentAuth() auth: AuthPrincipal, @Param() params: UserIdParamDto) {
+    return this.admin.suspendUser(auth.userId, params.userId);
+  }
+
+  @Post(':userId/reactivate')
+  reactivate(@CurrentAuth() auth: AuthPrincipal, @Param() params: UserIdParamDto) {
+    return this.admin.reactivateUser(auth.userId, params.userId);
+  }
 }
