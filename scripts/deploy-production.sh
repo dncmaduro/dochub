@@ -17,8 +17,8 @@ required_keys=(
   GOOGLE_REDIRECT_URI AUTH_LOGIN_SUCCESS_REDIRECT_URL
   ONLYOFFICE_PUBLIC_URL ONLYOFFICE_INTERNAL_API_URL ONLYOFFICE_JWT_SECRET
   ONLYOFFICE_FETCH_TOKEN_SECRET DOCHUB_STORAGE_HOST_PATH
-  DOCHUB_UPLOAD_TEMP_HOST_PATH POSTGRES_DATA_HOST_PATH LETSENCRYPT_HOST_PATH
-  CERTBOT_WEBROOT_HOST_PATH
+  DOCHUB_UPLOAD_TEMP_HOST_PATH POSTGRES_DATA_HOST_PATH WEB_GATEWAY_PORT
+  ONLYOFFICE_GATEWAY_PORT
 )
 for key in "${required_keys[@]}"; do
   if ! grep -qE "^${key}=.+" "$env_file"; then
@@ -41,8 +41,9 @@ compose=(docker compose --env-file "$env_file" -f docker-compose.prod.yml)
 "${compose[@]}" --profile migration run --rm migrate
 "${compose[@]}" up -d --wait --remove-orphans
 
-# This checks the public TLS proxy locally without exposing a health route.
+# Public TLS is terminated by host Nginx. Check the loopback-only web gateway.
 web_host=$(sed -n 's/^WEB_HOST=//p' "$env_file" | head -n 1)
-curl --fail --silent --show-error --resolve "$web_host:443:127.0.0.1" \
-  "https://$web_host/api/health" >/dev/null
+web_port=$(sed -n 's/^WEB_GATEWAY_PORT=//p' "$env_file" | head -n 1)
+curl --fail --silent --show-error --header "Host: $web_host" \
+  "http://127.0.0.1:$web_port/api/health" >/dev/null
 echo "Deployment completed; API readiness check passed."

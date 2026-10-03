@@ -23,7 +23,5 @@ uploads
 tmp
 data
 *.log
-Dockerfile*
-docker-compose*.yml
 docs
 *.md

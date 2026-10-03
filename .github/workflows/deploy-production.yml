@@ -1,0 +1,103 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.5-alpine
+        env:
+          POSTGRES_DB: dochub
+          POSTGRES_USER: dochub
+          POSTGRES_PASSWORD: dochub_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dochub -d dochub"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+      tika:
+        image: apache/tika:3.2.3.0-full
+        ports: ["9998:9998"]
+    env:
+      DATABASE_URL: "postgresql://dochub:dochub_ci@localhost:5432/dochub"
+      TIKA_URL: http://localhost:9998
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+      - name: Enable pnpm 9.15.5
+        run: corepack enable && corepack prepare pnpm@9.15.5 --activate
+      - run: pnpm install --frozen-lockfile
+      - name: Wait for Tika
+        run: curl --fail --retry 18 --retry-delay 5 http://localhost:9998/version
+      - name: Apply test migrations
+        run: pnpm --filter @dochub/database exec prisma migrate deploy
+      - run: pnpm --filter api test
+      - run: pnpm --filter worker test
+      - run: pnpm --filter api lint
+      - run: pnpm --filter worker lint
+      - run: pnpm --filter web lint
+      - run: pnpm --filter web build
+      - run: pnpm build
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - name: Install dedicated deployment key and trusted host key
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Deploy the CI-validated commit
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_PORT: ${{ vars.VPS_PORT }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_SHA" <<'REMOTE'
+          set -euo pipefail
+          sha=$1
+          cd /srv/dochub/app
+          test -z "$(git status --porcelain)"
+          git fetch --quiet origin
+          git cat-file -e "$sha^{commit}"
+          git checkout --detach --force "$sha"
+          test "$(git rev-parse HEAD)" = "$sha"
+          test -z "$(git status --porcelain)"
+          ./scripts/deploy-production.sh /srv/dochub/.env.production
+          printf 'Deployed SHA: '; git rev-parse HEAD
+          REMOTE
+      - name: Verify public production health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error https://docshub.space/api/health; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1

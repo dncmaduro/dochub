@@ -17,4 +17,4 @@ RUN corepack enable && corepack prepare pnpm@9.15.5 --activate \
 FROM nginx:1.27.4-alpine AS runtime
 COPY docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /workspace/apps/web/dist /usr/share/nginx/html
-EXPOSE 80 443
+EXPOSE 80

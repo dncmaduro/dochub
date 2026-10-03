@@ -14,24 +14,12 @@ services:
       NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE}
       NGINX_ENVSUBST_FILTER: 'WEB_HOST|ONLYOFFICE_HOST|NGINX_CLIENT_MAX_BODY_SIZE'
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - type: bind
-        source: ${LETSENCRYPT_HOST_PATH}
-        target: /etc/letsencrypt
-        read_only: true
-      - type: bind
-        source: ${CERTBOT_WEBROOT_HOST_PATH}
-        target: /var/www/certbot
-        read_only: true
+      - "127.0.0.1:${WEB_GATEWAY_PORT:-8081}:80"
     depends_on:
       api:
         condition: service_healthy
-      onlyoffice:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-check-certificate -qO- --header \"Host: $$WEB_HOST\" https://127.0.0.1/healthz | grep -qx ok"]
+      test: ["CMD-SHELL", "wget -qO- --header \"Host: $$WEB_HOST\" http://127.0.0.1/healthz | grep -qx ok"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -171,6 +159,8 @@ services:
     environment:
       JWT_ENABLED: "true"
       JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+    ports:
+      - "127.0.0.1:${ONLYOFFICE_GATEWAY_PORT:-8082}:80"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost/healthcheck >/dev/null"]
       interval: 15s

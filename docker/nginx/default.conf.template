@@ -1,39 +1,9 @@
-# Rendered by the official nginx image. NGINX_ENVSUBST_FILTER deliberately
-# restricts substitution to WEB_HOST, ONLYOFFICE_HOST and the upload limit so
-# nginx's own $host/$scheme variables remain intact.
+# Host Nginx terminates public TLS and proxies to this loopback-only gateway.
+# Restrict substitution so nginx's own variables remain intact.
 server {
     listen 80;
     listen [::]:80;
-    server_name ${WEB_HOST} ${ONLYOFFICE_HOST};
-
-    location ^~ /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-        default_type "text/plain";
-    }
-
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
     server_name ${WEB_HOST};
-
-    ssl_certificate /etc/letsencrypt/live/${WEB_HOST}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${WEB_HOST}/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_timeout 1d;
-    ssl_session_cache shared:TLS:10m;
-
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
-    add_header Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; frame-src https://${ONLYOFFICE_HOST}; script-src 'self' https://${ONLYOFFICE_HOST}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:" always;
 
     client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
 
@@ -45,11 +15,16 @@ server {
 
     location ^~ /api/ {
         proxy_http_version 1.1;
+        # The public API prefix is stripped before proxying.  Preserve the
+        # application cookies' scope at the browser-facing /api/auth paths;
+        # this changes only the Path attribute, not cookie values or security
+        # attributes such as HttpOnly, Secure, SameSite, or Max-Age.
+        proxy_cookie_path ~^/auth(?<dochub_auth_path>/.*)?$ /api/auth$dochub_auth_path;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
         proxy_request_buffering off;
         proxy_buffering off;
         proxy_connect_timeout 10s;
@@ -66,12 +41,6 @@ server {
     location = /index.html {
         root /usr/share/nginx/html;
         add_header Cache-Control "no-cache" always;
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "no-referrer" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
-        add_header Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; frame-src https://${ONLYOFFICE_HOST}; script-src 'self' https://${ONLYOFFICE_HOST}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:" always;
     }
 
     location ^~ /assets/ {
@@ -79,44 +48,5 @@ server {
         try_files $uri =404;
         expires 1y;
         add_header Cache-Control "public, max-age=31536000, immutable" always;
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "no-referrer" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
-        add_header Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; frame-src https://${ONLYOFFICE_HOST}; script-src 'self' https://${ONLYOFFICE_HOST}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:" always;
-    }
-}
-
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
-    server_name ${ONLYOFFICE_HOST};
-
-    ssl_certificate /etc/letsencrypt/live/${WEB_HOST}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${WEB_HOST}/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_timeout 1d;
-    ssl_session_cache shared:TLS:10m;
-
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer" always;
-
-    location / {
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        # ONLYOFFICE uses upgraded connections for collaborative editing.
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_connect_timeout 10s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
-        proxy_pass http://onlyoffice:80;
     }
 }
