@@ -1,0 +1,199 @@
+name: dochub
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        VITE_API_ORIGIN: /api
+    image: ${DOCHUB_WEB_IMAGE:-dochub-web}:${DOCHUB_IMAGE_TAG:-local}
+    environment:
+      WEB_HOST: ${WEB_HOST}
+      ONLYOFFICE_HOST: ${ONLYOFFICE_HOST}
+      NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE}
+      NGINX_ENVSUBST_FILTER: 'WEB_HOST|ONLYOFFICE_HOST|NGINX_CLIENT_MAX_BODY_SIZE'
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - type: bind
+        source: ${LETSENCRYPT_HOST_PATH}
+        target: /etc/letsencrypt
+        read_only: true
+      - type: bind
+        source: ${CERTBOT_WEBROOT_HOST_PATH}
+        target: /var/www/certbot
+        read_only: true
+    depends_on:
+      api:
+        condition: service_healthy
+      onlyoffice:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- --header \"Host: $$WEB_HOST\" https://127.0.0.1/healthz | grep -qx ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks: [proxy]
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+      target: runtime
+    image: ${DOCHUB_API_IMAGE:-dochub-api}:${DOCHUB_IMAGE_TAG:-local}
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NODE_OPTIONS: --max-old-space-size=${API_NODE_MAX_OLD_SPACE_MB:-512}
+      DATABASE_URL: ${DATABASE_URL}
+      STORAGE_DRIVER: ${STORAGE_DRIVER}
+      STORAGE_ROOT: /data/storage
+      UPLOAD_TEMP_ROOT: /data/uploads
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES}
+      API_JSON_BODY_LIMIT_BYTES: ${API_JSON_BODY_LIMIT_BYTES}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS}
+      WEB_ORIGIN: ${WEB_ORIGIN}
+      AUTH_ACCESS_TOKEN_SECRET: ${AUTH_ACCESS_TOKEN_SECRET}
+      AUTH_ACCESS_TOKEN_TTL_SECONDS: ${AUTH_ACCESS_TOKEN_TTL_SECONDS}
+      AUTH_REFRESH_TOKEN_TTL_DAYS: ${AUTH_REFRESH_TOKEN_TTL_DAYS}
+      AUTH_REFRESH_COOKIE_NAME: ${AUTH_REFRESH_COOKIE_NAME}
+      AUTH_REFRESH_COOKIE_SECURE: ${AUTH_REFRESH_COOKIE_SECURE}
+      AUTH_REFRESH_COOKIE_SAME_SITE: ${AUTH_REFRESH_COOKIE_SAME_SITE}
+      AUTH_REFRESH_COOKIE_DOMAIN: ${AUTH_REFRESH_COOKIE_DOMAIN:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
+      AUTH_LOGIN_SUCCESS_REDIRECT_URL: ${AUTH_LOGIN_SUCCESS_REDIRECT_URL}
+      ONLYOFFICE_PUBLIC_URL: ${ONLYOFFICE_PUBLIC_URL}
+      ONLYOFFICE_INTERNAL_API_URL: ${ONLYOFFICE_INTERNAL_API_URL}
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+      ONLYOFFICE_FETCH_TOKEN_SECRET: ${ONLYOFFICE_FETCH_TOKEN_SECRET}
+      ONLYOFFICE_FETCH_TOKEN_TTL_SECONDS: ${ONLYOFFICE_FETCH_TOKEN_TTL_SECONDS}
+      ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS: ${ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS}
+    volumes:
+      - type: bind
+        source: ${DOCHUB_STORAGE_HOST_PATH}
+        target: /data/storage
+      - type: bind
+        source: ${DOCHUB_UPLOAD_TEMP_HOST_PATH}
+        target: /data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: ${API_MEMORY_LIMIT:-768m}
+    restart: unless-stopped
+    networks: [proxy, backend]
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    image: ${DOCHUB_WORKER_IMAGE:-dochub-worker}:${DOCHUB_IMAGE_TAG:-local}
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=${WORKER_NODE_MAX_OLD_SPACE_MB:-512}
+      DATABASE_URL: ${DATABASE_URL}
+      STORAGE_DRIVER: ${STORAGE_DRIVER}
+      STORAGE_ROOT: /data/storage
+      TIKA_URL: ${TIKA_URL}
+      TIKA_REQUEST_TIMEOUT_SECONDS: ${TIKA_REQUEST_TIMEOUT_SECONDS}
+      TIKA_MAX_TEXT_BYTES: ${TIKA_MAX_TEXT_BYTES}
+      FILE_PROCESSING_POLL_SECONDS: ${FILE_PROCESSING_POLL_SECONDS}
+      FILE_PROCESSING_BATCH_SIZE: ${FILE_PROCESSING_BATCH_SIZE}
+      FILE_PROCESSING_CONCURRENCY: ${FILE_PROCESSING_CONCURRENCY}
+      FILE_PROCESSING_LEASE_SECONDS: ${FILE_PROCESSING_LEASE_SECONDS}
+      FILE_PROCESSING_MAX_ATTEMPTS: ${FILE_PROCESSING_MAX_ATTEMPTS}
+      TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS}
+      TRASH_RETENTION_POLL_SECONDS: ${TRASH_RETENTION_POLL_SECONDS}
+      TRASH_RETENTION_BATCH_SIZE: ${TRASH_RETENTION_BATCH_SIZE}
+      TRASH_RETENTION_OPERATION_CONCURRENCY: ${TRASH_RETENTION_OPERATION_CONCURRENCY}
+    volumes:
+      - type: bind
+        source: ${DOCHUB_STORAGE_HOST_PATH}
+        target: /data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      tika:
+        condition: service_healthy
+    mem_limit: ${WORKER_MEMORY_LIMIT:-768m}
+    restart: unless-stopped
+    networks: [backend]
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+      target: migrate
+    image: ${DOCHUB_MIGRATE_IMAGE:-dochub-migrate}:${DOCHUB_IMAGE_TAG:-local}
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    profiles: [migration]
+    networks: [backend]
+
+  postgres:
+    image: postgres:17.5-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - type: bind
+        source: ${POSTGRES_DATA_HOST_PATH}
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
+    restart: unless-stopped
+    networks: [backend]
+
+  onlyoffice:
+    image: onlyoffice/documentserver:9.4.0
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/healthcheck >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    mem_limit: ${ONLYOFFICE_MEMORY_LIMIT:-2g}
+    restart: unless-stopped
+    networks: [proxy, backend]
+
+  tika:
+    image: apache/tika:3.2.3.0-full
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9998/version >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    mem_limit: ${TIKA_MEMORY_LIMIT:-1g}
+    restart: unless-stopped
+    networks: [backend]
+
+networks:
+  proxy:
+  backend:
+    internal: true

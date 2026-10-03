@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1
+FROM node:22.23.2-bookworm-slim AS build
+
+WORKDIR /workspace
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps ./apps
+COPY packages ./packages
+
+RUN corepack enable && corepack prepare pnpm@9.15.5 --activate \
+    && pnpm install --frozen-lockfile \
+    && pnpm --filter @dochub/database exec prisma generate \
+    && pnpm build \
+    && pnpm --filter api --prod deploy /opt/api \
+    && cp -a /workspace/node_modules/.pnpm/@prisma+client@*/node_modules/.prisma \
+      /opt/api/node_modules/.pnpm/@prisma+client@*/node_modules/
+
+# This target intentionally retains the Prisma CLI and migration SQL. It is used
+# only by the one-shot migration service, never by the long-running API.
+FROM build AS migrate
+ENV NODE_ENV=production
+CMD ["pnpm", "--filter", "@dochub/database", "exec", "prisma", "migrate", "deploy"]
+
+FROM node:22.23.2-bookworm-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /opt/api /app
+RUN chown -R node:node /app
+
+USER node
+EXPOSE 3000
+CMD ["node", "dist/main.js"]
