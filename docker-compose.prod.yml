@@ -25,6 +25,9 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks: [proxy]
 
   api:
@@ -80,6 +83,9 @@ services:
       start_period: 20s
     mem_limit: ${API_MEMORY_LIMIT:-768m}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks: [proxy, backend]
 
   worker:
@@ -116,6 +122,9 @@ services:
         condition: service_healthy
     mem_limit: ${WORKER_MEMORY_LIMIT:-768m}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks: [backend]
 
   migrate:
@@ -131,6 +140,9 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     profiles: [migration]
     networks: [backend]
 
@@ -152,6 +164,9 @@ services:
       start_period: 10s
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks: [backend]
 
   onlyoffice:
@@ -169,6 +184,9 @@ services:
       start_period: 45s
     mem_limit: ${ONLYOFFICE_MEMORY_LIMIT:-2g}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks: [proxy, backend]
 
   tika:
@@ -181,6 +199,9 @@ services:
       start_period: 20s
     mem_limit: ${TIKA_MEMORY_LIMIT:-1g}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks: [backend]
 
 networks:

@@ -72,6 +72,10 @@ For rollback, check out a known-good commit SHA, confirm a clean worktree, and
 run the same script. Do not automatically reverse migrations; assess schema
 compatibility and restore data only through a tested backup procedure.
 
+See [backup and recovery operations](backup-restore.md) for the encrypted
+offsite backup procedure, restore drills, capacity thresholds, TLS operations,
+and disaster-recovery order.
+
 ## Capacity
 
 The supplied defaults target a VPS with at least 6 GiB RAM: API 768 MiB,
