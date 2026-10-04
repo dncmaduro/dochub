@@ -19,7 +19,7 @@ jobs:
       postgres:
         image: postgres:17.5-alpine
         env:
-          POSTGRES_DB: dochub
+          POSTGRES_DB: dochub_worker_test
           POSTGRES_USER: dochub
           POSTGRES_PASSWORD: dochub_ci
         ports: ["5432:5432"]
@@ -30,7 +30,8 @@ jobs:
         image: apache/tika:3.2.3.0-full
         ports: ["9998:9998"]
     env:
-      DATABASE_URL: "postgresql://dochub:dochub_ci@localhost:5432/dochub"
+      DATABASE_URL: "postgresql://dochub:dochub_ci@localhost:5432/dochub_worker_test"
+      WORKER_TEST_DATABASE_URL: "postgresql://dochub:dochub_ci@localhost:5432/dochub_worker_test"
       TIKA_URL: http://localhost:9998
     steps:
       - uses: actions/checkout@v4

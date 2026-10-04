@@ -81,6 +81,7 @@ describe('file processing with PostgreSQL, LocalFileStorage, and Tika', () => {
     } finally {
       await database.$disconnect();
       await rm(root, { recursive: true, force: true });
+      nodeIds.length = 0;
     }
   });
 
@@ -194,6 +195,24 @@ describe('file processing with PostgreSQL, LocalFileStorage, and Tika', () => {
       fileVersionId: current.id,
       contentText: expect.stringContaining('Quarterly Báo cáo doanh thu 2026'),
     });
+  });
+
+  it('advances its batch cursor without duplicating work for unrelated current files', async () => {
+    const first = await version(undefined, 'first current version');
+    const second = await version(undefined, 'second current version');
+    const worker = service();
+
+    expect(await worker.backfillCurrentVersions()).toBe(1);
+    expect(await worker.backfillCurrentVersions()).toBe(1);
+    expect(await worker.backfillCurrentVersions()).toBe(0);
+    expect(
+      await database.fileProcessingTask.count({
+        where: {
+          fileVersionId: { in: [first.id, second.id] },
+          type: FileProcessingTaskType.TEXT_EXTRACTION,
+        },
+      }),
+    ).toBe(2);
   });
 
   it('does not let an out-of-order v1 completion overwrite v2 content', async () => {

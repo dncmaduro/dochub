@@ -73,14 +73,15 @@ No schema or migration is added.
 
 ```sh
 pnpm --filter worker start:dev
-pnpm --filter worker test             # units, then serialized PostgreSQL integration
-pnpm --filter worker test:integration
+WORKER_TEST_DATABASE_URL=postgresql://.../dochub_worker_test pnpm --filter worker test
+WORKER_TEST_DATABASE_URL=postgresql://.../dochub_worker_test pnpm --filter worker test:integration
 pnpm --filter worker test:e2e          # real application context and database
 pnpm --filter worker lint
 ```
 
-Integration and e2e tests require PostgreSQL and fail when DATABASE_URL is absent.
-They use fixture-scoped candidate queries and temporary LocalFileStorage roots,
-cleaning only fixture records and binaries. Never smoke-test retention against
-real document storage: use isolated STORAGE_ROOT and controlled fixtures or
-confirm that the database contains no eligible operations before starting.
+Worker integration tests require `WORKER_TEST_DATABASE_URL`, which must name a
+dedicated database ending in `_worker_test`; it is migrated before the run and
+truncated before and after the serialized suite. This prevents the worker's
+global backfill cursor and leased task claims from observing a developer DB.
+Fixtures also use temporary LocalFileStorage roots. Never point this URL at a
+development or production database. E2E tests remain separately configured.
