@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Docs Hub backup timer
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+Unit=dochub-backup.service
+
+[Install]
+WantedBy=timers.target

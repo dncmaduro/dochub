@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Docs Hub backup verification timer
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+Unit=dochub-backup-verify.service
+
+[Install]
+WantedBy=timers.target

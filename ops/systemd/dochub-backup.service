@@ -1,0 +1,10 @@
+[Unit]
+Description=Docs Hub encrypted offsite backup
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/srv/dochub/app
+ExecStart=/srv/dochub/app/scripts/backup-production.sh
