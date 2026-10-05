@@ -714,14 +714,58 @@ function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile
 
 function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: () => void }) {
   const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const canAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
   const initials = profile.displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "U";
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const triggerElement = trigger.current;
+      const menuElement = menu.current;
+      if (!triggerElement || !menuElement) return;
+
+      const triggerRect = triggerElement.getBoundingClientRect();
+      const menuRect = menuElement.getBoundingClientRect();
+      const margin = 12;
+      const gap = 8;
+      const maxLeft = Math.max(margin, window.innerWidth - margin - menuRect.width);
+      const maxTop = Math.max(margin, window.innerHeight - margin - menuRect.height);
+
+      const preferredRight = triggerRect.right + gap;
+      const fallbackLeft = triggerRect.left - menuRect.width - gap;
+      const preferredLeft =
+        preferredRight + menuRect.width <= window.innerWidth - margin
+          ? preferredRight
+          : fallbackLeft;
+      const left = Math.min(maxLeft, Math.max(margin, preferredLeft));
+
+      const preferredAbove = triggerRect.top - menuRect.height - gap;
+      const preferredBelow = triggerRect.bottom + gap;
+      const preferredTop = preferredAbove >= margin ? preferredAbove : preferredBelow;
+      const top = Math.min(maxTop, Math.max(margin, preferredTop));
+
+      setPosition({ top, left });
+    };
+
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent | KeyboardEvent) => {
       if (event instanceof KeyboardEvent && event.key === "Escape") setOpen(false);
-      if (event instanceof MouseEvent && menu.current && !menu.current.contains(event.target as globalThis.Node)) setOpen(false);
+      if (
+        event instanceof MouseEvent &&
+        !menu.current?.contains(event.target as globalThis.Node) &&
+        !trigger.current?.contains(event.target as globalThis.Node)
+      ) setOpen(false);
     };
     document.addEventListener("mousedown", close);
     document.addEventListener("keydown", close);
@@ -734,20 +778,42 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
     setOpen(false);
     action();
   }
-  return <div className="account-area" ref={menu}>
-    {open && <div className="account-menu" role="menu">
-      <div className="account-menu-profile"><strong>{profile.displayName}</strong><span>{profile.email}</span><small>{profile.systemRole === "ADMIN" ? "Administrator" : "Member"}</small></div>
-      <div className="account-menu-divider" />
-      <button type="button" role="menuitem" onClick={() => go(navigateProfile)}>Profile</button>
-      {canAdmin && <button type="button" role="menuitem" onClick={() => go(() => navigateAdmin())}>Admin</button>}
-      <div className="account-menu-divider" />
-      <button type="button" role="menuitem" onClick={() => go(onSignOut)}>Sign out</button>
-    </div>}
-    <button type="button" className="account-trigger" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((value) => !value)}>
+  return <div className="account-area">
+    <button
+      ref={trigger}
+      type="button"
+      className="account-trigger"
+      aria-expanded={open}
+      aria-haspopup="menu"
+      onClick={() => {
+        setPosition(null);
+        setOpen((value) => !value);
+      }}
+    >
       <span className="account-initials" aria-hidden="true">{initials}</span>
       <span className="account-copy"><strong>My account</strong><small>{profile.displayName}</small></span>
       <Icon name="chevron-down" size={15} />
     </button>
+    {open && createPortal(
+      <div
+        ref={menu}
+        className="account-menu"
+        role="menu"
+        style={{
+          top: position?.top ?? 0,
+          left: position?.left ?? 0,
+          visibility: position ? "visible" : "hidden",
+        }}
+      >
+        <div className="account-menu-profile"><strong>{profile.displayName}</strong><span>{profile.email}</span><small>{profile.systemRole === "ADMIN" ? "Administrator" : "Member"}</small></div>
+        <div className="account-menu-divider" />
+        <button type="button" role="menuitem" onClick={() => go(navigateProfile)}>Profile</button>
+        {canAdmin && <button type="button" role="menuitem" onClick={() => go(() => navigateAdmin())}>Admin</button>}
+        <div className="account-menu-divider" />
+        <button type="button" role="menuitem" onClick={() => go(onSignOut)}>Sign out</button>
+      </div>,
+      document.body,
+    )}
   </div>;
 }
 

@@ -269,11 +269,9 @@
   font-size: 11px;
 }
 .account-menu {
-  position: absolute;
-  z-index: 12;
-  right: 0;
-  bottom: calc(100% - 12px);
-  width: min(260px, calc(100vw - 20px));
+  position: fixed;
+  z-index: 1000;
+  width: min(260px, calc(100vw - 24px));
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1415,11 +1413,6 @@ summary:focus-visible {
   }
   .account-copy {
     display: none;
-  }
-  .account-menu {
-    right: 0;
-    bottom: auto;
-    top: calc(100% - 4px);
   }
   .nav-item {
     padding: 7px 9px;
