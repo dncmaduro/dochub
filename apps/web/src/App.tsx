@@ -4,6 +4,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
+  createContext,
+  useContext,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -37,7 +39,7 @@ import { changeLocale, getLocale, translate as t, type Locale } from "./i18n";
 import "./App.css";
 
 const api = new ApiClient();
-type Notice = { tone: "error" | "success"; message: string } | null;
+type Notice = { tone: "error" | "success" | "info"; message: string; durationMs?: number } | null;
 type AvailablePreview = PreviewSession & { canDownload: boolean };
 type UnavailablePreview = {
   unavailable: true;
@@ -48,8 +50,16 @@ type UnavailablePreview = {
 type Preview = AvailablePreview | UnavailablePreview;
 type ActiveEditorSession = EditorSession & {
   nodeId: string;
-  canEdit: boolean;
 };
+type PendingEditorSave = { nodeId: string; sessionId: string; status: "pending" | "success" | "failure" };
+type EditorSaveContextValue = {
+  saves: PendingEditorSave[];
+  isFilePending: (nodeId: string) => boolean;
+  startFinalization: (session: ActiveEditorSession) => void;
+  notice: Notice;
+  dismissNotice: () => void;
+};
+const EditorSaveContext = createContext<EditorSaveContextValue | null>(null);
 type OnlyOfficeEditor = {
   destroyEditor?: () => void;
   requestClose?: () => void;
@@ -143,6 +153,11 @@ function displayError(error: unknown) {
     ? error.message
     : t("errors.generic");
 }
+function displayEditorOpenError(error: unknown) {
+  return error instanceof ApiError && error.status === 409 && error.message === "File is still being saved"
+    ? t("editor.stillSaving")
+    : displayError(error);
+}
 function onlyOfficeErrorMessage(error: unknown) {
   if (!error || typeof error !== "object") return t("editor.failed");
   const value = error as Record<string, unknown>;
@@ -164,19 +179,26 @@ function hasCapability(node: Node, capability: string) {
 function isOnlyOfficeEditableFile(name: string) {
   return /\.(doc|docx|xls|xlsx|ppt|pptx)$/i.test(name);
 }
+function resolveEditorMode(node: Node): "VIEW" | "EDIT" {
+  return hasCapability(node, "EDIT") ? "EDIT" : "VIEW";
+}
 async function openFileActivation(
   node: Node,
   setEditor: (session: ActiveEditorSession) => void,
   setPreview: (preview: Preview) => void,
   onError: (notice: Notice) => void,
+  isFilePending: (nodeId: string) => boolean = () => false,
 ) {
   try {
+    if (isFilePending(node.id)) {
+      onError({ tone: "info", message: t("editor.stillSaving") });
+      return;
+    }
     if (isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")) {
-      const session = await api.createEditorSession(node.id, "VIEW");
+      const session = await api.createEditorSession(node.id, resolveEditorMode(node));
       setEditor({
         ...session,
         nodeId: node.id,
-        canEdit: hasCapability(node, "EDIT"),
       });
       return;
     }
@@ -196,7 +218,7 @@ async function openFileActivation(
     }
     if (hasCapability(node, "DOWNLOAD")) await api.download(node);
   } catch (error) {
-    onError({ tone: "error", message: displayError(error) });
+    onError({ tone: "error", message: displayEditorOpenError(error) });
   }
 }
 function formatDate(value: string) {
@@ -345,7 +367,8 @@ function Toast({
 }) {
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(onDismiss, 3200);
+    if (notice.durationMs === 0) return;
+    const timer = window.setTimeout(onDismiss, notice.durationMs ?? 3200);
     return () => window.clearTimeout(timer);
   }, [notice, onDismiss]);
   if (!notice) return null;
@@ -409,6 +432,40 @@ function useDialogFocus() {
 
 function App() {
   useTranslation();
+  const [pendingSaves, setPendingSaves] = useState<PendingEditorSave[]>([]);
+  const [saveNotice, setSaveNotice] = useState<Notice>(null);
+  const isFilePending = useCallback(
+    (nodeId: string) => pendingSaves.some((save) => save.nodeId === nodeId && save.status === "pending"),
+    [pendingSaves],
+  );
+  const startFinalization = useCallback((session: ActiveEditorSession) => {
+    const save: PendingEditorSave = {
+      nodeId: session.nodeId,
+      sessionId: session.session.id,
+      status: "pending",
+    };
+    setPendingSaves((current) => [...current.filter((item) => item.sessionId !== save.sessionId), save]);
+    setSaveNotice({ tone: "info", message: t("editor.savingChanges"), durationMs: 0 });
+    // This request is owned by the app shell, so EditorDialog unmount and route
+    // changes cannot cancel it.
+    const failed = () => {
+      setPendingSaves((current) => current.map((item) => item.sessionId === save.sessionId ? { ...item, status: "failure" } : item));
+      setSaveNotice({ tone: "error", message: t("editor.saveFailed"), durationMs: 0 });
+      window.dispatchEvent(new CustomEvent("editor-session-finalization-failed", { detail: { nodeId: session.nodeId } }));
+    };
+    void api.closeEditorSession(session.session.id).then(
+      (result) => {
+        if (result.status === "FAILED") {
+          failed();
+          return;
+        }
+        setPendingSaves((current) => current.map((item) => item.sessionId === save.sessionId ? { ...item, status: "success" } : item));
+        setSaveNotice({ tone: "success", message: t("editor.changesSaved") });
+        window.dispatchEvent(new CustomEvent("editor-session-finalized", { detail: { nodeId: session.nodeId } }));
+      },
+      failed,
+    );
+  }, []);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [profile, setProfile] = useState<CurrentUser | null>(null);
   const [location, setLocation] = useState(() => ({
@@ -483,7 +540,24 @@ function App() {
   const active: SidebarRoute = location.route === "drive" || location.route === "recent" || location.route === "favorites" || location.route === "trash"
     ? location.route
     : location.route === "admin" && isAdmin ? "admin" : null;
-  return <AppShell profile={profile} active={active} onSignOut={() => void signOut()}>{page}</AppShell>;
+  const editorSaveContext: EditorSaveContextValue = {
+    saves: pendingSaves,
+    isFilePending,
+    startFinalization,
+    notice: saveNotice,
+    dismissNotice: () => setSaveNotice(null),
+  };
+  return (
+    <EditorSaveContext.Provider value={editorSaveContext}>
+      <AppShell profile={profile} active={active} onSignOut={() => void signOut()}>{page}</AppShell>
+      <Toast notice={saveNotice} onDismiss={() => setSaveNotice(null)} />
+    </EditorSaveContext.Provider>
+  );
+}
+function useEditorSaveContext() {
+  const context = useContext(EditorSaveContext);
+  if (!context) throw new Error("Editor save context is unavailable");
+  return context;
 }
 function AccessDenied() {
   return <div className="content-state"><h1>{t("admin.accessDenied")}</h1><p>{t("admin.askAdministrator")}</p></div>;
@@ -859,6 +933,7 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
 }
 
 function DriveApp({ systemRole }: { systemRole: SystemRole }) {
+  const { isFilePending, startFinalization } = useEditorSaveContext();
   const [folderId, setFolderId] = useState(currentFolderId);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
@@ -904,6 +979,11 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
     return () => window.clearTimeout(timer);
   }, [folderId, load]);
   useEffect(() => {
+    const refreshAfterEditorClose = () => void load(folderId);
+    window.addEventListener("editor-session-finalized", refreshAfterEditorClose);
+    return () => window.removeEventListener("editor-session-finalized", refreshAfterEditorClose);
+  }, [folderId, load]);
+  useEffect(() => {
     let active = true;
     void api.listFavorites().then(
       (page) => active && setFavoriteIds(new Set(page.items.map((item) => item.id))),
@@ -944,7 +1024,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
     }
   }
   async function openFile(node: Node) {
-    await openFileActivation(node, setEditor, setPreview, setNotice);
+    await openFileActivation(node, setEditor, setPreview, setNotice, isFilePending);
   }
   function handleEditorSessionClosed() {
     void load(folderId);
@@ -1094,6 +1174,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
           onClose={() => setEditor(null)}
           onSessionClosed={handleEditorSessionClosed}
           onSessionCloseError={handleEditorSessionCloseError}
+          onEditFinalization={startFinalization}
         />
       )}
       {preview && (
@@ -1533,7 +1614,6 @@ function ShareDialog({
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
-
   useEffect(() => {
     if (!addOpen) return;
     principalSearch.current?.focus();
@@ -1892,6 +1972,7 @@ type SearchLocation = {
 };
 
 function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
+  const { isFilePending, startFinalization } = useEditorSaveContext();
   const [items, setItems] = useState<CollectionItem[]>([]);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -1925,9 +2006,14 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+  useEffect(() => {
+    const refreshAfterEditorClose = () => void load();
+    window.addEventListener("editor-session-finalized", refreshAfterEditorClose);
+    return () => window.removeEventListener("editor-session-finalized", refreshAfterEditorClose);
+  }, [load]);
 
   async function openFile(node: Node) {
-    await openFileActivation(node, setEditor, setPreview, setNotice);
+    await openFileActivation(node, setEditor, setPreview, setNotice, isFilePending);
   }
   function handleEditorSessionClosed() {
     void load();
@@ -1995,7 +2081,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       {shareNode && <ShareDialog node={shareNode} onClose={() => setShareNode(null)} onNotice={setNotice} />}
       {trashNode && <ConfirmDialog title={t("files.moveToTrash")} message={t("files.moveToTrashConfirm", { name: trashNode.name })} action={t("files.moveToTrash")} onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
       {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
-      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={handleEditorSessionClosed} onSessionCloseError={handleEditorSessionCloseError} />}
+      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={handleEditorSessionClosed} onSessionCloseError={handleEditorSessionCloseError} onEditFinalization={startFinalization} />}
       {preview && (
         <PreviewDialog
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
@@ -2013,6 +2099,7 @@ function CollectionError({ title, message, onRetry }: { title: string; message: 
 }
 
 function SearchApp({ query }: { query: string }) {
+  const { isFilePending, startFinalization } = useEditorSaveContext();
   const normalizedQuery = query.trim();
   const [items, setItems] = useState<SearchItem[]>([]);
   const [locations, setLocations] = useState<Record<string, SearchLocation | null>>({});
@@ -2086,7 +2173,7 @@ function SearchApp({ query }: { query: string }) {
     };
   }, [loadLocations, normalizedQuery]);
 
-  async function retry() {
+  const retry = useCallback(async () => {
     navigateSearch(normalizedQuery);
     const activeRequest = requestId.current;
     const controller = new AbortController();
@@ -2105,7 +2192,12 @@ function SearchApp({ query }: { query: string }) {
       setError(displayError(requestError));
       setStatus("error");
     }
-  }
+  }, [loadLocations, normalizedQuery]);
+  useEffect(() => {
+    const refreshAfterEditorClose = () => void retry();
+    window.addEventListener("editor-session-finalized", refreshAfterEditorClose);
+    return () => window.removeEventListener("editor-session-finalized", refreshAfterEditorClose);
+  }, [retry]);
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
@@ -2136,7 +2228,7 @@ function SearchApp({ query }: { query: string }) {
     }
     try {
       const node = await api.getNode(item.id);
-      await openFileActivation(node, setEditor, setPreview, setNotice);
+      await openFileActivation(node, setEditor, setPreview, setNotice, isFilePending);
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
     }
@@ -2163,7 +2255,7 @@ function SearchApp({ query }: { query: string }) {
           )}
         </section>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
-      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={() => void retry()} onSessionCloseError={(requestError) => setNotice({ tone: "error", message: displayError(requestError) })} />}
+      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={() => void retry()} onSessionCloseError={(requestError) => setNotice({ tone: "error", message: displayError(requestError) })} onEditFinalization={startFinalization} />}
       {preview && (
         <PreviewDialog
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
@@ -2353,6 +2445,14 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+  useEffect(() => {
+    const refreshAfterEditorClose = (event: Event) => {
+      const detail = (event as CustomEvent<{ nodeId?: string }>).detail;
+      if (detail?.nodeId === node.id) void load();
+    };
+    window.addEventListener("editor-session-finalized", refreshAfterEditorClose);
+    return () => window.removeEventListener("editor-session-finalized", refreshAfterEditorClose);
+  }, [load, node.id]);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -2679,47 +2779,36 @@ function EditorDialog({
   onClose,
   onSessionClosed,
   onSessionCloseError,
+  onEditFinalization,
 }: {
   session: ActiveEditorSession;
   onClose: () => void;
   onSessionClosed: () => void;
   onSessionCloseError: (error: unknown) => void;
+  onEditFinalization: (session: ActiveEditorSession) => void;
 }) {
   // React owns this stable host. DocsAPI owns every child inside it because
   // DocEditor replaces its placeholder with an iframe and restores it on close.
   const editorHost = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLElement>(null);
   const editorRef = useRef<ManagedOnlyOfficeEditor | undefined>(undefined);
-  const closeTimer = useRef<number | undefined>(undefined);
   const initializationTimer = useRef<number | undefined>(undefined);
   const resizeCleanup = useRef<(() => void) | undefined>(undefined);
-  const switchingRef = useRef(false);
+  const closingRef = useRef(false);
   const closedSessionIds = useRef(new Set<string>());
   const pendingEditorClose = useRef<PendingOnlyOfficeClose | undefined>(undefined);
-  const sessionClosed = useRef(onSessionClosed);
-  const sessionCloseError = useRef(onSessionCloseError);
-  const [activeSession, setActiveSession] = useState(session);
   const [size, setSize] = useState<EditorSize>(getInitialEditorSize);
   const [error, setError] = useState("");
   const [editorState, setEditorState] = useState<"loading" | "ready" | "error">("loading");
-  const [editorPhase, setEditorPhase] = useState<"opening" | "saving">("opening");
-  const [switching, setSwitching] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [closeDecisionPending, setCloseDecisionPending] = useState(false);
-  const activeSessionRef = useRef(activeSession);
-  const mountId = `onlyoffice-editor-${activeSession.session.id}`;
+  const mountId = `onlyoffice-editor-${session.session.id}`;
   const documentTitle = (() => {
-    const document = activeSession.config.document;
+    const document = session.config.document;
     if (!document || typeof document !== "object" || !("title" in document))
       return t("editor.title");
     return typeof document.title === "string" ? document.title : t("editor.title");
   })();
-  useEffect(() => {
-    activeSessionRef.current = activeSession;
-  }, [activeSession]);
-  useEffect(() => {
-    sessionClosed.current = onSessionClosed;
-    sessionCloseError.current = onSessionCloseError;
-  }, [onSessionCloseError, onSessionClosed]);
   useEffect(() => {
     const keepInViewport = () => setSize((current) => clampEditorSize(current));
     window.addEventListener("resize", keepInViewport);
@@ -2758,9 +2847,8 @@ function EditorDialog({
     const owned = editorRef.current;
     if (!owned || owned.disposed) return;
     if (!owned.editor.requestClose) {
-      // Older DocsAPI builds may not expose requestClose. The owning
-      // transition still performs the idempotent dispose before closing the
-      // backend session.
+      // Older DocsAPI builds may not expose requestClose. The dialog close
+      // still performs the idempotent dispose before closing the session.
       return;
     }
     setCloseDecisionPending(true);
@@ -2786,79 +2874,27 @@ function EditorDialog({
     const owned = editorRef.current;
     if (target.session.mode === "EDIT") {
       await requestEditorClose();
-      setEditorState("loading");
-      setEditorPhase("saving");
       disposeEditor(owned);
       cleanEditorHost();
+      onEditFinalization(target);
+      onClose();
+      return;
     } else {
-      setEditorState("loading");
-      setEditorPhase("opening");
-      await closeSession(target);
       disposeEditor(owned);
       cleanEditorHost();
-      return;
+      await closeSession(target);
+      onSessionClosed();
+      onClose();
     }
-    await closeSession(target);
-  }, [cleanEditorHost, closeSession, disposeEditor, requestEditorClose]);
-  const switchMode = async (mode: "VIEW" | "EDIT") => {
-    const current = activeSessionRef.current;
-    if (switchingRef.current || current.session.mode === mode) return;
-    switchingRef.current = true;
-    setSwitching(true);
-    setError("");
-    let currentSessionClosed = false;
-    try {
-      await closeEditorSessionGracefully(current);
-      currentSessionClosed = true;
-      setEditorPhase("opening");
-      const next = await api.createEditorSession(current.nodeId, mode);
-      setActiveSession({
-        ...next,
-        nodeId: current.nodeId,
-        canEdit: current.canEdit,
-      });
-    } catch (requestError) {
-      if (requestError instanceof OnlyOfficeCloseCancelledError) {
-        setEditorState("ready");
-        return;
-      }
-      if (!currentSessionClosed) {
-        setActiveSession({ ...current });
-      } else if (mode === "EDIT" && current.session.mode === "VIEW") {
-        try {
-          const recovery = await api.createEditorSession(current.nodeId, "VIEW");
-          setActiveSession({
-            ...recovery,
-            nodeId: current.nodeId,
-            canEdit: current.canEdit,
-          });
-        } catch (recoveryError) {
-          setEditorState("error");
-          setError(displayError(recoveryError));
-        }
-      } else {
-        setEditorState("error");
-        setError(displayError(requestError));
-      }
-      onSessionCloseError(requestError);
-    } finally {
-      switchingRef.current = false;
-      setSwitching(false);
-    }
-  };
+  }, [cleanEditorHost, closeSession, disposeEditor, onClose, onEditFinalization, onSessionClosed, requestEditorClose]);
   const closeDialog = async () => {
-    if (switchingRef.current) return;
-    const current = activeSessionRef.current;
-    if (current.session.mode !== "EDIT") {
-      onClose();
-      return;
-    }
-    switchingRef.current = true;
-    setSwitching(true);
+    if (closingRef.current) return;
+    const current = session;
+    closingRef.current = true;
+    setClosing(true);
     setError("");
     try {
       await closeEditorSessionGracefully(current);
-      onClose();
     } catch (requestError) {
       if (!(requestError instanceof OnlyOfficeCloseCancelledError)) {
         setEditorState("error");
@@ -2866,8 +2902,8 @@ function EditorDialog({
         onSessionCloseError(requestError);
       }
     } finally {
-      switchingRef.current = false;
-      setSwitching(false);
+      closingRef.current = false;
+      setClosing(false);
     }
   };
   const startResize = (
@@ -2923,10 +2959,6 @@ function EditorDialog({
   };
   useEffect(() => {
     const host = editorHost.current;
-    if (closeTimer.current !== undefined) {
-      window.clearTimeout(closeTimer.current);
-      closeTimer.current = undefined;
-    }
     let script: HTMLScriptElement | undefined;
     let scriptLoaded = false;
     let cancelled = false;
@@ -2937,8 +2969,8 @@ function EditorDialog({
         initializationTimer.current = undefined;
       }
     };
-    const configuredEvents = activeSession.config.events && typeof activeSession.config.events === "object"
-      ? activeSession.config.events as Record<string, unknown>
+    const configuredEvents = session.config.events && typeof session.config.events === "object"
+      ? session.config.events as Record<string, unknown>
       : {};
     const callConfiguredEvent = (name: string, args: unknown[]) => {
       const callback = configuredEvents[name];
@@ -2996,9 +3028,9 @@ function EditorDialog({
         placeholder.id = mountId;
         host.appendChild(placeholder);
         const editorConfig = {
-          ...activeSession.config,
+          ...session.config,
           editorConfig: {
-            ...(typeof activeSession.config.editorConfig === "object" && activeSession.config.editorConfig !== null ? activeSession.config.editorConfig : {}),
+            ...(typeof session.config.editorConfig === "object" && session.config.editorConfig !== null ? session.config.editorConfig : {}),
             lang: getLocale(),
           },
           events: {
@@ -3029,7 +3061,7 @@ function EditorDialog({
     if (window.DocsAPI) start();
     else {
       script = document.createElement("script");
-      script.src = activeSession.documentServer.apiUrl;
+      script.src = session.documentServer.apiUrl;
       script.async = true;
       script.onload = () => {
         scriptLoaded = true;
@@ -3065,18 +3097,11 @@ function EditorDialog({
       }
       disposeEditor(editor, false);
       host?.replaceChildren();
-      // Strict Mode immediately replays effects in development. Deferring the
-      // close lets the replacement effect cancel it, while a real unmount
-      // still closes the server-side session.
-      closeTimer.current = window.setTimeout(() => {
-        closeTimer.current = undefined;
-        void closeSession(activeSession).then(
-          (closed) => closed && sessionClosed.current(),
-          (requestError: unknown) => sessionCloseError.current(requestError),
-        );
-      }, 0);
+      // Session close belongs to the explicit close flow. Unmount only
+      // disposes local DocsAPI resources; backend EDIT finalization may still
+      // be waiting for ONLYOFFICE's final callback.
     };
-  }, [activeSession, cleanEditorHost, closeSession, disposeEditor, mountId]);
+  }, [session, cleanEditorHost, disposeEditor, mountId]);
   return (
     <div className="editor-backdrop">
       <section
@@ -3091,37 +3116,10 @@ function EditorDialog({
           <div className="editor-header-title">
             <span>{documentTitle}</span>
             <span className="editor-header-mode">
-              {activeSession.session.mode === "EDIT" ? t("editor.editing") : t("editor.viewing")}
+              {session.session.mode === "EDIT" ? t("editor.editing") : t("editor.viewing")}
             </span>
           </div>
           <div className="editor-header-actions">
-            {activeSession.canEdit && (
-              <div
-                className="editor-mode-control"
-                role="group"
-                aria-label={t("editor.mode")}
-                aria-busy={switching}
-              >
-                <button
-                  type="button"
-                  aria-pressed={activeSession.session.mode === "VIEW"}
-                  aria-label={t("editor.switchToView")}
-                  disabled={switching || activeSession.session.mode === "VIEW"}
-                  onClick={() => void switchMode("VIEW")}
-                >
-                  {t("editor.viewMode")}
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={activeSession.session.mode === "EDIT"}
-                  aria-label={t("editor.switchToEdit")}
-                  disabled={switching || activeSession.session.mode === "EDIT"}
-                  onClick={() => void switchMode("EDIT")}
-                >
-                  {t("editor.editMode")}
-                </button>
-              </div>
-            )}
             {closeDecisionPending && (
               <button
                 type="button"
@@ -3135,21 +3133,23 @@ function EditorDialog({
               type="button"
               className="icon-button"
               aria-label={t("editor.close")}
-              disabled={switching}
+              disabled={closing}
               onClick={() => void closeDialog()}
             >
               <Icon name="close" />
             </button>
           </div>
         </header>
-        <div className="editor-body" aria-busy={switching || editorState === "loading"}>
+        <div className="editor-body" aria-busy={editorState === "loading"}>
           <div ref={editorHost} className="editor-host" />
           {editorState === "loading" && (
             <div className="editor-error" role="status">
-              {editorPhase === "saving" ? t("editor.saving") : t("editor.opening")}
+              {closing && session.session.mode === "EDIT"
+                ? t("editor.saving")
+                : t("editor.opening")}
             </div>
           )}
-          {editorState === "error" && !switching && (
+          {editorState === "error" && (
             <div className="editor-error" role="alert">
               <span>{error || t("editor.failed")}</span>
               <button type="button" className="button" onClick={() => void closeDialog()}>{t("common.close")}</button>

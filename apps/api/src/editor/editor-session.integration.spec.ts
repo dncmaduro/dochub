@@ -391,6 +391,36 @@ withDb('EditorSessionService integration', () => {
     });
   });
 
+  it('blocks reopening a file while a closed EDIT session awaits finalization', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const closing = await service.create(actorId, nodeId, 'EDIT');
+    await prisma.editorSession.update({
+      where: { id: closing.session.id },
+      data: { closedAt: new Date() },
+    });
+
+    await expect(service.create(actorId, nodeId, 'EDIT')).rejects.toMatchObject({
+      status: 409,
+      message: 'File is still being saved',
+    });
+    await expect(service.create(actorId, nodeId, 'VIEW')).rejects.toMatchObject({
+      status: 409,
+      message: 'File is still being saved',
+    });
+
+    await prisma.editorSession.update({
+      where: { id: closing.session.id },
+      data: { status: 'CLOSED' },
+    });
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.VIEWER },
+    });
+  });
+
   it('finalizes staged EDIT bytes as one immutable editor version', async () => {
     await prisma.permissionEntry.updateMany({
       where: { nodeId, userId: actorId },
@@ -958,7 +988,7 @@ withDb('EditorSessionService integration', () => {
     ).resolves.toBe(finalized.finalizedFileVersion!.versionNumber);
   });
 
-  it('expires a no-change graceful EDIT close without creating a version', async () => {
+  it('marks an EDIT close failed when no final callback arrives before expiry', async () => {
     await prisma.permissionEntry.updateMany({
       where: { nodeId, userId: actorId },
       data: { role: DocumentRole.EDITOR },
@@ -977,12 +1007,16 @@ withDb('EditorSessionService integration', () => {
         where: { id: created.session.id },
       }),
     ).resolves.toMatchObject({
-      status: 'CLOSED',
+      status: 'FAILED',
       finalizedFileVersionId: null,
     });
     await expect(prisma.fileVersion.count({ where: { fileId } })).resolves.toBe(
       before,
     );
+    await expect(service.close(actorId, created.session.id)).resolves.toMatchObject({
+      status: 'FAILED',
+      finalizedFileVersionId: null,
+    });
   });
 
   it('closes an abandoned EDIT session after its callback capability lifetime', async () => {

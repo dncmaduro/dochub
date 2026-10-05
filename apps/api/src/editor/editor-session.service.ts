@@ -111,6 +111,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     mode: 'VIEW' | 'EDIT' = 'VIEW',
   ) {
     const config = this.requireConfig();
+    await this.closeExpiredEditSessions();
     const node = await this.database.prisma.node.findFirst({
       where: { id: nodeId, trashOperationId: null },
       select: {
@@ -146,6 +147,18 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       throw new ConflictException('Node is not a file');
     if (!node.file?.currentVersionId || !node.file.currentVersion)
       throw new ServiceUnavailableException('File is unavailable');
+    const closingSession = await this.database.prisma.editorSession.findFirst({
+      where: {
+        fileId: node.file.id,
+        mode: EditorMode.EDIT,
+        status: EditorSessionStatus.ACTIVE,
+        closedAt: { not: null },
+        finalizedFileVersionId: null,
+      },
+      select: { id: true },
+    });
+    if (closingSession)
+      throw new ConflictException('File is still being saved');
     const version = node.file.currentVersion;
     const extension = fileExtension(
       version.originalFilename,
@@ -299,7 +312,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     return this.waitForEditClose(closing.id, closing.closedAt!);
   }
 
-  /** Closes EDIT sessions whose bounded final-callback window has elapsed. */
+  /** Marks expired explicit closes failed and closes abandoned EDIT sessions. */
   async closeExpiredEditSessions(now = new Date()) {
     if (!this.config) return { count: 0 };
     const closeExpiry = new Date(
@@ -311,18 +324,26 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     const abandonedExpiry = new Date(
       now.getTime() - this.config.callbackTokenTtlSeconds * 1_000,
     );
-    return this.database.prisma.editorSession.updateMany({
+    const failedClose = await this.database.prisma.editorSession.updateMany({
       where: {
         mode: EditorMode.EDIT,
         status: EditorSessionStatus.ACTIVE,
         finalizedFileVersionId: null,
-        OR: [
-          { closedAt: { not: null, lte: closeExpiry } },
-          { closedAt: null, createdAt: { lte: abandonedExpiry } },
-        ],
+        closedAt: { not: null, lte: closeExpiry },
+      },
+      data: { status: EditorSessionStatus.FAILED },
+    });
+    const abandoned = await this.database.prisma.editorSession.updateMany({
+      where: {
+        mode: EditorMode.EDIT,
+        status: EditorSessionStatus.ACTIVE,
+        finalizedFileVersionId: null,
+        closedAt: null,
+        createdAt: { lte: abandonedExpiry },
       },
       data: { status: EditorSessionStatus.CLOSED },
     });
+    return { count: failedClose.count + abandoned.count };
   }
 
   private async waitForEditClose(sessionId: string, closedAt: Date) {

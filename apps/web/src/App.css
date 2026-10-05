@@ -699,6 +699,9 @@
 .toast-success {
   border-color: #b7dfbd;
 }
+.toast-info {
+  border-color: var(--border-subtle);
+}
 .toast-error {
   border-color: #f1b9b5;
   color: var(--danger);
@@ -1343,33 +1346,6 @@ summary:focus-visible {
 .editor-header-actions {
   flex: none;
   gap: 8px;
-}
-.editor-mode-control {
-  display: flex;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-}
-.editor-mode-control button {
-  height: 28px;
-  border: 0;
-  padding: 0 10px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.editor-mode-control button + button {
-  border-left: 1px solid var(--border-subtle);
-}
-.editor-mode-control button[aria-pressed="true"] {
-  background: var(--accent-soft);
-  color: var(--text);
-}
-.editor-mode-control button:disabled {
-  cursor: default;
-  opacity: 0.7;
 }
 .editor-body {
   position: relative;

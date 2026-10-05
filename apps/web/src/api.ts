@@ -246,7 +246,7 @@ export class ApiClient {
     return "previewable" in result ? null : { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` };
   }
   async closeEditorSession(sessionId: string) {
-    await this.request<void>(`/editor-sessions/${sessionId}/close`, {
+    return this.request<{ status: "ACTIVE" | "CLOSED" | "FAILED" }>(`/editor-sessions/${sessionId}/close`, {
       method: "POST",
     });
   }
