@@ -487,10 +487,28 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       // identified. This also permits a CLOSED finalized session to absorb
       // ONLYOFFICE's callback retries.
       if (session.finalizedFileVersionId) return { error: 0 };
-      if (payload.status === 1 || payload.status === 4) {
-        // A status 4 is a no-change close notification. Do not close an EDIT
-        // session here: it can follow a rejected/retried save callback and
-        // closing would make a later legitimate status 2/6 unrecoverable.
+      if (payload.status === 1) {
+        return { error: 0 };
+      }
+      if (payload.status === 4) {
+        // A status 4 is a no-change close notification. Keep an EDIT session
+        // open when it was not explicitly closed yet, so a transient
+        // disconnect or a retried save remains eligible. Once the UI close
+        // request has set closedAt, status 4 is the authoritative final
+        // outcome and no version should be created.
+        if (session.closedAt) {
+          await this.database.prisma.editorSession.updateMany({
+            where: {
+              id: session.id,
+              status: EditorSessionStatus.ACTIVE,
+              finalizedFileVersionId: null,
+            },
+            data: {
+              status: EditorSessionStatus.CLOSED,
+              closedAt: session.closedAt,
+            },
+          });
+        }
         return { error: 0 };
       }
       if (payload.status === 3 || payload.status === 7) return { error: 1 };

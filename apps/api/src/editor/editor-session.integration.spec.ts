@@ -257,6 +257,50 @@ withDb('EditorSessionService integration', () => {
     });
   });
 
+  it('closes a gracefully requested unchanged EDIT session on status 4 without creating a version', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    const before = await prisma.fileVersion.count({ where: { fileId } });
+    const closedAt = new Date();
+    await prisma.editorSession.update({
+      where: { id: created.session.id },
+      data: { closedAt },
+    });
+    const callback = new URL(
+      (created.config.editorConfig as { callbackUrl: string }).callbackUrl,
+    );
+    const signed = new JwtService().sign(
+      { status: 4, key: created.config.document.key },
+      { secret: config.jwtSecret, algorithm: 'HS256' },
+    );
+    await expect(
+      service.handleCallback(
+        created.session.id,
+        callback.searchParams.get('capability')!,
+        { status: 4, key: created.config.document.key, token: signed },
+      ),
+    ).resolves.toEqual({ error: 0 });
+    await expect(
+      prisma.editorSession.findUniqueOrThrow({
+        where: { id: created.session.id },
+      }),
+    ).resolves.toMatchObject({
+      status: 'CLOSED',
+      finalizedFileVersionId: null,
+      closedAt,
+    });
+    await expect(prisma.fileVersion.count({ where: { fileId } })).resolves.toBe(
+      before,
+    );
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.VIEWER },
+    });
+  });
+
   it('keeps old sessions on V1 and makes a new key for V2', async () => {
     const first = await service.create(actorId, nodeId);
     const v2 = await version(2);

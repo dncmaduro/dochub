@@ -50,10 +50,18 @@ type ActiveEditorSession = EditorSession & {
   nodeId: string;
   canEdit: boolean;
 };
-type OnlyOfficeEditor = { destroyEditor?: () => void };
+type OnlyOfficeEditor = {
+  destroyEditor?: () => void;
+  requestClose?: () => void;
+};
 type ManagedOnlyOfficeEditor = {
   editor: OnlyOfficeEditor;
   disposed: boolean;
+};
+type PendingOnlyOfficeClose = {
+  editor: ManagedOnlyOfficeEditor;
+  resolve: () => void;
+  reject: (error: unknown) => void;
 };
 
 function previewIsUnavailable(preview: Preview): preview is UnavailablePreview {
@@ -2677,9 +2685,11 @@ function EditorDialog({
   const dialog = useRef<HTMLElement>(null);
   const editorRef = useRef<ManagedOnlyOfficeEditor | undefined>(undefined);
   const closeTimer = useRef<number | undefined>(undefined);
+  const initializationTimer = useRef<number | undefined>(undefined);
   const resizeCleanup = useRef<(() => void) | undefined>(undefined);
   const switchingRef = useRef(false);
   const closedSessionIds = useRef(new Set<string>());
+  const pendingEditorClose = useRef<PendingOnlyOfficeClose | undefined>(undefined);
   const sessionClosed = useRef(onSessionClosed);
   const sessionCloseError = useRef(onSessionCloseError);
   const [activeSession, setActiveSession] = useState(session);
@@ -2736,21 +2746,43 @@ function EditorDialog({
     // The host has no React children; its contents belong entirely to DocsAPI.
     editorHost.current?.replaceChildren();
   }, []);
+  const requestEditorClose = useCallback(async () => {
+    const owned = editorRef.current;
+    if (!owned || owned.disposed) return;
+    if (!owned.editor.requestClose) {
+      // Older DocsAPI builds may not expose requestClose. Keep the bounded
+      // backend close contract as the fallback for those builds.
+      disposeEditor(owned);
+      cleanEditorHost();
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      pendingEditorClose.current = { editor: owned, resolve, reject };
+      try {
+        // ONLYOFFICE performs its unsaved-change check and emits onRequestClose
+        // only after the editor has accepted the close request.
+        owned.editor.requestClose?.();
+      } catch (requestError) {
+        pendingEditorClose.current = undefined;
+        reject(requestError);
+      }
+    });
+  }, [cleanEditorHost, disposeEditor]);
   const switchMode = async (mode: "VIEW" | "EDIT") => {
     const current = activeSessionRef.current;
     if (switchingRef.current || current.session.mode === mode) return;
     switchingRef.current = true;
     setSwitching(true);
     setError("");
-    setEditorState("loading");
     let currentSessionClosed = false;
     try {
       // VIEW sessions close immediately. EDIT sessions must first let
-      // ONLYOFFICE initiate its final callback before the API waits for it.
+      // ONLYOFFICE complete its supported close handshake before the API waits
+      // for the final callback.
       if (current.session.mode === "EDIT") {
-        disposeEditor();
-        cleanEditorHost();
+        await requestEditorClose();
       }
+      setEditorState("loading");
       await closeSession(current);
       currentSessionClosed = true;
       if (current.session.mode === "VIEW") {
@@ -2849,6 +2881,12 @@ function EditorDialog({
     let scriptLoaded = false;
     let cancelled = false;
     let editor: ManagedOnlyOfficeEditor | undefined;
+    const clearInitializationTimer = () => {
+      if (initializationTimer.current !== undefined) {
+        window.clearTimeout(initializationTimer.current);
+        initializationTimer.current = undefined;
+      }
+    };
     const configuredEvents = activeSession.config.events && typeof activeSession.config.events === "object"
       ? activeSession.config.events as Record<string, unknown>
       : {};
@@ -2857,15 +2895,22 @@ function EditorDialog({
       if (typeof callback === "function") callback(...args);
     };
     const handleReady = (...args: unknown[]) => {
-      if (!cancelled) setEditorState("ready");
+      if (!cancelled) {
+        clearInitializationTimer();
+        setEditorState("ready");
+      }
       callConfiguredEvent("onAppReady", args);
     };
     const handleDocumentReady = (...args: unknown[]) => {
-      if (!cancelled) setEditorState("ready");
+      if (!cancelled) {
+        clearInitializationTimer();
+        setEditorState("ready");
+      }
       callConfiguredEvent("onDocumentReady", args);
     };
     const handleError = (...args: unknown[]) => {
       if (!cancelled) {
+        clearInitializationTimer();
         setEditorState("error");
         setError(onlyOfficeErrorMessage(args[0]));
       }
@@ -2873,6 +2918,19 @@ function EditorDialog({
     };
     const handleWarning = (...args: unknown[]) => {
       callConfiguredEvent("onWarning", args);
+    };
+    const handleRequestClose = (...args: unknown[]) => {
+      const pending = pendingEditorClose.current;
+      try {
+        callConfiguredEvent("onRequestClose", args);
+      } finally {
+        if (pending && pending.editor === editor) {
+          pendingEditorClose.current = undefined;
+          disposeEditor(pending.editor);
+          cleanEditorHost();
+          pending.resolve();
+        }
+      }
     };
     const start = () => {
       try {
@@ -2901,19 +2959,25 @@ function EditorDialog({
             onDocumentReady: handleDocumentReady,
             onError: handleError,
             onWarning: handleWarning,
+            onRequestClose: handleRequestClose,
           },
         };
         const createdEditor = new window.DocsAPI.DocEditor(placeholder.id, editorConfig);
         editor = { editor: createdEditor, disposed: false };
         editorRef.current = editor;
-        setEditorState("ready");
       } catch (constructionError) {
         if (!cancelled) {
+          clearInitializationTimer();
           setEditorState("error");
           setError(onlyOfficeErrorMessage(constructionError));
         }
       }
     };
+    initializationTimer.current = window.setTimeout(() => {
+      if (cancelled) return;
+      setEditorState("error");
+      setError(t("editor.failed"));
+    }, 30_000);
     if (window.DocsAPI) start();
     else {
       script = document.createElement("script");
@@ -2925,6 +2989,7 @@ function EditorDialog({
       };
       script.onerror = () => {
         if (!cancelled) {
+          clearInitializationTimer();
           setEditorState("error");
           setError(t("editor.unavailable"));
         }
@@ -2933,6 +2998,12 @@ function EditorDialog({
     }
     return () => {
       cancelled = true;
+      clearInitializationTimer();
+      const pending = pendingEditorClose.current;
+      if (pending && pending.editor === editor) {
+        pendingEditorClose.current = undefined;
+        pending.reject(new Error("ONLYOFFICE editor was closed before the close handshake completed"));
+      }
       // Keep a successfully loaded DocsAPI script: DocsAPI remains global and
       // removing its defining element while reusing that global corrupts the
       // next editor initialization in some browsers. An unfinished load is
@@ -3016,7 +3087,7 @@ function EditorDialog({
         </header>
         <div className="editor-body" aria-busy={switching || editorState === "loading"}>
           <div ref={editorHost} className="editor-host" />
-          {(switching || editorState === "loading") && (
+          {editorState === "loading" && (
             <div className="editor-error" role="status">{t("editor.opening")}</div>
           )}
           {editorState === "error" && !switching && (
@@ -3174,7 +3245,7 @@ declare global {
       DocEditor: new (
         elementId: string,
         config: Record<string, unknown>,
-      ) => { destroyEditor?: () => void };
+      ) => { destroyEditor?: () => void; requestClose?: () => void };
     };
   }
 }
