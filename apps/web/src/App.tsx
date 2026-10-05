@@ -18,6 +18,7 @@ import {
   type AdminGroup,
   type AdminUser,
   type CollectionItem,
+  type CurrentUser,
   type DocumentRole,
   type EditorSession,
   type FileVersion,
@@ -54,18 +55,29 @@ function currentFolderId() {
   );
 }
 function currentRoute() {
-  if (window.location.pathname === "/admin/users") return "admin-users";
-  if (window.location.pathname === "/admin/groups") return "admin-groups";
+  if (window.location.pathname === "/admin") return "admin";
+  if (window.location.pathname === "/profile") return "profile";
   if (window.location.pathname === "/trash") return "trash";
   if (window.location.pathname === "/search") return "search";
   if (window.location.pathname === "/recent") return "recent";
   if (window.location.pathname === "/favorites") return "favorites";
   return "drive";
 }
-function navigateAdmin(route: "users" | "groups") {
-  const path = `/admin/${route}`;
-  if (window.location.pathname !== path) {
+function currentAdminTab(): "users" | "groups" {
+  return new URLSearchParams(window.location.search).get("tab") === "groups"
+    ? "groups"
+    : "users";
+}
+function navigateAdmin(tab: "users" | "groups" = "users") {
+  const path = `/admin${tab === "users" ? "" : "?tab=groups"}`;
+  if (`${window.location.pathname}${window.location.search}` !== path) {
     window.history.pushState({}, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
+function navigateProfile() {
+  if (window.location.pathname !== "/profile") {
+    window.history.pushState({}, "", "/profile");
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
@@ -220,6 +232,8 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
       />
     ),
     chevron: <path d="m9 18 6-6-6-6" />,
+    "chevron-down": <path d="m6 9 6 6 6-6" />,
+    settings: <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7ZM19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 1.7-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.4v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1-1.7-1.7.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H6.7v-2.4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L8 8.6l1.7-1.7.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.4v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.7 1.7-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.5 1Z" />,
     close: <path d="m6 6 12 12M18 6 6 18" />,
     refresh: (
       <>
@@ -355,24 +369,26 @@ function useDialogFocus() {
 
 function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [systemRole, setSystemRole] = useState<SystemRole | null>(null);
+  const [profile, setProfile] = useState<CurrentUser | null>(null);
   const [location, setLocation] = useState(() => ({
     route: currentRoute(),
     searchQuery: currentSearchQuery(),
+    adminTab: currentAdminTab(),
   }));
   useEffect(() => {
     let active = true;
     void api.refresh().then(
-      (session) => {
+      () => api.currentUser(),
+    ).then(
+      (user) => {
         if (!active) return;
         if (
-          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search|\/recent|\/favorites|\/admin\/(?:users|groups))$/i.test(
+          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search|\/recent|\/favorites|\/admin|\/profile)$/i.test(
             window.location.pathname,
           )
-        )
-          window.history.replaceState({}, "", "/drive");
-        setLocation({ route: currentRoute(), searchQuery: currentSearchQuery() });
-        setSystemRole(session.systemRole);
+        ) window.history.replaceState({}, "", "/drive");
+        setLocation({ route: currentRoute(), searchQuery: currentSearchQuery(), adminTab: currentAdminTab() });
+        setProfile(user);
         setAuthenticated(true);
       },
       () => active && setAuthenticated(false),
@@ -383,66 +399,173 @@ function App() {
   }, []);
   useEffect(() => {
     const onPopState = () =>
-      setLocation({ route: currentRoute(), searchQuery: currentSearchQuery() });
+      setLocation({ route: currentRoute(), searchQuery: currentSearchQuery(), adminTab: currentAdminTab() });
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   if (authenticated === null)
     return <div className="auth-state">Checking your session…</div>;
-  return authenticated ? (
-    location.route === "trash" ? (
-      <TrashApp />
-    ) : location.route === "search" ? (
-      <SearchApp query={location.searchQuery} />
-    ) : location.route === "recent" ? (
-      <CollectionApp kind="recent" />
-    ) : location.route === "favorites" ? (
-      <CollectionApp kind="favorites" />
-    ) : location.route === "admin-users" || location.route === "admin-groups" ? (
-      systemRole === "ADMIN" ? <AdminApp page={location.route === "admin-users" ? "users" : "groups"} /> : <AccessDenied />
-    ) : (
-      <DriveApp systemRole={systemRole!} />
-    )
-  ) : (
-    <SignIn />
-  );
+  if (!authenticated) return <SignIn />;
+  if (!profile) return <div className="auth-state">Loading your account…</div>;
+  const isAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
+  async function signOut() {
+    try {
+      await api.logout();
+    } finally {
+      setAuthenticated(false);
+      setProfile(null);
+    }
+  }
+  let page: ReactNode;
+  switch (location.route) {
+    case "trash":
+      page = <TrashApp />;
+      break;
+    case "search":
+      page = <SearchApp query={location.searchQuery} />;
+      break;
+    case "recent":
+      page = <CollectionApp kind="recent" />;
+      break;
+    case "favorites":
+      page = <CollectionApp kind="favorites" />;
+      break;
+    case "admin":
+      page = isAdmin ? <AdminApp tab={location.adminTab} /> : <AccessDenied />;
+      break;
+    case "profile":
+      page = <ProfileApp profile={profile} onSignOut={() => void signOut()} />;
+      break;
+    default:
+      page = <DriveApp systemRole={profile.systemRole} />;
+  }
+  const active: SidebarRoute = location.route === "drive" || location.route === "recent" || location.route === "favorites" || location.route === "trash"
+    ? location.route
+    : location.route === "admin" && isAdmin ? "admin" : null;
+  return <AppShell profile={profile} active={active} onSignOut={() => void signOut()}>{page}</AppShell>;
 }
 function AccessDenied() {
-  return <main className="auth-state">You do not have access to administration.</main>;
+  return <div className="content-state"><h1>You do not have access to administration.</h1><p>Ask an administrator if you need access.</p></div>;
 }
 
-function AdminApp({ page }: { page: "users" | "groups" }) {
-  return <div className="app-shell"><Sidebar active={`admin-${page}` as SidebarRoute} systemRole="ADMIN" /><main className="drive-main"><PageHeader title={<h1 className="page-title">Admin · {page === "users" ? "Users" : "Groups"}</h1>} /><section className="admin-content">{page === "users" ? <AdminUsers /> : <AdminGroups />}</section></main></div>;
+function AdminApp({ tab }: { tab: "users" | "groups" }) {
+  return <><PageHeader title={<h1 className="page-title">Admin</h1>} /><section className="admin-content" aria-label="Administration">
+    <div className="admin-intro"><h2>Admin</h2><p>Manage users, groups, and access to Docs Hub.</p></div>
+    <div className="admin-tabs" role="tablist" aria-label="Administration sections">
+      <button type="button" role="tab" aria-selected={tab === "users"} className={tab === "users" ? "is-active" : ""} onClick={() => navigateAdmin("users")}>Users</button>
+      <button type="button" role="tab" aria-selected={tab === "groups"} className={tab === "groups" ? "is-active" : ""} onClick={() => navigateAdmin("groups")}>Groups</button>
+    </div>
+    <div className="admin-tab-content">{tab === "users" ? <AdminUsers /> : <AdminGroups />}</div>
+  </section></>;
 }
 
 function AdminUsers() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const load = useCallback(async () => { try { setUsers((await api.listAdminUsers()).items); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }, []);
   useEffect(() => { const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, [load]);
-  async function create(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const form = new FormData(event.currentTarget);
-    try { const created = await api.createAdminUser({ email: String(form.get("email")), displayName: String(form.get("displayName")), systemRole: String(form.get("systemRole")) as SystemRole }); setUsers((items) => [created, ...items]); event.currentTarget.reset(); setNotice({ tone: "success", message: "User added. They can now sign in with this Google email." }); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); }
+  async function create(input: { email: string; displayName: string; systemRole: SystemRole }) {
+    await api.createAdminUser(input);
+    await load();
+    setAddOpen(false);
+    setNotice({ tone: "success", message: "User added. They can now sign in with this Google email." });
   }
   async function action(user: AdminUser, kind: "role" | "status") {
     if (kind === "status" && user.status !== "SUSPENDED" && !window.confirm(`Suspend ${user.displayName}? They will not be able to sign in.`)) return;
+    setOpenMenuId(null);
     try { const updated = kind === "role" ? await api.updateAdminUser(user.id, { systemRole: user.systemRole === "ADMIN" ? "MEMBER" : "ADMIN" }) : user.status === "SUSPENDED" ? await api.reactivateAdminUser(user.id) : await api.suspendAdminUser(user.id); setUsers((items) => items.map((item) => item.id === user.id ? updated : item)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); }
   }
-  const matching = users.filter((user) => `${user.displayName} ${user.email}`.toLowerCase().includes(query.toLowerCase()));
-  return <><Toast notice={notice} onDismiss={() => setNotice(null)} /><form className="admin-form" onSubmit={create}><input required name="displayName" placeholder="Display name" maxLength={200} /><input required name="email" type="email" placeholder="Google email" maxLength={320} /><select name="systemRole" defaultValue="MEMBER"><option value="MEMBER">Member</option><option value="ADMIN">Admin</option></select><button className="button button-primary">Add user</button></form><input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search users" /><table className="admin-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{matching.map((user) => <tr key={user.id}><td>{user.displayName}</td><td>{user.email}</td><td>{user.systemRole}</td><td>{user.status}</td><td><button className="button" onClick={() => void action(user, "role")}>Make {user.systemRole === "ADMIN" ? "member" : "admin"}</button><button className="button" onClick={() => void action(user, "status")}>{user.status === "SUSPENDED" ? "Reactivate" : "Suspend"}</button></td></tr>)}</tbody></table></>;
+  const matching = users.filter((user) => `${user.displayName} ${user.email}`.toLowerCase().includes(query.trim().toLowerCase()));
+  return <>
+    <Toast notice={notice} onDismiss={() => setNotice(null)} />
+    <div className="admin-section-header"><div><h3>Users</h3><p>Manage who can access Docs Hub.</p></div><button type="button" className="button button-primary" onClick={() => setAddOpen(true)}><Icon name="plus" size={16} />Add user</button></div>
+    <input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search users…" aria-label="Search users" />
+    <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{matching.map((user) => <AdminUserRow key={user.id} user={user} menuOpen={openMenuId === user.id} onToggleMenu={() => setOpenMenuId((open) => open === user.id ? null : user.id)} onCloseMenu={() => setOpenMenuId(null)} onAction={(kind) => void action(user, kind)} />)}</tbody></table></div>
+    {addOpen && <AddUserDialog onClose={() => setAddOpen(false)} onSubmit={create} />}
+  </>;
+}
+
+function AdminUserRow({ user, menuOpen, onToggleMenu, onCloseMenu, onAction }: { user: AdminUser; menuOpen: boolean; onToggleMenu: () => void; onCloseMenu: () => void; onAction: (kind: "role" | "status") => void }) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  return <tr><td>{user.displayName}</td><td>{user.email}</td><td>{user.systemRole === "ADMIN" ? "Administrator" : "Member"}</td><td>{user.status === "ACTIVE" ? "Active" : user.status === "SUSPENDED" ? "Suspended" : "Invited"}</td><td className="row-actions">
+    <button ref={trigger} type="button" className="icon-button" aria-label={`Actions for ${user.displayName}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><Icon name="more" /></button>
+    {menuOpen && <RowMenu id={`admin-user-menu-${user.id}`} trigger={trigger} onClose={onCloseMenu}>
+      <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onAction("role"); }}>{user.systemRole === "ADMIN" ? "Make member" : "Make admin"}</button>
+      <div className="row-menu-divider" />
+      <button type="button" role="menuitem" className={user.status === "SUSPENDED" ? "" : "menu-danger"} onClick={() => { onCloseMenu(); onAction("status"); }}>{user.status === "SUSPENDED" ? "Reactivate" : "Suspend"}</button>
+    </RowMenu>}
+  </td></tr>;
+}
+
+function AddUserDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (input: { email: string; displayName: string; systemRole: SystemRole }) => Promise<void> }) {
+  const dialog = useDialogFocus();
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const displayName = String(form.get("displayName") ?? "").trim();
+    const email = String(form.get("email") ?? "").trim();
+    const systemRole = String(form.get("systemRole") ?? "MEMBER") as SystemRole;
+    if (!displayName || !email || !systemRole) {
+      setError("Display name, email, and role are required.");
+      return;
+    }
+    setError("");
+    setPending(true);
+    try {
+      await onSubmit({ displayName, email, systemRole });
+    } catch (requestError) {
+      setError(displayError(requestError));
+    } finally {
+      setPending(false);
+    }
+  }
+  return <div className="dialog-backdrop" role="presentation"><section ref={dialog} className="dialog admin-dialog" role="dialog" aria-modal="true" aria-labelledby="add-user-title">
+    <header className="dialog-header"><div><h2 id="add-user-title">Add user</h2><p>Add a Google account to Docs Hub.</p></div><button type="button" className="icon-button" onClick={onClose} aria-label="Close dialog"><Icon name="close" size={16} /></button></header>
+    <form onSubmit={(event) => void submit(event)}>
+      <label htmlFor="add-user-name">Display name</label><input id="add-user-name" name="displayName" required maxLength={200} data-dialog-initial-focus />
+      <label htmlFor="add-user-email">Google email</label><input id="add-user-email" name="email" type="email" required maxLength={320} />
+      <label htmlFor="add-user-role">Role</label><select id="add-user-role" name="systemRole" defaultValue="MEMBER" required><option value="MEMBER">Member</option><option value="ADMIN">Admin</option></select>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>Cancel</button><button type="submit" className="button button-primary" disabled={pending}>{pending ? "Adding…" : "Add user"}</button></div>
+    </form>
+  </section></div>;
 }
 
 function AdminGroups() {
-  const [groups, setGroups] = useState<AdminGroup[]>([]); const [members, setMembers] = useState<Record<string, AdminUser[]>>({}); const [users, setUsers] = useState<AdminUser[]>([]); const [notice, setNotice] = useState<Notice>(null);
+  const [groups, setGroups] = useState<AdminGroup[]>([]); const [members, setMembers] = useState<Record<string, AdminUser[]>>({}); const [users, setUsers] = useState<AdminUser[]>([]); const [query, setQuery] = useState(""); const [notice, setNotice] = useState<Notice>(null);
   const load = useCallback(async () => { try { const [groupPage, userPage] = await Promise.all([api.listAdminGroups(), api.listAdminUsers()]); setGroups(groupPage.items); setUsers(userPage.items); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }, []); useEffect(() => { const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, [load]);
   async function create(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const name = String(new FormData(event.currentTarget).get("name")); try { const group = await api.createAdminGroup({ name }); setGroups((items) => [group, ...items]); event.currentTarget.reset(); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
   async function toggleMembers(group: AdminGroup) { if (!members[group.id]) { try { const page = await api.listAdminGroupMembers(group.id); setMembers((all) => ({ ...all, [group.id]: page.items.map((item) => item.user) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } } else setMembers((all) => { const next = { ...all }; delete next[group.id]; return next; }); }
   async function add(groupId: string, userId: string) { try { await api.addAdminGroupMember(groupId, userId); const page = await api.listAdminGroupMembers(groupId); setMembers((all) => ({ ...all, [groupId]: page.items.map((item) => item.user) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
   async function remove(groupId: string, userId: string) { try { await api.removeAdminGroupMember(groupId, userId); setMembers((all) => ({ ...all, [groupId]: (all[groupId] ?? []).filter((user) => user.id !== userId) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
   async function rename(group: AdminGroup) { const name = window.prompt("Group name", group.name); if (!name || name === group.name) return; try { const updated = await api.updateAdminGroup(group.id, { name }); setGroups((items) => items.map((item) => item.id === group.id ? updated : item)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
-  return <><Toast notice={notice} onDismiss={() => setNotice(null)} /><form className="admin-form" onSubmit={create}><input required name="name" placeholder="New group name" maxLength={200} /><button className="button button-primary">New group</button></form><table className="admin-table"><thead><tr><th>Group name</th><th>Members</th><th>Actions</th></tr></thead><tbody>{groups.map((group) => <><tr key={group.id}><td>{group.name}</td><td>{group.memberCount}</td><td><button className="button" onClick={() => void rename(group)}>Rename</button><button className="button" onClick={() => void toggleMembers(group)}>{members[group.id] ? "Close members" : "Manage members"}</button></td></tr>{members[group.id] && <tr key={`${group.id}-members`}><td colSpan={3}><select defaultValue="" onChange={(event) => { if (event.target.value) void add(group.id, event.target.value); event.currentTarget.value = ""; }}><option value="">Add a user…</option>{users.filter((user) => !members[group.id].some((member) => member.id === user.id)).map((user) => <option key={user.id} value={user.id}>{user.displayName} — {user.email}</option>)}</select>{members[group.id].map((user) => <div className="admin-member" key={user.id}>{user.displayName} <button className="button" onClick={() => void remove(group.id, user.id)}>Remove</button></div>)}</td></tr>}</>)}</tbody></table></>;
+  const matching = groups.filter((group) => group.name.toLowerCase().includes(query.trim().toLowerCase()));
+  return <><Toast notice={notice} onDismiss={() => setNotice(null)} /><div className="admin-section-header"><div><h3>Groups</h3><p>Organize users for document permissions.</p></div><form className="admin-inline-form" onSubmit={create}><input required name="name" placeholder="New group name" maxLength={200} aria-label="New group name" /><button className="button button-primary">New group</button></form></div><input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search groups…" aria-label="Search groups" />{groups.length === 0 || matching.length === 0 ? <div className="admin-empty"><h3>{groups.length === 0 ? "No groups yet." : "No groups found."}</h3><p>{groups.length === 0 ? "Create a group to organize document permissions." : "Try a different search."}</p></div> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Group name</th><th>Members</th><th>Actions</th></tr></thead><tbody>{matching.map((group) => <><tr key={group.id}><td>{group.name}</td><td>{group.memberCount}</td><td><button className="button" onClick={() => void rename(group)}>Rename</button><button className="button" onClick={() => void toggleMembers(group)}>{members[group.id] ? "Close members" : "Manage members"}</button></td></tr>{members[group.id] && <tr key={`${group.id}-members`}><td colSpan={3}><select defaultValue="" onChange={(event) => { if (event.target.value) void add(group.id, event.target.value); event.currentTarget.value = ""; }}><option value="">Add a user…</option>{users.filter((user) => !members[group.id].some((member) => member.id === user.id)).map((user) => <option key={user.id} value={user.id}>{user.displayName} — {user.email}</option>)}</select>{members[group.id].map((user) => <div className="admin-member" key={user.id}>{user.displayName} <button className="button" onClick={() => void remove(group.id, user.id)}>Remove</button></div>)}</td></tr>}</>)}</tbody></table></div>}
+  </>;
 }
+
+function ProfileApp({ profile, onSignOut }: { profile: CurrentUser; onSignOut: () => void }) {
+  return <>
+    <PageHeader title={<h1 className="page-title">Profile</h1>} />
+    <section className="profile-content" aria-label="Profile">
+      <div className="profile-heading"><h2>Account</h2><p>Your trusted account information.</p></div>
+      <dl className="profile-details">
+        <div><dt>Name</dt><dd>{profile.displayName}</dd></div>
+        <div><dt>Email</dt><dd>{profile.email}</dd></div>
+        <div><dt>Role</dt><dd>{profile.systemRole === "ADMIN" ? "Administrator" : "Member"}</dd></div>
+        <div><dt>Status</dt><dd>{profile.status === "ACTIVE" ? "Active" : profile.status}</dd></div>
+        <div><dt>Sign-in</dt><dd>{profile.googleConnected ? "Google" : "—"}</dd></div>
+      </dl>
+      <button type="button" className="button" onClick={onSignOut}>Sign out</button>
+    </section>
+  </>;
+}
+
 function SignIn() {
   return (
     <main className="sign-in">
@@ -503,23 +626,43 @@ function SearchInput({ query }: { query: string }) {
 
 function PageHeader({
   title,
+  searchQuery,
   children,
 }: {
   title: ReactNode;
+  searchQuery?: string;
   children?: ReactNode;
 }) {
   return (
     <header className="topbar">
       <div className="page-context">{title}</div>
-      <SearchInput query="" />
+      {searchQuery !== undefined && <SearchInput query={searchQuery} />}
       <div className="toolbar-actions">{children}</div>
     </header>
   );
 }
 
-type SidebarRoute = "drive" | "recent" | "favorites" | "trash" | "admin-users" | "admin-groups" | null;
+type SidebarRoute = "drive" | "recent" | "favorites" | "trash" | "admin" | null;
 
-function Sidebar({ active, systemRole }: { active: SidebarRoute; systemRole?: SystemRole }) {
+function AppShell({
+  active,
+  profile,
+  onSignOut,
+  children,
+}: {
+  active: SidebarRoute;
+  profile: CurrentUser;
+  onSignOut: () => void;
+  children: ReactNode;
+}) {
+  return <div className="app-shell">
+    <Sidebar active={active} profile={profile} onSignOut={onSignOut} />
+    <main className="drive-main"><div className="page-scroll">{children}</div></main>
+  </div>;
+}
+
+function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile: CurrentUser; onSignOut: () => void }) {
+  const canAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -535,10 +678,6 @@ function Sidebar({ active, systemRole }: { active: SidebarRoute; systemRole?: Sy
           <Icon name="folder" />
           <span>Files</span>
         </button>
-        {systemRole === "ADMIN" && <>
-          <button className={`nav-item${active === "admin-users" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin("users")}><Icon name="folder" /><span>Admin · Users</span></button>
-          <button className={`nav-item${active === "admin-groups" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin("groups")}><Icon name="folder" /><span>Admin · Groups</span></button>
-        </>}
         <button
           className={`nav-item${active === "recent" ? " is-active" : ""}`}
           type="button"
@@ -563,9 +702,53 @@ function Sidebar({ active, systemRole }: { active: SidebarRoute; systemRole?: Sy
           <Icon name="trash" />
           <span>Trash</span>
         </button>
+        {canAdmin && <>
+          <div className="sidebar-divider" />
+          <button className={`nav-item${active === "admin" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin()}><Icon name="settings" /><span>Admin</span></button>
+        </>}
       </nav>
+      <AccountMenu profile={profile} onSignOut={onSignOut} />
     </aside>
   );
+}
+
+function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: () => void }) {
+  const [open, setOpen] = useState(false);
+  const menu = useRef<HTMLDivElement>(null);
+  const canAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
+  const initials = profile.displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "U";
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent && event.key === "Escape") setOpen(false);
+      if (event instanceof MouseEvent && menu.current && !menu.current.contains(event.target as globalThis.Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  function go(action: () => void) {
+    setOpen(false);
+    action();
+  }
+  return <div className="account-area" ref={menu}>
+    {open && <div className="account-menu" role="menu">
+      <div className="account-menu-profile"><strong>{profile.displayName}</strong><span>{profile.email}</span><small>{profile.systemRole === "ADMIN" ? "Administrator" : "Member"}</small></div>
+      <div className="account-menu-divider" />
+      <button type="button" role="menuitem" onClick={() => go(navigateProfile)}>Profile</button>
+      {canAdmin && <button type="button" role="menuitem" onClick={() => go(() => navigateAdmin())}>Admin</button>}
+      <div className="account-menu-divider" />
+      <button type="button" role="menuitem" onClick={() => go(onSignOut)}>Sign out</button>
+    </div>}
+    <button type="button" className="account-trigger" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((value) => !value)}>
+      <span className="account-initials" aria-hidden="true">{initials}</span>
+      <span className="account-copy"><strong>My account</strong><small>{profile.displayName}</small></span>
+      <Icon name="chevron-down" size={15} />
+    </button>
+  </div>;
 }
 
 function DriveApp({ systemRole }: { systemRole: SystemRole }) {
@@ -691,10 +874,8 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   const canPlaceAtRoot = systemRole === "ADMIN";
   const canCreateHere = folderId !== null || canPlaceAtRoot;
   return (
-    <div className="app-shell">
-      <Sidebar active="drive" systemRole={systemRole} />
-      <main className="drive-main">
-        <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />}>
+    <>
+        <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />} searchQuery="">
             <button
               type="button"
               className="icon-button"
@@ -763,7 +944,6 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
             />
           )}
         </section>
-      </main>
       {createOpen && (
         <NameDialog
           title="New folder"
@@ -821,7 +1001,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
           onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -1720,9 +1900,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   const title = kind === "recent" ? "Recent" : "Favorites";
   const emptyTitle = kind === "recent" ? "No recent files yet" : "No favorites yet";
   return (
-    <div className="app-shell">
-      <Sidebar active={kind} />
-      <main className="drive-main">
+    <>
         <PageHeader title={<h1 className="page-title">{title}</h1>}>
           <button type="button" className="icon-button" onClick={() => void load()} aria-label={`Refresh ${title}`}>
             <Icon name="refresh" />
@@ -1734,7 +1912,6 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
           {status === "ready" && displayItems.length === 0 && <SearchState title={emptyTitle} />}
           {status === "ready" && displayItems.length > 0 && <FileList nodes={displayItems} onFolder={(id) => navigate(id)} onRename={setRenameNode} onShare={setShareNode} onTrash={setTrashNode} onVersions={setVersionNode} onOpen={openFile} onEdit={editFile} onNotice={setNotice} favoriteIds={favoriteIds} onFavorite={toggleFavorite} dateLabel={kind === "recent" ? "Last opened" : "Added"} />}
         </section>
-      </main>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
       {renameNode && <NameDialog title="Rename" action="Save" initialValue={renameNode.name} onClose={() => setRenameNode(null)} onSubmit={(name) => rename(renameNode, name)} />}
       {shareNode && <ShareDialog node={shareNode} onClose={() => setShareNode(null)} onNotice={setNotice} />}
@@ -1749,7 +1926,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
           onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -1888,9 +2065,7 @@ function SearchApp({ query }: { query: string }) {
   }
 
   return (
-    <div className="app-shell">
-      <Sidebar active={null} />
-      <main className="drive-main">
+    <>
         <header className="topbar">
           <div className="page-context"><h1 className="page-title">Search</h1></div>
           <SearchInput key={query} query={query} />
@@ -1909,7 +2084,6 @@ function SearchApp({ query }: { query: string }) {
             </>
           )}
         </section>
-      </main>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
       {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={() => void retry()} onSessionCloseError={(requestError) => setNotice({ tone: "error", message: displayError(requestError) })} />}
       {preview && (
@@ -1920,7 +2094,7 @@ function SearchApp({ query }: { query: string }) {
           onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -1999,9 +2173,7 @@ function TrashApp() {
     });
   }
   return (
-    <div className="app-shell">
-      <Sidebar active="trash" />
-      <main className="drive-main">
+    <>
         <PageHeader title={<h1 className="page-title">Trash</h1>}>
           <button type="button" className="icon-button" onClick={() => void load()} aria-label="Refresh Trash">
             <Icon name="refresh" />
@@ -2028,7 +2200,6 @@ function TrashApp() {
             </table></div>
           )}
         </section>
-      </main>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
       {confirmation && (
         <ConfirmDialog
@@ -2040,7 +2211,7 @@ function TrashApp() {
           onNotice={setNotice}
         />
       )}
-    </div>
+    </>
   );
 }
 function TrashRow({

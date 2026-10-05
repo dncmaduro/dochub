@@ -1,4 +1,5 @@
 import {
+  Get,
   Controller,
   HttpCode,
   HttpStatus,
@@ -6,7 +7,11 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
+import { CurrentAuth } from './current-auth.decorator.js';
+import { AccessTokenGuard } from './access-token.guard.js';
+import type { AuthPrincipal } from './auth.types.js';
 import type { Request, Response } from 'express';
 import { AuthCookieService } from './auth-cookie.service.js';
 import { AuthSessionService } from './auth-session.service.js';
@@ -17,6 +22,12 @@ export class AuthController {
     private readonly authSessions: AuthSessionService,
     private readonly authCookies: AuthCookieService,
   ) {}
+
+  @Get('me')
+  @UseGuards(AccessTokenGuard)
+  me(@CurrentAuth() auth: AuthPrincipal) {
+    return this.authSessions.currentUser(auth.userId);
+  }
 
   @Post('refresh')
   async refresh(

@@ -115,6 +115,14 @@ interface UploadResponse {
   node: Node;
 }
 export type SystemRole = "ADMIN" | "MEMBER";
+export type UserStatus = "INVITED" | "ACTIVE" | "SUSPENDED";
+export interface CurrentUser {
+  displayName: string;
+  email: string;
+  systemRole: SystemRole;
+  status: UserStatus;
+  googleConnected: boolean;
+}
 interface RefreshResponse {
   accessToken: string;
   systemRole: SystemRole;
@@ -164,6 +172,18 @@ export class ApiClient {
       },
     );
     return refresh;
+  }
+
+  async currentUser() {
+    return this.request<CurrentUser>("/auth/me");
+  }
+
+  async logout() {
+    try {
+      await this.raw("/auth/logout", { method: "POST" });
+    } finally {
+      this.accessToken = null;
+    }
   }
 
   async listNodes(folderId: string | null) {

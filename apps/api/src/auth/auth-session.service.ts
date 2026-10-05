@@ -101,6 +101,28 @@ export class AuthSessionService {
     });
   }
 
+  async currentUser(userId: string) {
+    const user = await this.database.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        displayName: true,
+        email: true,
+        status: true,
+        systemRole: true,
+        authAccounts: { select: { id: true }, take: 1 },
+      },
+    });
+    this.assertActiveUser(user);
+    return {
+      displayName: user.displayName,
+      email: user.email,
+      status: user.status,
+      systemRole: user.systemRole,
+      googleConnected: user.authAccounts.length > 0,
+    };
+  }
+
   async validateAccessSession(
     principal: AuthPrincipal,
   ): Promise<AuthPrincipal> {
