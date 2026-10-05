@@ -113,7 +113,6 @@ const en = {
     openFolder: "Open folder",
     open: "Open",
     preview: "Preview",
-    edit: "Edit",
     rename: "Rename",
     share: "Share",
     favorite: "Add to favorites",
@@ -242,6 +241,12 @@ const en = {
   editor: {
     viewing: "Viewing",
     editing: "Editing",
+    mode: "Editor mode",
+    viewMode: "View",
+    editMode: "Edit",
+    switchToView: "Switch to view mode",
+    switchToEdit: "Switch to edit mode",
+    switching: "Switching editor mode…",
     close: "Close editor",
     failed: "The document editor could not be opened.",
     unavailable: "The document editor is unavailable.",
@@ -260,7 +265,6 @@ const en = {
   },
   errors: {
     generic: "Something went wrong. Please try again.",
-    cannotEdit: "You cannot edit this document.",
     directoryUnavailable: "Directory search is unavailable.",
   },
   roles: { ADMIN: "Administrator", MEMBER: "Member", VIEWER: "Viewer", EDITOR: "Editor", OWNER: "Owner" },

@@ -1219,8 +1219,8 @@ summary:focus-visible {
   position: relative;
   display: flex;
   flex-direction: column;
-  max-width: calc(100vw - 24px);
-  max-height: calc(100vh - 24px);
+  max-width: calc(100vw - 60px);
+  max-height: calc(100vh - 60px);
   overflow: hidden;
   border-radius: 9px;
   background: var(--surface);
@@ -1310,12 +1310,66 @@ summary:focus-visible {
   flex: none;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   height: 44px;
   padding: 0 10px 0 16px;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text);
   font-size: 13px;
   font-weight: 500;
+}
+.editor-header-title,
+.editor-header-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+.editor-header-title {
+  gap: 8px;
+  overflow: hidden;
+}
+.editor-header-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-header-mode {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.editor-header-actions {
+  flex: none;
+  gap: 8px;
+}
+.editor-mode-control {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+}
+.editor-mode-control button {
+  height: 28px;
+  border: 0;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.editor-mode-control button + button {
+  border-left: 1px solid var(--border-subtle);
+}
+.editor-mode-control button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.editor-mode-control button:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 .editor-body {
   display: flex;
