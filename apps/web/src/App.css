@@ -303,6 +303,30 @@
   margin: 5px 0;
   background: var(--border-subtle);
 }
+.account-menu-language {
+  display: grid;
+  gap: 2px;
+  padding: 7px 10px 5px;
+}
+.account-menu-language > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.account-menu-language button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 4px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+.account-menu-language button:hover,
+.account-menu-language button[aria-checked="true"] {
+  background: #f1f3f4;
+}
 .account-menu > button {
   display: block;
   width: 100%;

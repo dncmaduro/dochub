@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import {
   ApiClient,
   ApiError,
@@ -32,6 +33,7 @@ import {
   type SystemRole,
   type TrashItem,
 } from "./api";
+import { changeLocale, getLocale, translate as t, type Locale } from "./i18n";
 import "./App.css";
 
 const api = new ApiClient();
@@ -116,7 +118,7 @@ function navigateSearch(query: string) {
 function displayError(error: unknown) {
   return error instanceof ApiError
     ? error.message
-    : "Something went wrong. Please try again.";
+    : t("errors.generic");
 }
 function hasCapability(node: Node, capability: string) {
   return node.capabilities.includes(capability);
@@ -161,7 +163,7 @@ async function openEditorForEdit(
 ) {
   try {
     if (!isOnlyOfficeEditableFile(node.name) || !hasCapability(node, "EDIT")) {
-      onError({ tone: "error", message: "You cannot edit this document." });
+      onError({ tone: "error", message: t("errors.cannotEdit") });
       return;
     }
     setEditor(await api.createEditorSession(node.id, "EDIT"));
@@ -173,24 +175,34 @@ function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.valueOf())
     ? "—"
-    : new Intl.DateTimeFormat(undefined, {
-        month: "short",
-        day: "numeric",
-        year:
-          date.getFullYear() === new Date().getFullYear()
-            ? undefined
-            : "numeric",
-      }).format(date);
+    : new Intl.DateTimeFormat(
+        getLocale() === "vi" ? "vi-VN" : "en-US",
+        getLocale() === "vi"
+          ? { day: "2-digit", month: "2-digit", year: "numeric" }
+          : {
+              month: "short",
+              day: "numeric",
+              year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+            },
+      ).format(date);
 }
 function formatBytes(value: string) {
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  const locale = getLocale() === "vi" ? "vi-VN" : "en-US";
+  const number = (amount: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(amount);
+  if (bytes < 1024) return `${number(bytes)} ${t("files.units.bytes")}`;
+  if (bytes < 1024 * 1024) return `${number(bytes / 1024)} ${t("files.units.kilobytes")}`;
+  return `${number(bytes / (1024 * 1024))} ${t("files.units.megabytes")}`;
 }
 function formatVersionSource(source: FileVersion["source"]) {
-  return source.charAt(0) + source.slice(1).toLowerCase();
+  return t(`versions.sources.${source}`);
+}
+function systemRoleLabel(role: SystemRole) {
+  return t(`roles.${role}`);
+}
+function userStatusLabel(status: string) {
+  return t(`statuses.${status}`, { defaultValue: status });
 }
 function compareNodes(left: Node, right: Node) {
   return left.type === right.type
@@ -316,7 +328,7 @@ function Toast({
         role={notice.tone === "error" ? "alert" : "status"}
       >
         <span>{notice.message}</span>
-        <button type="button" aria-label="Dismiss notification" onClick={onDismiss}>
+        <button type="button" aria-label={t("common.close")} onClick={onDismiss}>
           <Icon name="close" size={14} />
         </button>
       </div>
@@ -368,6 +380,7 @@ function useDialogFocus() {
 }
 
 function App() {
+  useTranslation();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [profile, setProfile] = useState<CurrentUser | null>(null);
   const [location, setLocation] = useState(() => ({
@@ -404,9 +417,9 @@ function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   if (authenticated === null)
-    return <div className="auth-state">Checking your session…</div>;
+    return <div className="auth-state">{t("auth.checkingSession")}</div>;
   if (!authenticated) return <SignIn />;
-  if (!profile) return <div className="auth-state">Loading your account…</div>;
+  if (!profile) return <div className="auth-state">{t("auth.loadingAccount")}</div>;
   const isAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
   async function signOut() {
     try {
@@ -445,15 +458,15 @@ function App() {
   return <AppShell profile={profile} active={active} onSignOut={() => void signOut()}>{page}</AppShell>;
 }
 function AccessDenied() {
-  return <div className="content-state"><h1>You do not have access to administration.</h1><p>Ask an administrator if you need access.</p></div>;
+  return <div className="content-state"><h1>{t("admin.accessDenied")}</h1><p>{t("admin.askAdministrator")}</p></div>;
 }
 
 function AdminApp({ tab }: { tab: "users" | "groups" }) {
-  return <><PageHeader title={<h1 className="page-title">Admin</h1>} /><section className="admin-content" aria-label="Administration">
-    <div className="admin-intro"><h2>Admin</h2><p>Manage users, groups, and access to Docs Hub.</p></div>
-    <div className="admin-tabs" role="tablist" aria-label="Administration sections">
-      <button type="button" role="tab" aria-selected={tab === "users"} className={tab === "users" ? "is-active" : ""} onClick={() => navigateAdmin("users")}>Users</button>
-      <button type="button" role="tab" aria-selected={tab === "groups"} className={tab === "groups" ? "is-active" : ""} onClick={() => navigateAdmin("groups")}>Groups</button>
+  return <><PageHeader title={<h1 className="page-title">{t("admin.title")}</h1>} /><section className="admin-content" aria-label={t("admin.title")}>
+    <div className="admin-intro"><h2>{t("admin.title")}</h2><p>{t("admin.description")}</p></div>
+    <div className="admin-tabs" role="tablist" aria-label={t("admin.sections")}>
+      <button type="button" role="tab" aria-selected={tab === "users"} className={tab === "users" ? "is-active" : ""} onClick={() => navigateAdmin("users")}>{t("admin.users")}</button>
+      <button type="button" role="tab" aria-selected={tab === "groups"} className={tab === "groups" ? "is-active" : ""} onClick={() => navigateAdmin("groups")}>{t("admin.groups")}</button>
     </div>
     <div className="admin-tab-content">{tab === "users" ? <AdminUsers /> : <AdminGroups />}</div>
   </section></>;
@@ -471,31 +484,31 @@ function AdminUsers() {
     await api.createAdminUser(input);
     await load();
     setAddOpen(false);
-    setNotice({ tone: "success", message: "User added. They can now sign in with this Google email." });
+    setNotice({ tone: "success", message: t("admin.userAdded") });
   }
   async function action(user: AdminUser, kind: "role" | "status") {
-    if (kind === "status" && user.status !== "SUSPENDED" && !window.confirm(`Suspend ${user.displayName}? They will not be able to sign in.`)) return;
+    if (kind === "status" && user.status !== "SUSPENDED" && !window.confirm(t("admin.suspendConfirm", { name: user.displayName }))) return;
     setOpenMenuId(null);
     try { const updated = kind === "role" ? await api.updateAdminUser(user.id, { systemRole: user.systemRole === "ADMIN" ? "MEMBER" : "ADMIN" }) : user.status === "SUSPENDED" ? await api.reactivateAdminUser(user.id) : await api.suspendAdminUser(user.id); setUsers((items) => items.map((item) => item.id === user.id ? updated : item)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); }
   }
   const matching = users.filter((user) => `${user.displayName} ${user.email}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <>
     <Toast notice={notice} onDismiss={() => setNotice(null)} />
-    <div className="admin-section-header"><div><h3>Users</h3><p>Manage who can access Docs Hub.</p></div><button type="button" className="button button-primary" onClick={() => setAddOpen(true)}><Icon name="plus" size={16} />Add user</button></div>
-    <input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search users…" aria-label="Search users" />
-    <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{matching.map((user) => <AdminUserRow key={user.id} user={user} menuOpen={openMenuId === user.id} onToggleMenu={() => setOpenMenuId((open) => open === user.id ? null : user.id)} onCloseMenu={() => setOpenMenuId(null)} onAction={(kind) => void action(user, kind)} />)}</tbody></table></div>
+    <div className="admin-section-header"><div><h3>{t("admin.users")}</h3><p>{t("admin.usersDescription")}</p></div><button type="button" className="button button-primary" onClick={() => setAddOpen(true)}><Icon name="plus" size={16} />{t("admin.addUser")}</button></div>
+    <input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("admin.searchUsers")} aria-label={t("admin.searchUsers")} />
+    <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>{t("common.name")}</th><th>{t("common.email")}</th><th>{t("common.role")}</th><th>{t("common.status")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{matching.map((user) => <AdminUserRow key={user.id} user={user} menuOpen={openMenuId === user.id} onToggleMenu={() => setOpenMenuId((open) => open === user.id ? null : user.id)} onCloseMenu={() => setOpenMenuId(null)} onAction={(kind) => void action(user, kind)} />)}</tbody></table></div>
     {addOpen && <AddUserDialog onClose={() => setAddOpen(false)} onSubmit={create} />}
   </>;
 }
 
 function AdminUserRow({ user, menuOpen, onToggleMenu, onCloseMenu, onAction }: { user: AdminUser; menuOpen: boolean; onToggleMenu: () => void; onCloseMenu: () => void; onAction: (kind: "role" | "status") => void }) {
   const trigger = useRef<HTMLButtonElement>(null);
-  return <tr><td>{user.displayName}</td><td>{user.email}</td><td>{user.systemRole === "ADMIN" ? "Administrator" : "Member"}</td><td>{user.status === "ACTIVE" ? "Active" : user.status === "SUSPENDED" ? "Suspended" : "Invited"}</td><td className="row-actions">
-    <button ref={trigger} type="button" className="icon-button" aria-label={`Actions for ${user.displayName}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><Icon name="more" /></button>
+  return <tr><td>{user.displayName}</td><td>{user.email}</td><td>{systemRoleLabel(user.systemRole)}</td><td>{userStatusLabel(user.status)}</td><td className="row-actions">
+    <button ref={trigger} type="button" className="icon-button" aria-label={t("admin.actionsFor", { name: user.displayName })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><Icon name="more" /></button>
     {menuOpen && <RowMenu id={`admin-user-menu-${user.id}`} trigger={trigger} onClose={onCloseMenu}>
-      <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onAction("role"); }}>{user.systemRole === "ADMIN" ? "Make member" : "Make admin"}</button>
+      <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onAction("role"); }}>{user.systemRole === "ADMIN" ? t("admin.makeMember") : t("admin.makeAdmin")}</button>
       <div className="row-menu-divider" />
-      <button type="button" role="menuitem" className={user.status === "SUSPENDED" ? "" : "menu-danger"} onClick={() => { onCloseMenu(); onAction("status"); }}>{user.status === "SUSPENDED" ? "Reactivate" : "Suspend"}</button>
+      <button type="button" role="menuitem" className={user.status === "SUSPENDED" ? "" : "menu-danger"} onClick={() => { onCloseMenu(); onAction("status"); }}>{user.status === "SUSPENDED" ? t("admin.reactivate") : t("admin.suspend")}</button>
     </RowMenu>}
   </td></tr>;
 }
@@ -511,7 +524,7 @@ function AddUserDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (
     const email = String(form.get("email") ?? "").trim();
     const systemRole = String(form.get("systemRole") ?? "MEMBER") as SystemRole;
     if (!displayName || !email || !systemRole) {
-      setError("Display name, email, and role are required.");
+      setError(t("admin.userRequired"));
       return;
     }
     setError("");
@@ -525,13 +538,13 @@ function AddUserDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (
     }
   }
   return <div className="dialog-backdrop" role="presentation"><section ref={dialog} className="dialog admin-dialog" role="dialog" aria-modal="true" aria-labelledby="add-user-title">
-    <header className="dialog-header"><div><h2 id="add-user-title">Add user</h2><p>Add a Google account to Docs Hub.</p></div><button type="button" className="icon-button" onClick={onClose} aria-label="Close dialog"><Icon name="close" size={16} /></button></header>
+    <header className="dialog-header"><div><h2 id="add-user-title">{t("admin.addUser")}</h2><p>{t("admin.addGoogleAccount")}</p></div><button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}><Icon name="close" size={16} /></button></header>
     <form onSubmit={(event) => void submit(event)}>
-      <label htmlFor="add-user-name">Display name</label><input id="add-user-name" name="displayName" required maxLength={200} data-dialog-initial-focus />
-      <label htmlFor="add-user-email">Google email</label><input id="add-user-email" name="email" type="email" required maxLength={320} />
-      <label htmlFor="add-user-role">Role</label><select id="add-user-role" name="systemRole" defaultValue="MEMBER" required><option value="MEMBER">Member</option><option value="ADMIN">Admin</option></select>
+      <label htmlFor="add-user-name">{t("admin.displayName")}</label><input id="add-user-name" name="displayName" required maxLength={200} data-dialog-initial-focus />
+      <label htmlFor="add-user-email">{t("admin.googleEmail")}</label><input id="add-user-email" name="email" type="email" required maxLength={320} />
+      <label htmlFor="add-user-role">{t("common.role")}</label><select id="add-user-role" name="systemRole" defaultValue="MEMBER" required><option value="MEMBER">{t("roles.MEMBER")}</option><option value="ADMIN">{t("roles.ADMIN")}</option></select>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <div className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>Cancel</button><button type="submit" className="button button-primary" disabled={pending}>{pending ? "Adding…" : "Add user"}</button></div>
+      <div className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>{t("common.cancel")}</button><button type="submit" className="button button-primary" disabled={pending}>{pending ? t("admin.addUser") + "…" : t("admin.addUser")}</button></div>
     </form>
   </section></div>;
 }
@@ -543,38 +556,39 @@ function AdminGroups() {
   async function toggleMembers(group: AdminGroup) { if (!members[group.id]) { try { const page = await api.listAdminGroupMembers(group.id); setMembers((all) => ({ ...all, [group.id]: page.items.map((item) => item.user) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } } else setMembers((all) => { const next = { ...all }; delete next[group.id]; return next; }); }
   async function add(groupId: string, userId: string) { try { await api.addAdminGroupMember(groupId, userId); const page = await api.listAdminGroupMembers(groupId); setMembers((all) => ({ ...all, [groupId]: page.items.map((item) => item.user) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
   async function remove(groupId: string, userId: string) { try { await api.removeAdminGroupMember(groupId, userId); setMembers((all) => ({ ...all, [groupId]: (all[groupId] ?? []).filter((user) => user.id !== userId) })); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
-  async function rename(group: AdminGroup) { const name = window.prompt("Group name", group.name); if (!name || name === group.name) return; try { const updated = await api.updateAdminGroup(group.id, { name }); setGroups((items) => items.map((item) => item.id === group.id ? updated : item)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
+  async function rename(group: AdminGroup) { const name = window.prompt(t("admin.groupName"), group.name); if (!name || name === group.name) return; try { const updated = await api.updateAdminGroup(group.id, { name }); setGroups((items) => items.map((item) => item.id === group.id ? updated : item)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } }
   const matching = groups.filter((group) => group.name.toLowerCase().includes(query.trim().toLowerCase()));
-  return <><Toast notice={notice} onDismiss={() => setNotice(null)} /><div className="admin-section-header"><div><h3>Groups</h3><p>Organize users for document permissions.</p></div><form className="admin-inline-form" onSubmit={create}><input required name="name" placeholder="New group name" maxLength={200} aria-label="New group name" /><button className="button button-primary">New group</button></form></div><input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search groups…" aria-label="Search groups" />{groups.length === 0 || matching.length === 0 ? <div className="admin-empty"><h3>{groups.length === 0 ? "No groups yet." : "No groups found."}</h3><p>{groups.length === 0 ? "Create a group to organize document permissions." : "Try a different search."}</p></div> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Group name</th><th>Members</th><th>Actions</th></tr></thead><tbody>{matching.map((group) => <><tr key={group.id}><td>{group.name}</td><td>{group.memberCount}</td><td><button className="button" onClick={() => void rename(group)}>Rename</button><button className="button" onClick={() => void toggleMembers(group)}>{members[group.id] ? "Close members" : "Manage members"}</button></td></tr>{members[group.id] && <tr key={`${group.id}-members`}><td colSpan={3}><select defaultValue="" onChange={(event) => { if (event.target.value) void add(group.id, event.target.value); event.currentTarget.value = ""; }}><option value="">Add a user…</option>{users.filter((user) => !members[group.id].some((member) => member.id === user.id)).map((user) => <option key={user.id} value={user.id}>{user.displayName} — {user.email}</option>)}</select>{members[group.id].map((user) => <div className="admin-member" key={user.id}>{user.displayName} <button className="button" onClick={() => void remove(group.id, user.id)}>Remove</button></div>)}</td></tr>}</>)}</tbody></table></div>}
+  return <><Toast notice={notice} onDismiss={() => setNotice(null)} /><div className="admin-section-header"><div><h3>{t("admin.groups")}</h3><p>{t("admin.groupsDescription")}</p></div><form className="admin-inline-form" onSubmit={create}><input required name="name" placeholder={t("admin.newGroupName")} maxLength={200} aria-label={t("admin.newGroupName")} /><button className="button button-primary">{t("admin.newGroup")}</button></form></div><input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("admin.searchGroups")} aria-label={t("admin.searchGroups")} />{groups.length === 0 || matching.length === 0 ? <div className="admin-empty"><h3>{groups.length === 0 ? t("admin.noGroupsYet") : t("admin.noGroupsFound")}</h3><p>{groups.length === 0 ? t("admin.createGroupHint") : t("admin.tryDifferentSearch")}</p></div> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>{t("admin.groupName")}</th><th>{t("common.members")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{matching.map((group) => <><tr key={group.id}><td>{group.name}</td><td>{new Intl.NumberFormat(getLocale() === "vi" ? "vi-VN" : "en-US").format(group.memberCount)}</td><td><button className="button" onClick={() => void rename(group)}>{t("admin.rename")}</button><button className="button" onClick={() => void toggleMembers(group)}>{members[group.id] ? t("admin.closeMembers") : t("admin.manageMembers")}</button></td></tr>{members[group.id] && <tr key={`${group.id}-members`}><td colSpan={3}><select defaultValue="" onChange={(event) => { if (event.target.value) void add(group.id, event.target.value); event.currentTarget.value = ""; }}><option value="">{t("admin.addUserToGroup")}</option>{users.filter((user) => !members[group.id].some((member) => member.id === user.id)).map((user) => <option key={user.id} value={user.id}>{user.displayName} — {user.email}</option>)}</select>{members[group.id].map((user) => <div className="admin-member" key={user.id}>{user.displayName} <button className="button" onClick={() => void remove(group.id, user.id)}>{t("common.remove")}</button></div>)}</td></tr>}</>)}</tbody></table></div>}
   </>;
 }
 
 function ProfileApp({ profile, onSignOut }: { profile: CurrentUser; onSignOut: () => void }) {
   return <>
-    <PageHeader title={<h1 className="page-title">Profile</h1>} />
-    <section className="profile-content" aria-label="Profile">
-      <div className="profile-heading"><h2>Account</h2><p>Your trusted account information.</p></div>
+    <PageHeader title={<h1 className="page-title">{t("profile.title")}</h1>} />
+    <section className="profile-content" aria-label={t("profile.title")}>
+      <div className="profile-heading"><h2>{t("profile.account")}</h2><p>{t("profile.description")}</p></div>
       <dl className="profile-details">
-        <div><dt>Name</dt><dd>{profile.displayName}</dd></div>
-        <div><dt>Email</dt><dd>{profile.email}</dd></div>
-        <div><dt>Role</dt><dd>{profile.systemRole === "ADMIN" ? "Administrator" : "Member"}</dd></div>
-        <div><dt>Status</dt><dd>{profile.status === "ACTIVE" ? "Active" : profile.status}</dd></div>
-        <div><dt>Sign-in</dt><dd>{profile.googleConnected ? "Google" : "—"}</dd></div>
+        <div><dt>{t("common.name")}</dt><dd>{profile.displayName}</dd></div>
+        <div><dt>{t("common.email")}</dt><dd>{profile.email}</dd></div>
+        <div><dt>{t("common.role")}</dt><dd>{systemRoleLabel(profile.systemRole)}</dd></div>
+        <div><dt>{t("common.status")}</dt><dd>{userStatusLabel(profile.status)}</dd></div>
+        <div><dt>{t("profile.signInMethod")}</dt><dd>{t("profile.googleStatus", { status: profile.googleConnected ? t("profile.connected") : t("profile.notConnected") })}</dd></div>
       </dl>
-      <button type="button" className="button" onClick={onSignOut}>Sign out</button>
+      <button type="button" className="button" onClick={onSignOut}>{t("account.signOut")}</button>
     </section>
   </>;
 }
 
 function SignIn() {
+  const [pending, setPending] = useState(false);
   return (
     <main className="sign-in">
       <section>
         <Icon name="drive" size={30} />
         <h1>Docs Hub</h1>
-        <p>Sign in to access your documents.</p>
-        <a className="button button-primary" href={api.googleAuthUrl()}>
-          Continue with Google
+        <p>{t("auth.signInDescription")}</p>
+        <a className="button button-primary" href={api.googleAuthUrl()} onClick={() => setPending(true)}>
+          {pending ? t("auth.signingIn") : t("auth.signInWithGoogle")}
         </a>
       </section>
     </main>
@@ -603,7 +617,7 @@ function SearchInput({ query }: { query: string }) {
     <form className="shell-search" role="search" onSubmit={submit}>
       <Icon name="search" size={17} />
       <label className="visually-hidden" htmlFor="drive-search">
-        Search files
+        {t("files.search")}
       </label>
       <input
         id="drive-search"
@@ -617,7 +631,7 @@ function SearchInput({ query }: { query: string }) {
             clearOrBlur();
           }
         }}
-        placeholder="Search files"
+        placeholder={t("files.search")}
         maxLength={200}
       />
     </form>
@@ -669,14 +683,14 @@ function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile
         <Icon name="drive" size={22} />
         <span>Docs Hub</span>
       </div>
-      <nav aria-label="Main navigation">
+      <nav aria-label={t("nav.main")}>
         <button
           className={`nav-item${active === "drive" ? " is-active" : ""}`}
           type="button"
           onClick={() => navigate(null)}
         >
           <Icon name="folder" />
-          <span>Files</span>
+          <span>{t("nav.files")}</span>
         </button>
         <button
           className={`nav-item${active === "recent" ? " is-active" : ""}`}
@@ -684,7 +698,7 @@ function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile
           onClick={() => navigateCollection("recent")}
         >
           <Icon name="recent" />
-          <span>Recent</span>
+          <span>{t("nav.recent")}</span>
         </button>
         <button
           className={`nav-item${active === "favorites" ? " is-active" : ""}`}
@@ -692,7 +706,7 @@ function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile
           onClick={() => navigateCollection("favorites")}
         >
           <Icon name="star" />
-          <span>Favorites</span>
+          <span>{t("nav.favorites")}</span>
         </button>
         <button
           className={`nav-item${active === "trash" ? " is-active" : ""}`}
@@ -700,11 +714,11 @@ function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile
           onClick={navigateTrash}
         >
           <Icon name="trash" />
-          <span>Trash</span>
+          <span>{t("nav.trash")}</span>
         </button>
         {canAdmin && <>
           <div className="sidebar-divider" />
-          <button className={`nav-item${active === "admin" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin()}><Icon name="settings" /><span>Admin</span></button>
+          <button className={`nav-item${active === "admin" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin()}><Icon name="settings" /><span>{t("nav.admin")}</span></button>
         </>}
       </nav>
       <AccountMenu profile={profile} onSignOut={onSignOut} />
@@ -785,7 +799,7 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
       }}
     >
       <span className="account-initials" aria-hidden="true">{initials}</span>
-      <span className="account-copy"><strong>My account</strong><small>{profile.displayName}</small></span>
+      <span className="account-copy"><strong>{t("account.myAccount")}</strong><small>{profile.displayName}</small></span>
       <Icon name="chevron-down" size={15} />
     </button>
     {open && createPortal(
@@ -800,12 +814,16 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
           visibility: position ? "visible" : "hidden",
         }}
       >
-        <div className="account-menu-profile"><strong>{profile.displayName}</strong><span>{profile.email}</span><small>{profile.systemRole === "ADMIN" ? "Administrator" : "Member"}</small></div>
+        <div className="account-menu-profile"><strong>{profile.displayName}</strong><span>{profile.email}</span><small>{systemRoleLabel(profile.systemRole)}</small></div>
         <div className="account-menu-divider" />
-        <button type="button" role="menuitem" onClick={() => go(navigateProfile)}>Profile</button>
-        {canAdmin && <button type="button" role="menuitem" onClick={() => go(() => navigateAdmin())}>Admin</button>}
+        <button type="button" role="menuitem" onClick={() => go(navigateProfile)}>{t("account.profile")}</button>
+        {canAdmin && <button type="button" role="menuitem" onClick={() => go(() => navigateAdmin())}>{t("nav.admin")}</button>}
+        <div className="account-menu-language" role="group" aria-label={t("account.language")}>
+          <span>{t("account.language")}</span>
+          {(["vi", "en"] as Locale[]).map((locale) => <button key={locale} type="button" role="menuitemradio" aria-checked={getLocale() === locale} onClick={() => void changeLocale(locale)}>{locale === "vi" ? t("account.languageVietnamese") : t("account.languageEnglish")}{getLocale() === locale ? " ✓" : ""}</button>)}
+        </div>
         <div className="account-menu-divider" />
-        <button type="button" role="menuitem" onClick={() => go(onSignOut)}>Sign out</button>
+        <button type="button" role="menuitem" onClick={() => go(onSignOut)}>{t("account.signOut")}</button>
       </div>,
       document.body,
     )}
@@ -870,7 +888,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   async function createFolder(name: string) {
     const node = await api.createFolder(name, folderId);
     setNodes((items) => [...items, node].sort(compareNodes));
-    setNotice({ tone: "success", message: `Created “${node.name}”.` });
+    setNotice({ tone: "success", message: t("files.created", { name: node.name }) });
   }
   async function rename(node: Node, name: string) {
     const updated = await api.renameNode(node.id, name);
@@ -879,7 +897,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
         .map((item) => (item.id === node.id ? updated : item))
         .sort(compareNodes),
     );
-    setNotice({ tone: "success", message: "Name updated." });
+    setNotice({ tone: "success", message: t("files.renamed") });
   }
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -891,7 +909,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
       setNodes((items) => [...items, result.node].sort(compareNodes));
       setNotice({
         tone: "success",
-        message: `Uploaded “${result.node.name}”.`,
+        message: t("files.uploaded", { name: result.node.name }),
       });
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
@@ -912,7 +930,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   async function moveToTrash(node: Node) {
     await api.moveToTrash(node.id);
     setNodes((items) => items.filter((item) => item.id !== node.id));
-    setNotice({ tone: "success", message: `Moved “${node.name}” to Trash.` });
+    setNotice({ tone: "success", message: t("files.movedToTrash", { name: node.name }) });
   }
   async function toggleFavorite(node: Node) {
     const isFavorite = favoriteIds.has(node.id);
@@ -926,7 +944,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
       });
       setNotice({
         tone: "success",
-        message: isFavorite ? "Removed from favorites." : "Added to favorites.",
+        message: isFavorite ? t("files.favoriteRemoved") : t("files.favoriteAdded"),
       });
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
@@ -941,7 +959,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
               type="button"
               className="icon-button"
               onClick={() => void load(folderId)}
-              aria-label="Refresh folder"
+              aria-label={t("files.refresh")}
             >
               <Icon name="refresh" />
             </button>
@@ -953,7 +971,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
                   onClick={() => setCreateOpen(true)}
                 >
                   <Icon name="plus" />
-                  New folder
+                  {t("files.newFolder")}
                 </button>
                 <button
                   type="button"
@@ -961,7 +979,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
                   onClick={() => uploadInput.current?.click()}
                 >
                   <Icon name="upload" />
-                  Upload
+                  {t("files.upload")}
                 </button>
                 <input
                   className="visually-hidden"
@@ -972,12 +990,12 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
               </>
             ) : (
               <span className="root-permission-note">
-                Root creation requires an administrator.
+                {t("files.rootAdminOnly")}
               </span>
             )}
         </PageHeader>
         <Toast notice={notice} onDismiss={() => setNotice(null)} />
-        <section className="drive-content" aria-label="Files">
+        <section className="drive-content" aria-label={t("files.title")}>
           {status === "loading" && <LoadingRows />}
           {status === "error" && (
             <ErrorState message={error} onRetry={() => void load(folderId)} />
@@ -1007,16 +1025,16 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
         </section>
       {createOpen && (
         <NameDialog
-          title="New folder"
-          action="Create"
+          title={t("files.newFolder")}
+          action={t("common.create")}
           onClose={() => setCreateOpen(false)}
           onSubmit={createFolder}
         />
       )}
       {renameNode && (
         <NameDialog
-          title="Rename"
-          action="Save"
+          title={t("files.rename")}
+          action={t("common.save")}
           initialValue={renameNode.name}
           onClose={() => setRenameNode(null)}
           onSubmit={(name) => rename(renameNode, name)}
@@ -1031,9 +1049,9 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
       )}
       {trashNode && (
         <ConfirmDialog
-          title="Move to Trash"
-          message={`Move “${trashNode.name}” to Trash?`}
-          action="Move to Trash"
+          title={t("files.moveToTrash")}
+          message={t("files.moveToTrashConfirm", { name: trashNode.name })}
+          action={t("files.moveToTrash")}
           onClose={() => setTrashNode(null)}
           onConfirm={() => moveToTrash(trashNode)}
           onNotice={setNotice}
@@ -1074,9 +1092,9 @@ function Breadcrumbs({
   folderId: string | null;
 }) {
   return (
-    <nav className="breadcrumbs" aria-label="Breadcrumb">
+    <nav className="breadcrumbs" aria-label={t("nav.breadcrumb")}>
       <button type="button" onClick={() => navigate(null)}>
-        Files
+        {t("nav.files")}
       </button>
       {items.map((item, index) => (
         <span key={item.id} className="crumb">
@@ -1105,7 +1123,7 @@ function FileList({
   onNotice,
   favoriteIds,
   onFavorite,
-  dateLabel = "Modified",
+  dateLabel = t("common.modified"),
 }: {
   nodes: Node[];
   onFolder: (id: string) => void;
@@ -1126,10 +1144,10 @@ function FileList({
       <table className="file-table">
         <thead>
           <tr>
-            <th scope="col">Name</th>
+            <th scope="col">{t("common.name")}</th>
             <th scope="col">{dateLabel}</th>
             <th scope="col">
-              <span className="visually-hidden">Actions</span>
+              <span className="visually-hidden">{t("files.tableActions")}</span>
             </th>
           </tr>
         </thead>
@@ -1227,7 +1245,7 @@ function FileRow({
           ref={trigger}
           type="button"
           className="icon-button"
-          aria-label={`Actions for ${node.name}`}
+          aria-label={t("files.fileActions", { name: node.name })}
           aria-haspopup="menu"
           aria-controls={menuOpen ? `file-menu-${node.id}` : undefined}
           aria-expanded={menuOpen}
@@ -1246,7 +1264,7 @@ function FileRow({
               }}
             >
               <Icon name="star" size={16} />
-              {isFavorite ? "Remove from favorites" : "Add to favorites"}
+              {isFavorite ? t("files.unfavorite") : t("files.favorite")}
             </button>
             <button
               type="button"
@@ -1259,12 +1277,12 @@ function FileRow({
               disabled={!canOpen}
             >
               {isFolder
-                ? "Open folder"
+                ? t("files.openFolder")
                 : isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")
-                  ? "Open"
+                  ? t("files.open")
                   : hasCapability(node, "PREVIEW")
-                    ? "Preview"
-                    : "Download"}
+                    ? t("files.preview")
+                    : t("common.download")}
             </button>
             {canEdit && (
               <button
@@ -1276,7 +1294,7 @@ function FileRow({
                 }}
               >
                 <Icon name="edit" size={16} />
-                Edit
+                {t("files.edit")}
               </button>
             )}
             {!isFolder && hasCapability(node, "DOWNLOAD") && (
@@ -1289,7 +1307,7 @@ function FileRow({
                 }}
               >
                 <Icon name="download" size={16} />
-                Download
+                {t("common.download")}
               </button>
             )}
             {hasCapability(node, "RENAME") && (
@@ -1302,7 +1320,7 @@ function FileRow({
                 }}
               >
                 <Icon name="edit" size={16} />
-                Rename
+                {t("files.rename")}
               </button>
             )}
             {!isFolder && (
@@ -1314,7 +1332,7 @@ function FileRow({
                   onVersions(node);
                 }}
               >
-                Version history
+                {t("files.versionHistory")}
               </button>
             )}
             {hasCapability(node, "SHARE") && (
@@ -1327,7 +1345,7 @@ function FileRow({
                 }}
               >
                 <Icon name="share" size={16} />
-                Share
+                {t("files.share")}
               </button>
             )}
             {hasCapability(node, "DELETE") && (
@@ -1341,7 +1359,7 @@ function FileRow({
                 }}
               >
                 <Icon name="trash" size={16} />
-                Move to Trash
+                {t("files.moveToTrash")}
               </button>
             )}
           </RowMenu>
@@ -1532,7 +1550,7 @@ function ShareDialog({
         (response) => setPrincipalResults(response.items),
         () => {
           setPrincipalResults([]);
-          setLookupError("Directory search is unavailable.");
+          setLookupError(t("errors.directoryUnavailable"));
         },
       );
     }, 180);
@@ -1589,17 +1607,17 @@ function ShareDialog({
     if (!linkUrl) return;
     try {
       await navigator.clipboard.writeText(linkUrl);
-      onNotice({ tone: "success", message: "Link copied." });
+      onNotice({ tone: "success", message: t("share.linkCopied") });
     } catch {
-      onNotice({ tone: "error", message: "Could not copy the link." });
+      onNotice({ tone: "error", message: t("share.linkCopyFailed") });
     }
   }
 
   const principals = principalResults.filter((principal) => principal.type === principalType);
   const selectedName = selectedPrincipal
     ? selectedPrincipal.type === "USER"
-      ? selectedPrincipal.displayName ?? "User"
-      : selectedPrincipal.name ?? "Group"
+      ? selectedPrincipal.displayName ?? t("principalTypes.USER")
+      : selectedPrincipal.name ?? t("principalTypes.GROUP")
     : "";
 
   async function addPermission() {
@@ -1608,7 +1626,7 @@ function ShareDialog({
       () => selectedPrincipal.type === "USER"
         ? api.setUserPermission(node.id, selectedPrincipal.id, role)
         : api.setGroupPermission(node.id, selectedPrincipal.id, role),
-      "Permission added.",
+      t("share.permissionAdded"),
       closeAddForm,
     );
   }
@@ -1617,18 +1635,18 @@ function ShareDialog({
     <div className="dialog-backdrop" role="presentation">
       <section ref={dialog} className="dialog share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
         <header className="dialog-header">
-          <div><h2 id="share-dialog-title">Share “{node.name}”</h2></div>
-          <button type="button" className="icon-button" aria-label="Close sharing" onClick={onClose}>
+          <div><h2 id="share-dialog-title">{t("share.title", { name: node.name })}</h2></div>
+          <button type="button" className="icon-button" aria-label={t("share.close")} onClick={onClose}>
             <Icon name="close" />
           </button>
         </header>
         {error && <p className="form-error" role="alert">{error}</p>}
         {!sharing || !permissions ? (
-          <p className="dialog-loading">Loading sharing settings…</p>
+          <p className="dialog-loading">{t("share.loading")}</p>
         ) : (
           <div className="share-body">
             <section className="share-section">
-              <h3>People with access</h3>
+              <h3>{t("share.peopleWithAccess")}</h3>
               <div className="permission-list">
                 {permissions.entries.map((entry) => (
                   <PermissionRow
@@ -1639,15 +1657,15 @@ function ShareDialog({
                       () => entry.principalType === "USER"
                         ? api.setUserPermission(node.id, entry.principal.id, nextRole)
                         : api.setGroupPermission(node.id, entry.principal.id, nextRole),
-                      "Permission updated.",
+                      t("share.permissionUpdated"),
                     )}
                     onRemove={() => void mutate(
                       () => api.removePermission(node.id, entry),
-                      "Permission removed.",
+                      t("share.permissionRemoved"),
                     )}
                   />
                 ))}
-                {permissions.entries.length === 0 && <p className="muted-copy">No direct permissions.</p>}
+                {permissions.entries.length === 0 && <p className="muted-copy">{t("share.noDirectPermissions")}</p>}
               </div>
               <button
                 ref={addButton}
@@ -1664,13 +1682,13 @@ function ShareDialog({
                   }
                 }}
               >
-                {addOpen ? "Close" : "Add people or groups"}
+                {addOpen ? t("common.close") : t("share.addPeopleOrGroups")}
               </button>
               {addOpen && (
-                <div className="permission-add" aria-label="Add a person or group">
+                <div className="permission-add" aria-label={t("share.addPersonOrGroup")}>
                   <div className="principal-search-row">
                     <select
-                      aria-label="Search type"
+                      aria-label={t("share.searchType")}
                       value={principalType}
                       onChange={(event) => {
                         setPrincipalType(event.target.value as "USER" | "GROUP");
@@ -1678,29 +1696,29 @@ function ShareDialog({
                       }}
                       disabled={pending}
                     >
-                      <option value="USER">People</option>
-                      <option value="GROUP">Groups</option>
+                      <option value="USER">{t("share.people")}</option>
+                      <option value="GROUP">{t("share.groups")}</option>
                     </select>
                     <input
                       ref={principalSearch}
-                      aria-label={`Search ${principalType === "USER" ? "people" : "groups"}`}
+                      aria-label={principalType === "USER" ? t("share.searchPeople") : t("share.searchGroups")}
                       value={principalQuery}
                       onChange={(event) => {
                         setPrincipalQuery(event.target.value);
                         setSelectedPrincipal(null);
                       }}
-                      placeholder={`Search ${principalType === "USER" ? "people" : "groups"}`}
+                      placeholder={principalType === "USER" ? t("share.searchPeople") : t("share.searchGroups")}
                       disabled={pending}
                     />
                   </div>
                   {lookupError && <p className="form-error" role="alert">{lookupError}</p>}
                   {principalQuery.trim().length < 2 ? (
-                    <p className="muted-copy search-hint">Type at least 2 characters to search.</p>
+                    <p className="muted-copy search-hint">{t("share.typeToSearch")}</p>
                   ) : principals.length > 0 ? (
-                    <div className="principal-results" aria-label="Search results">
+                    <div className="principal-results" aria-label={t("share.searchResults")}>
                       {principals.map((principal) => {
-                        const name = principal.type === "USER" ? principal.displayName ?? "User" : principal.name ?? "Group";
-                        const secondary = principal.type === "USER" ? principal.email ?? "Person" : "Group";
+                        const name = principal.type === "USER" ? principal.displayName ?? t("principalTypes.USER") : principal.name ?? t("principalTypes.GROUP");
+                        const secondary = principal.type === "USER" ? principal.email ?? t("principalTypes.USER") : t("principalTypes.GROUP");
                         const selected = selectedPrincipal?.id === principal.id;
                         return (
                           <button
@@ -1711,27 +1729,27 @@ function ShareDialog({
                             onClick={() => setSelectedPrincipal(principal)}
                           >
                             <span><strong>{name}</strong><small>{secondary}</small></span>
-                            {selected && <span className="selected-label">Selected</span>}
+                            {selected && <span className="selected-label">{t("common.selected")}</span>}
                           </button>
                         );
                       })}
                     </div>
                   ) : (
-                    <p className="muted-copy search-hint">No matching {principalType === "USER" ? "people" : "groups"}.</p>
+                    <p className="muted-copy search-hint">{principalType === "USER" ? t("share.noMatchingPeople") : t("share.noMatchingGroups")}</p>
                   )}
                   {selectedPrincipal && (
                     <div className="selected-principal">
-                      <span>Sharing with <strong>{selectedName}</strong></span>
+                      <span>{t("share.sharingWith")} <strong>{selectedName}</strong></span>
                       <label>
-                        <span className="visually-hidden">Role for {selectedName}</span>
-                        <select aria-label={`Role for ${selectedName}`} value={role} onChange={(event) => setRole(event.target.value as DocumentRole)} disabled={pending}>
-                          <option value="VIEWER">Viewer</option>
-                          <option value="EDITOR">Editor</option>
-                          <option value="OWNER">Owner</option>
+                        <span className="visually-hidden">{t("share.roleFor", { name: selectedName })}</span>
+                        <select aria-label={t("share.roleFor", { name: selectedName })} value={role} onChange={(event) => setRole(event.target.value as DocumentRole)} disabled={pending}>
+                          <option value="VIEWER">{t("roles.VIEWER")}</option>
+                          <option value="EDITOR">{t("roles.EDITOR")}</option>
+                          <option value="OWNER">{t("roles.OWNER")}</option>
                         </select>
                       </label>
                       <button type="button" className="button button-primary" disabled={pending} onClick={() => void addPermission()}>
-                        {pending ? "Adding…" : "Add"}
+                        {pending ? `${t("common.add")}…` : t("common.add")}
                       </button>
                     </div>
                   )}
@@ -1740,62 +1758,62 @@ function ShareDialog({
             </section>
 
             <section className="share-section">
-              <h3>General access</h3>
+              <h3>{t("share.generalAccess")}</h3>
               <label className="access-setting">
                 <span>
-                  <strong>{sharing.publicAccess ? "Anyone with the link" : "Restricted"}</strong>
-                  <small>{sharing.publicAccess ? "Anyone with the link can view." : "Only people with access can view."}</small>
+                  <strong>{sharing.publicAccess ? t("share.anyoneWithLink") : t("share.restricted")}</strong>
+                  <small>{sharing.publicAccess ? t("share.anyoneCanView") : t("share.onlyPeopleCanView")}</small>
                 </span>
                 <span className="access-toggle">
-                  <span>Anyone with the link</span>
+                  <span>{t("share.anyoneWithLink")}</span>
                   <input
                     type="checkbox"
-                    aria-label="Anyone with the link can view"
+                    aria-label={t("share.anyoneCanViewAria")}
                     checked={sharing.publicAccess}
                     disabled={pending}
                     onChange={(event) => void mutate(
                       () => api.setPublicAccess(node.id, event.target.checked),
-                      "General access updated.",
+                      t("share.generalAccessUpdated"),
                     )}
                   />
                 </span>
               </label>
               <div className="issued-link-row">
                 <div className="issued-link-state">
-                  <strong>Share link</strong>
-                  <small>{!sharing.shareLink.exists ? "No link created" : linkUrl ? "Link ready to copy" : "Active link. Reset to issue a new URL."}</small>
+                  <strong>{t("share.shareLink")}</strong>
+                  <small>{!sharing.shareLink.exists ? t("share.noLinkCreated") : linkUrl ? t("share.linkReady") : t("share.activeLink")}</small>
                 </div>
                 {!sharing.shareLink.exists ? (
                   <button type="button" className="button" disabled={pending} onClick={() => void mutate(async () => {
                     const result = await api.createShareLink(node.id);
                     setLinkUrl(result.shareLink.url);
-                  }, "Link created.")}>Create link</button>
+                  }, t("share.linkCreated"))}>{t("share.createLink")}</button>
                 ) : linkUrl ? (
                   <div className="share-link">
-                    <input readOnly value={linkUrl} aria-label="Issued share link" />
-                    <button type="button" className="button" onClick={() => void copyLink()}>Copy</button>
+                    <input readOnly value={linkUrl} aria-label={t("share.issuedLink")} />
+                    <button type="button" className="button" onClick={() => void copyLink()}>{t("common.copy")}</button>
                   </div>
                 ) : null}
               </div>
               {sharing.shareLink.exists && (
                 <details className="link-options">
-                  <summary>Link options</summary>
+                  <summary>{t("share.linkOptions")}</summary>
                   <div className="link-option-actions">
                     <button type="button" className="text-button secondary-action" disabled={pending} onClick={() => void mutate(async () => {
                       const result = await api.resetShareLink(node.id);
                       setLinkUrl(result.shareLink.url);
-                    }, "Link reset.")}>Reset link</button>
+                    }, t("share.linkReset"))}>{t("share.resetLink")}</button>
                     <button type="button" className="text-button secondary-action" disabled={pending} onClick={() => void mutate(async () => {
                       await api.revokeShareLink(node.id);
                       setLinkUrl(null);
-                    }, "Link revoked.")}>Revoke link</button>
+                    }, t("share.linkRevoked"))}>{t("share.revokeLink")}</button>
                   </div>
                 </details>
               )}
             </section>
 
             <details className="advanced-access">
-              <summary>Advanced access</summary>
+              <summary>{t("share.advancedAccess")}</summary>
               <label className="inherit-setting">
                 <input
                   type="checkbox"
@@ -1803,17 +1821,17 @@ function ShareDialog({
                   disabled={pending}
                   onChange={(event) => {
                     const value = event.target.checked;
-                    if (!value && !window.confirm("Stop inheriting access from the parent folder?")) return;
-                    void mutate(() => api.setInheritance(node.id, value), "Inheritance updated.");
+                    if (!value && !window.confirm(t("share.stopInheritanceConfirm"))) return;
+                    void mutate(() => api.setInheritance(node.id, value), t("share.inheritanceUpdated"));
                   }}
                 />
-                <span>Inherit permissions from parent</span>
+                <span>{t("share.inheritPermissions")}</span>
               </label>
             </details>
           </div>
         )}
         <footer className="dialog-actions">
-          <button type="button" className="button" onClick={onClose}>Done</button>
+          <button type="button" className="button" onClick={onClose}>{t("common.done")}</button>
         </footer>
       </section>
     </div>
@@ -1832,27 +1850,27 @@ function PermissionRow({
 }) {
   const label =
     entry.principalType === "USER"
-      ? `${entry.principal.displayName ?? "User"}${entry.principal.email ? ` — ${entry.principal.email}` : ""}`
-      : (entry.principal.name ?? "Group");
+      ? `${entry.principal.displayName ?? t("principalTypes.USER")}${entry.principal.email ? ` — ${entry.principal.email}` : ""}`
+      : (entry.principal.name ?? t("principalTypes.GROUP"));
   return (
     <div className="permission-row">
       <div>
         <strong>{label}</strong>
         <small>
           {entry.principalType === "USER"
-            ? "Direct user permission"
-            : "Direct group permission"}
+            ? t("share.directUserPermission")
+            : t("share.directGroupPermission")}
         </small>
       </div>
       <select
-        aria-label={`Role for ${label}`}
+        aria-label={t("share.roleFor", { name: label })}
         value={entry.role}
         disabled={disabled}
         onChange={(event) => onRole(event.target.value as DocumentRole)}
       >
-        <option value="VIEWER">Viewer</option>
-        <option value="EDITOR">Editor</option>
-        <option value="OWNER">Owner</option>
+        <option value="VIEWER">{t("roles.VIEWER")}</option>
+        <option value="EDITOR">{t("roles.EDITOR")}</option>
+        <option value="OWNER">{t("roles.OWNER")}</option>
       </select>
       <button
         type="button"
@@ -1860,7 +1878,7 @@ function PermissionRow({
         disabled={disabled}
         onClick={onRemove}
       >
-        Remove
+        {t("common.remove")}
       </button>
     </div>
   );
@@ -1922,7 +1940,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   async function rename(node: Node, name: string) {
     const updated = await api.renameNode(node.id, name);
     setItems((current) => current.map((item) => item.id === node.id ? { ...item, ...updated } : item));
-    setNotice({ tone: "success", message: "Name updated." });
+    setNotice({ tone: "success", message: t("files.renamed") });
   }
 
   async function moveToTrash(node: Node) {
@@ -1933,7 +1951,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       next.delete(node.id);
       return next;
     });
-    setNotice({ tone: "success", message: `Moved “${node.name}” to Trash.` });
+    setNotice({ tone: "success", message: t("files.movedToTrash", { name: node.name }) });
   }
 
   async function toggleFavorite(node: Node) {
@@ -1948,7 +1966,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       });
       if (isFavorite && kind === "favorites")
         setItems((current) => current.filter((item) => item.id !== node.id));
-      setNotice({ tone: "success", message: isFavorite ? "Removed from favorites." : "Added to favorites." });
+      setNotice({ tone: "success", message: isFavorite ? t("files.favoriteRemoved") : t("files.favoriteAdded") });
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
     }
@@ -1958,25 +1976,25 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
     ...item,
     updatedAt: kind === "recent" ? item.lastAccessedAt ?? item.updatedAt : item.favoritedAt ?? item.updatedAt,
   }));
-  const title = kind === "recent" ? "Recent" : "Favorites";
-  const emptyTitle = kind === "recent" ? "No recent files yet" : "No favorites yet";
+  const title = kind === "recent" ? t("nav.recent") : t("nav.favorites");
+  const emptyTitle = kind === "recent" ? t("search.noRecent") : t("search.noFavorites");
   return (
     <>
         <PageHeader title={<h1 className="page-title">{title}</h1>}>
-          <button type="button" className="icon-button" onClick={() => void load()} aria-label={`Refresh ${title}`}>
+          <button type="button" className="icon-button" onClick={() => void load()} aria-label={t("files.refreshCollection", { name: title })}>
             <Icon name="refresh" />
           </button>
         </PageHeader>
         <section className="drive-content" aria-label={title}>
-          {status === "loading" && <LoadingRows label={`Loading ${title.toLowerCase()}`} />}
+          {status === "loading" && <LoadingRows label={`${t("common.loading")} ${title.toLowerCase()}`} />}
           {status === "error" && <CollectionError title={title} message={error} onRetry={() => void load()} />}
           {status === "ready" && displayItems.length === 0 && <SearchState title={emptyTitle} />}
-          {status === "ready" && displayItems.length > 0 && <FileList nodes={displayItems} onFolder={(id) => navigate(id)} onRename={setRenameNode} onShare={setShareNode} onTrash={setTrashNode} onVersions={setVersionNode} onOpen={openFile} onEdit={editFile} onNotice={setNotice} favoriteIds={favoriteIds} onFavorite={toggleFavorite} dateLabel={kind === "recent" ? "Last opened" : "Added"} />}
+          {status === "ready" && displayItems.length > 0 && <FileList nodes={displayItems} onFolder={(id) => navigate(id)} onRename={setRenameNode} onShare={setShareNode} onTrash={setTrashNode} onVersions={setVersionNode} onOpen={openFile} onEdit={editFile} onNotice={setNotice} favoriteIds={favoriteIds} onFavorite={toggleFavorite} dateLabel={kind === "recent" ? t("files.dateLastOpened") : t("files.dateAdded")} />}
         </section>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
-      {renameNode && <NameDialog title="Rename" action="Save" initialValue={renameNode.name} onClose={() => setRenameNode(null)} onSubmit={(name) => rename(renameNode, name)} />}
+      {renameNode && <NameDialog title={t("files.rename")} action={t("common.save")} initialValue={renameNode.name} onClose={() => setRenameNode(null)} onSubmit={(name) => rename(renameNode, name)} />}
       {shareNode && <ShareDialog node={shareNode} onClose={() => setShareNode(null)} onNotice={setNotice} />}
-      {trashNode && <ConfirmDialog title="Move to Trash" message={`Move “${trashNode.name}” to Trash?`} action="Move to Trash" onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
+      {trashNode && <ConfirmDialog title={t("files.moveToTrash")} message={t("files.moveToTrashConfirm", { name: trashNode.name })} action={t("files.moveToTrash")} onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
       {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
       {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={handleEditorSessionClosed} onSessionCloseError={handleEditorSessionCloseError} />}
       {preview && (
@@ -1992,7 +2010,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
 }
 
 function CollectionError({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
-  return <div className="content-state"><h1>Couldn’t load {title.toLowerCase()}.</h1><p>{message}</p><button type="button" className="button" onClick={onRetry}>Retry</button></div>;
+  return <div className="content-state"><h1>{t("files.collectionLoadFailed", { name: title })}</h1><p>{message}</p><button type="button" className="button" onClick={onRetry}>{t("common.retry")}</button></div>;
 }
 
 function SearchApp({ query }: { query: string }) {
@@ -2128,20 +2146,20 @@ function SearchApp({ query }: { query: string }) {
   return (
     <>
         <header className="topbar">
-          <div className="page-context"><h1 className="page-title">Search</h1></div>
+          <div className="page-context"><h1 className="page-title">{t("search.title")}</h1></div>
           <SearchInput key={query} query={query} />
           <div className="toolbar-actions" />
         </header>
-        <section className="drive-content" aria-label="Search results">
-          {status === "idle" && <SearchState title="Search files" message="Enter a file or folder name, or words from an indexed document." />}
-          {status === "invalid" && <SearchState title="Search query is too long" message="Search queries can be up to 200 characters." />}
-          {status === "loading" && <LoadingRows label="Loading search results" />}
+        <section className="drive-content" aria-label={t("search.results")}>
+          {status === "idle" && <SearchState title={t("files.search")} message={t("search.enterQuery")} />}
+          {status === "invalid" && <SearchState title={t("search.queryTooLong")} message={t("search.queryTooLongMessage")} />}
+          {status === "loading" && <LoadingRows label={t("search.loadingResults")} />}
           {status === "error" && <SearchError message={error} onRetry={() => void retry()} />}
-          {status === "ready" && items.length === 0 && <SearchState title={`No files found for “${normalizedQuery}”`} />}
+          {status === "ready" && items.length === 0 && <SearchState title={t("search.noFilesForQuery", { query: normalizedQuery })} />}
           {status === "ready" && items.length > 0 && (
             <>
               <SearchResultsTable items={items} locations={locations} onOpen={openItem} />
-              {nextCursor && <div className="search-more"><button type="button" className="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? "Loading…" : "Load more"}</button></div>}
+              {nextCursor && <div className="search-more"><button type="button" className="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("common.loading") : t("search.loadMore")}</button></div>}
             </>
           )}
         </section>
@@ -2160,10 +2178,10 @@ function SearchApp({ query }: { query: string }) {
 }
 
 function searchLocationLabel(location: SearchLocation | null | undefined) {
-  if (location === undefined) return "Loading location…";
-  if (location === null) return "Location unavailable";
+  if (location === undefined) return t("search.loadingLocation");
+  if (location === null) return t("search.locationUnavailable");
   const parents = location.items.slice(0, -1).map((item) => item.name);
-  if (!parents.length) return location.truncated ? "Shared location" : "Files";
+  if (!parents.length) return location.truncated ? t("search.sharedLocation") : t("nav.files");
   return `${location.truncated ? "… / " : ""}${parents.join(" / ")}`;
 }
 
@@ -2179,12 +2197,12 @@ function SearchResultsTable({
   return (
     <div className="file-table-wrap">
       <table className="file-table search-table">
-        <thead><tr><th scope="col">Name</th><th scope="col">Location</th><th scope="col">Type</th><th scope="col">Modified</th></tr></thead>
+        <thead><tr><th scope="col">{t("common.name")}</th><th scope="col">{t("search.location")}</th><th scope="col">{t("common.type")}</th><th scope="col">{t("common.modified")}</th></tr></thead>
         <tbody>{items.map((item) => (
           <tr key={item.id}>
             <td><button type="button" className="file-name" onClick={() => void onOpen(item)}><Icon name={item.type === "FOLDER" ? "folder" : "file"} size={19} /><span>{item.name}</span></button></td>
             <td className="search-location" title={searchLocationLabel(locations[item.id])}>{searchLocationLabel(locations[item.id])}</td>
-            <td className="search-type">{item.type === "FOLDER" ? "Folder" : "File"}</td>
+            <td className="search-type">{item.type === "FOLDER" ? t("search.folder") : t("search.file")}</td>
             <td className="modified">{formatDate(item.updatedAt)}</td>
           </tr>
         ))}</tbody>
@@ -2198,7 +2216,7 @@ function SearchState({ title, message }: { title: string; message?: string }) {
 }
 
 function SearchError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return <div className="content-state search-state"><h1>Couldn’t search files.</h1><p>{message}</p><button type="button" className="button" onClick={onRetry}>Retry</button></div>;
+  return <div className="content-state search-state"><h1>{t("search.failed")}</h1><p>{message}</p><button type="button" className="button" onClick={onRetry}>{t("common.retry")}</button></div>;
 }
 
 function TrashApp() {
@@ -2230,24 +2248,24 @@ function TrashApp() {
     setItems((current) => current.filter((entry) => entry.trashOperationId !== item.trashOperationId));
     setNotice({
       tone: "success",
-      message: action === "restore" ? `Restored “${item.name}”.` : `Permanently deleted “${item.name}”.`,
+      message: action === "restore" ? t("trash.restored", { name: item.name }) : t("trash.deleted", { name: item.name }),
     });
   }
   return (
     <>
-        <PageHeader title={<h1 className="page-title">Trash</h1>}>
-          <button type="button" className="icon-button" onClick={() => void load()} aria-label="Refresh Trash">
+        <PageHeader title={<h1 className="page-title">{t("trash.title")}</h1>}>
+          <button type="button" className="icon-button" onClick={() => void load()} aria-label={t("trash.refresh")}>
             <Icon name="refresh" />
           </button>
         </PageHeader>
-        <section className="drive-content" aria-label="Trash">
+        <section className="drive-content" aria-label={t("trash.title")}>
           {status === "loading" && <LoadingRows />}
           {status === "error" && <ErrorState message={error} onRetry={() => void load()} />}
-          {status === "ready" && items.length === 0 && <div className="content-state"><h1>Trash is empty</h1></div>}
+          {status === "ready" && items.length === 0 && <div className="content-state"><h1>{t("trash.empty")}</h1></div>}
           {status === "ready" && items.length > 0 && (
             <div className="file-table-wrap"><table className="file-table trash-table">
               <colgroup><col /><col className="trash-date-column" /><col className="trash-expiry-column" /><col className="trash-menu-column" /></colgroup>
-              <thead><tr><th scope="col">Name</th><th scope="col">Trashed</th><th scope="col">Auto-delete</th><th scope="col"><span className="visually-hidden">Actions</span></th></tr></thead>
+              <thead><tr><th scope="col">{t("common.name")}</th><th scope="col">{t("trash.trashed")}</th><th scope="col">{t("trash.autoDelete")}</th><th scope="col"><span className="visually-hidden">{t("common.actions")}</span></th></tr></thead>
               <tbody>{items.map((item) => (
                 <TrashRow
                   key={item.trashOperationId}
@@ -2264,9 +2282,9 @@ function TrashApp() {
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
       {confirmation && (
         <ConfirmDialog
-          title={confirmation.action === "restore" ? "Restore from Trash" : "Permanently delete"}
-          message={confirmation.action === "restore" ? `Restore “${confirmation.item.name}” to its original location?` : `Permanently delete “${confirmation.item.name}”? This cannot be undone.`}
-          action={confirmation.action === "restore" ? "Restore" : "Delete permanently"}
+          title={confirmation.action === "restore" ? t("trash.restoreFromTrash") : t("trash.permanentlyDelete")}
+          message={confirmation.action === "restore" ? t("trash.restoreOriginalConfirm", { name: confirmation.item.name }) : t("trash.deleteConfirm", { name: confirmation.item.name })}
+          action={confirmation.action === "restore" ? t("files.restore") : t("files.deletePermanently")}
           onClose={() => setConfirmation(null)}
           onConfirm={() => apply(confirmation.item, confirmation.action)}
           onNotice={setNotice}
@@ -2301,7 +2319,7 @@ function TrashRow({
           ref={trigger}
           type="button"
           className="icon-button"
-          aria-label={`Actions for ${item.name}`}
+          aria-label={t("trash.actionsFor", { name: item.name })}
           aria-haspopup="menu"
           aria-controls={menuOpen ? `trash-menu-${item.trashOperationId}` : undefined}
           aria-expanded={menuOpen}
@@ -2311,8 +2329,8 @@ function TrashRow({
         </button>
         {menuOpen && (
           <RowMenu id={`trash-menu-${item.trashOperationId}`} trigger={trigger} onClose={onCloseMenu}>
-            {item.canRestore && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onConfirm("restore"); }}>Restore</button>}
-            {item.canPurge && <button type="button" role="menuitem" className="menu-danger" onClick={() => { onCloseMenu(); onConfirm("purge"); }}>Delete permanently</button>}
+            {item.canRestore && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onConfirm("restore"); }}>{t("files.restore")}</button>}
+            {item.canPurge && <button type="button" role="menuitem" className="menu-danger" onClick={() => { onCloseMenu(); onConfirm("purge"); }}>{t("files.deletePermanently")}</button>}
           </RowMenu>
         )}
       </td>
@@ -2344,13 +2362,13 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
     return () => document.removeEventListener("keydown", escape);
   }, [onClose]);
   async function restore(version: FileVersion) {
-    if (!window.confirm(`Create a new version from Version ${version.versionNumber}? The existing versions will remain unchanged.`)) return;
+    if (!window.confirm(t("versions.restoreConfirm", { number: version.versionNumber }))) return;
     setPending(version.id);
     setError("");
     try {
       await api.restoreVersion(node.id, version.id);
       await load();
-      onNotice({ tone: "success", message: "Version restored." });
+      onNotice({ tone: "success", message: t("versions.restored") });
     } catch (requestError) {
       onNotice({ tone: "error", message: displayError(requestError) });
     } finally {
@@ -2361,16 +2379,16 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
     <div className="dialog-backdrop" role="presentation">
       <section ref={dialog} className="dialog version-dialog" role="dialog" aria-modal="true" aria-labelledby="version-dialog-title">
         <header className="dialog-header">
-          <div><h2 id="version-dialog-title">Version history</h2><p>{node.name}</p></div>
-          <button type="button" className="icon-button" aria-label="Close version history" onClick={onClose}><Icon name="close" /></button>
+          <div><h2 id="version-dialog-title">{t("versions.title")}</h2><p>{node.name}</p></div>
+          <button type="button" className="icon-button" aria-label={`${t("common.close")} ${t("versions.title")}`} onClick={onClose}><Icon name="close" /></button>
         </header>
         {error && <p className="form-error" role="alert">{error}</p>}
-        {!versions ? <p className="dialog-loading">Loading versions…</p> : (
+        {!versions ? <p className="dialog-loading">{t("versions.loading")}</p> : (
           <div className="version-list">{versions.map((version) => (
             <div className="version-row" key={version.id}>
               <div className="version-title-row">
-                <strong>Version {version.versionNumber}</strong>
-                {version.isCurrent && <span className="version-current">Current</span>}
+                <strong>{t("versions.version", { number: version.versionNumber })}</strong>
+                {version.isCurrent && <span className="version-current">{t("versions.current")}</span>}
               </div>
               <div className="version-metadata">
                 <span>{formatDate(version.createdAt)}</span>
@@ -2378,13 +2396,13 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
                 <span>{formatBytes(version.sizeBytes)}</span>
               </div>
               <div className="version-actions">
-                {hasCapability(node, "DOWNLOAD") && <button type="button" className="version-action" disabled={pending !== null} onClick={() => void api.downloadVersion(node, version).catch((requestError) => onNotice({ tone: "error", message: displayError(requestError) }))}>Download</button>}
-                {!version.isCurrent && hasCapability(node, "RESTORE_VERSION") && <button type="button" className="version-action" disabled={pending !== null} onClick={() => void restore(version)}>{pending === version.id ? "Restoring…" : "Restore"}</button>}
+                {hasCapability(node, "DOWNLOAD") && <button type="button" className="version-action" disabled={pending !== null} onClick={() => void api.downloadVersion(node, version).catch((requestError) => onNotice({ tone: "error", message: displayError(requestError) }))}>{t("versions.downloadVersion")}</button>}
+                {!version.isCurrent && hasCapability(node, "RESTORE_VERSION") && <button type="button" className="version-action" disabled={pending !== null} onClick={() => void restore(version)}>{pending === version.id ? t("common.restoring") : t("versions.restoreThisVersion")}</button>}
               </div>
             </div>
           ))}</div>
         )}
-        <footer className="dialog-actions"><button type="button" className="button" onClick={onClose}>Done</button></footer>
+        <footer className="dialog-actions"><button type="button" className="button" onClick={onClose}>{t("common.done")}</button></footer>
       </section>
     </div>
   );
@@ -2438,7 +2456,7 @@ function ConfirmDialog({
       >
         <header className="dialog-header">
           <div><h2 id="confirm-dialog-title">{title}</h2></div>
-          <button type="button" className="icon-button" aria-label={`Close ${title}`} disabled={pending} onClick={onClose}>
+          <button type="button" className="icon-button" aria-label={`${t("common.close")} ${title}`} disabled={pending} onClick={onClose}>
             <Icon name="close" />
           </button>
         </header>
@@ -2450,11 +2468,11 @@ function ConfirmDialog({
             disabled={pending}
             onClick={onClose}
           >
-            Cancel
+            {t("common.cancel")}
           </button>
           <button
             type="button"
-            className={`button${action === "Restore" ? " button-primary" : " button-danger"}`}
+            className={`button${action === t("files.restore") ? " button-primary" : " button-danger"}`}
             disabled={pending}
             onClick={() => void confirm()}
           >
@@ -2500,7 +2518,7 @@ function NameDialog({
     event.preventDefault();
     const value = name.trim();
     if (!value) {
-      setError("Enter a name.");
+      setError(t("common.enterName"));
       return;
     }
     setPending(true);
@@ -2525,12 +2543,12 @@ function NameDialog({
       >
         <header className="dialog-header">
           <div><h2 id="name-dialog-title">{title}</h2></div>
-          <button type="button" className="icon-button" aria-label={`Close ${title}`} disabled={pending} onClick={onClose}>
+          <button type="button" className="icon-button" aria-label={`${t("common.close")} ${title}`} disabled={pending} onClick={onClose}>
             <Icon name="close" />
           </button>
         </header>
         <form onSubmit={submit}>
-          <label htmlFor="node-name">Name</label>
+          <label htmlFor="node-name">{t("common.name")}</label>
           <input
             id="node-name"
             ref={input}
@@ -2552,7 +2570,7 @@ function NameDialog({
               onClick={onClose}
               disabled={pending}
             >
-              Cancel
+              {t("common.cancel")}
             </button>
             <button
               type="submit"
@@ -2578,22 +2596,23 @@ function EmptyState({
 }) {
   return (
     <div className="content-state">
-      <h1>No files here</h1>
+      <h1>{t("files.noFiles")}</h1>
+      <p>{t("files.noFilesDescription")}</p>
       {canCreateHere && (
         <div>
           <button type="button" className="button" onClick={onFolder}>
-            New folder
+            {t("files.newFolder")}
           </button>
           <button
             type="button"
             className="button button-primary"
             onClick={onUpload}
           >
-            Upload file
+            {t("files.upload")}
           </button>
         </div>
       )}
-      {!canCreateHere && <p>Root creation requires an administrator.</p>}
+      {!canCreateHere && <p>{t("files.rootAdminOnly")}</p>}
     </div>
   );
 }
@@ -2606,15 +2625,15 @@ function ErrorState({
 }) {
   return (
     <div className="content-state">
-      <h1>Couldn’t load this folder.</h1>
+      <h1>{t("files.folderLoadFailed")}</h1>
       <p>{message}</p>
       <button type="button" className="button" onClick={onRetry}>
-        Retry
+        {t("common.retry")}
       </button>
     </div>
   );
 }
-function LoadingRows({ label = "Loading files" }: { label?: string }) {
+function LoadingRows({ label = t("files.loadingFolder") }: { label?: string }) {
   return (
     <div className="loading-list" role="status">
       <span>{label}…</span>
@@ -2687,8 +2706,8 @@ function EditorDialog({
   const documentTitle = (() => {
     const document = session.config.document;
     if (!document || typeof document !== "object" || !("title" in document))
-      return "Document editor";
-    return typeof document.title === "string" ? document.title : "Document editor";
+      return t("editor.title");
+    return typeof document.title === "string" ? document.title : t("editor.title");
   })();
   useEffect(() => {
     sessionClosed.current = onSessionClosed;
@@ -2768,12 +2787,16 @@ function EditorDialog({
         // Document Server owns this node. A new session must never inherit an
         // iframe that a previous instance creates asynchronously.
         mount.replaceChildren();
-        editorRef.current = new window.DocsAPI.DocEditor(
-          mountId,
-          session.config,
-        );
+        const editorConfig = {
+          ...session.config,
+          editorConfig: {
+            ...(typeof session.config.editorConfig === "object" && session.config.editorConfig !== null ? session.config.editorConfig : {}),
+            lang: getLocale(),
+          },
+        };
+        editorRef.current = new window.DocsAPI.DocEditor(mountId, editorConfig);
       } catch {
-        if (!cancelled) setError("The document editor could not be opened.");
+        if (!cancelled) setError(t("editor.failed"));
       }
     };
     if (window.DocsAPI) start();
@@ -2786,7 +2809,7 @@ function EditorDialog({
         start();
       };
       script.onerror = () => {
-        if (!cancelled) setError("The document editor is unavailable.");
+        if (!cancelled) setError(t("editor.unavailable"));
       };
       document.head.append(script);
     }
@@ -2820,14 +2843,14 @@ function EditorDialog({
         style={{ width: size.width, height: size.height }}
         role="dialog"
         aria-modal="true"
-        aria-label={`Document editor: ${documentTitle}`}
+        aria-label={t("editor.ariaTitle", { title: documentTitle })}
       >
         <header>
-          <span>{session.session.mode === "EDIT" ? "Editing" : "Viewing"}: {documentTitle}</span>
+          <span>{session.session.mode === "EDIT" ? t("editor.editing") : t("editor.viewing")}: {documentTitle}</span>
           <button
             type="button"
             className="icon-button"
-            aria-label="Close editor"
+            aria-label={t("editor.close")}
             onClick={onClose}
           >
             <Icon name="close" />
@@ -2842,17 +2865,20 @@ function EditorDialog({
         </div>
         <div
           className="editor-resize-handle editor-resize-right"
-          aria-hidden="true"
+          role="separator"
+          aria-label={t("editor.resize")}
           onPointerDown={(event) => startResize("right", event)}
         />
         <div
           className="editor-resize-handle editor-resize-bottom"
-          aria-hidden="true"
+          role="separator"
+          aria-label={t("editor.resize")}
           onPointerDown={(event) => startResize("bottom", event)}
         />
         <div
           className="editor-resize-handle editor-resize-corner"
-          aria-hidden="true"
+          role="separator"
+          aria-label={t("editor.resize")}
           onPointerDown={(event) => startResize("corner", event)}
         />
       </section>
@@ -2907,20 +2933,20 @@ function PreviewDialog({
         className="preview-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label={`Preview ${preview.filename}`}
+        aria-label={`${t("preview.unavailableTitle")} ${preview.filename}`}
       >
         <header>
           <span>{preview.filename}</span>
           <div>
             {preview.canDownload && (
               <button type="button" className="button" onClick={() => void download()}>
-                Download
+                {t("common.download")}
               </button>
             )}
             <button
               type="button"
               className="icon-button"
-              aria-label="Close preview"
+              aria-label={t("preview.close")}
               onClick={onClose}
             >
               <Icon name="close" />
@@ -2930,20 +2956,20 @@ function PreviewDialog({
         <div className="preview-content" aria-busy={state === "loading"}>
           {unavailable ? (
             <PreviewState
-              title="Preview unavailable"
-              message="This file type can’t be previewed here."
+              title={t("preview.unavailableTitle")}
+              message={t("preview.unavailableMessage")}
               downloadError={downloadError}
             />
           ) : state === "error" ? (
             <PreviewState
-              title="Preview is unavailable"
-              message="The file could not be loaded for preview."
+              title={t("preview.failedTitle")}
+              message={t("preview.failedMessage")}
               onRetry={retry}
               downloadError={downloadError}
             />
           ) : (
             <>
-              {state === "loading" && <div className="preview-loading" role="status">Loading preview…</div>}
+              {state === "loading" && <div className="preview-loading" role="status">{t("preview.loading")}</div>}
               {type?.startsWith("image/") ? (
                 <img key={attempt} src={session!.contentUrl} alt={session!.filename} onLoad={() => setState("ready")} onError={() => setState("error")} />
               ) : type?.startsWith("video/") ? (
@@ -2975,7 +3001,7 @@ function PreviewState({
       <strong>{title}</strong>
       <span>{message}</span>
       {downloadError && <span role="alert">{downloadError}</span>}
-      {onRetry && <button type="button" className="button" onClick={onRetry}>Retry</button>}
+      {onRetry && <button type="button" className="button" onClick={onRetry}>{t("common.retry")}</button>}
     </div>
   );
 }
