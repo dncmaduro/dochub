@@ -124,6 +124,21 @@ function displayError(error: unknown) {
     ? error.message
     : t("errors.generic");
 }
+function onlyOfficeErrorMessage(error: unknown) {
+  if (!error || typeof error !== "object") return t("editor.failed");
+  const value = error as Record<string, unknown>;
+  const data = value.data && typeof value.data === "object"
+    ? value.data as Record<string, unknown>
+    : value;
+  const code = typeof data.errorCode === "string" || typeof data.errorCode === "number"
+    ? String(data.errorCode)
+    : "";
+  const description = typeof data.errorDescription === "string"
+    ? data.errorDescription
+    : "";
+  const details = [code, description].filter(Boolean).join(": ");
+  return details ? `${t("editor.failed")} (${details})` : t("editor.failed");
+}
 function hasCapability(node: Node, capability: string) {
   return node.capabilities.includes(capability);
 }
@@ -2665,6 +2680,7 @@ function EditorDialog({
   const [activeSession, setActiveSession] = useState(session);
   const [size, setSize] = useState<EditorSize>(getInitialEditorSize);
   const [error, setError] = useState("");
+  const [editorState, setEditorState] = useState<"loading" | "ready" | "error">("loading");
   const [switching, setSwitching] = useState(false);
   const activeSessionRef = useRef(activeSession);
   const mountId = `onlyoffice-editor-${activeSession.session.id}`;
@@ -2711,6 +2727,7 @@ function EditorDialog({
     switchingRef.current = true;
     setSwitching(true);
     setError("");
+    setEditorState("loading");
     let currentSessionClosed = false;
     try {
       // VIEW sessions close immediately. EDIT sessions must first let
@@ -2737,9 +2754,11 @@ function EditorDialog({
             canEdit: current.canEdit,
           });
         } catch (recoveryError) {
+          setEditorState("error");
           setError(displayError(recoveryError));
         }
       } else {
+        setEditorState("error");
         setError(displayError(requestError));
       }
       onSessionCloseError(requestError);
@@ -2808,9 +2827,41 @@ function EditorDialog({
     let script: HTMLScriptElement | undefined;
     let scriptLoaded = false;
     let cancelled = false;
+    let editor: { destroyEditor?: () => void } | undefined;
+    const configuredEvents = activeSession.config.events && typeof activeSession.config.events === "object"
+      ? activeSession.config.events as Record<string, unknown>
+      : {};
+    const callConfiguredEvent = (name: string, args: unknown[]) => {
+      const callback = configuredEvents[name];
+      if (typeof callback === "function") callback(...args);
+    };
+    const handleReady = (...args: unknown[]) => {
+      if (!cancelled) setEditorState("ready");
+      callConfiguredEvent("onAppReady", args);
+    };
+    const handleDocumentReady = (...args: unknown[]) => {
+      if (!cancelled) setEditorState("ready");
+      callConfiguredEvent("onDocumentReady", args);
+    };
+    const handleError = (...args: unknown[]) => {
+      if (!cancelled) {
+        setEditorState("error");
+        setError(onlyOfficeErrorMessage(args[0]));
+      }
+      callConfiguredEvent("onError", args);
+    };
+    const handleWarning = (...args: unknown[]) => {
+      callConfiguredEvent("onWarning", args);
+    };
     const start = () => {
       try {
-        if (cancelled || !window.DocsAPI || !mount) return;
+        if (cancelled || !window.DocsAPI || !mount) {
+          if (!cancelled) {
+            setEditorState("error");
+            setError(t("editor.failed"));
+          }
+          return;
+        }
         // Document Server owns this node. A new session must never inherit an
         // iframe that a previous instance creates asynchronously.
         mount.replaceChildren();
@@ -2820,10 +2871,22 @@ function EditorDialog({
             ...(typeof activeSession.config.editorConfig === "object" && activeSession.config.editorConfig !== null ? activeSession.config.editorConfig : {}),
             lang: getLocale(),
           },
+          events: {
+            ...configuredEvents,
+            onAppReady: handleReady,
+            onDocumentReady: handleDocumentReady,
+            onError: handleError,
+            onWarning: handleWarning,
+          },
         };
-        editorRef.current = new window.DocsAPI.DocEditor(mountId, editorConfig);
-      } catch {
-        if (!cancelled) setError(t("editor.failed"));
+        editor = new window.DocsAPI.DocEditor(mountId, editorConfig);
+        editorRef.current = editor;
+        setEditorState("ready");
+      } catch (constructionError) {
+        if (!cancelled) {
+          setEditorState("error");
+          setError(onlyOfficeErrorMessage(constructionError));
+        }
       }
     };
     if (window.DocsAPI) start();
@@ -2836,7 +2899,10 @@ function EditorDialog({
         start();
       };
       script.onerror = () => {
-        if (!cancelled) setError(t("editor.unavailable"));
+        if (!cancelled) {
+          setEditorState("error");
+          setError(t("editor.unavailable"));
+        }
       };
       document.head.append(script);
     }
@@ -2847,7 +2913,9 @@ function EditorDialog({
       // next editor initialization in some browsers. An unfinished load is
       // still removed so its callback cannot mount after cleanup.
       if (script && !scriptLoaded) script.remove();
-      destroyEditor();
+      editor?.destroyEditor?.();
+      if (editorRef.current === editor) editorRef.current = undefined;
+      mount?.replaceChildren();
       // Strict Mode immediately replays effects in development. Deferring the
       // close lets the replacement effect cancel it, while a real unmount
       // still closes the server-side session.
@@ -2859,7 +2927,7 @@ function EditorDialog({
         );
       }, 0);
     };
-  }, [activeSession, closeSession, destroyEditor, mountId]);
+  }, [activeSession, closeSession, mountId]);
   return (
     <div className="editor-backdrop">
       <section
@@ -2916,13 +2984,16 @@ function EditorDialog({
             </button>
           </div>
         </header>
-        <div className="editor-body">
-          {switching ? (
-            <div className="editor-error" role="status">{t("editor.switching")}</div>
-          ) : error ? (
-            <div className="editor-error" role="alert">{error}</div>
-          ) : (
-            <div id={mountId} ref={container} className="editor-frame" />
+        <div className="editor-body" aria-busy={switching || editorState === "loading"}>
+          <div key={mountId} id={mountId} ref={container} className="editor-frame" />
+          {(switching || editorState === "loading") && (
+            <div className="editor-error" role="status">{t("editor.opening")}</div>
+          )}
+          {editorState === "error" && !switching && (
+            <div className="editor-error" role="alert">
+              <span>{error || t("editor.failed")}</span>
+              <button type="button" className="button" onClick={onClose}>{t("common.close")}</button>
+            </div>
           )}
         </div>
         <div

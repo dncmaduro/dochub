@@ -1372,6 +1372,7 @@ summary:focus-visible {
   opacity: 0.7;
 }
 .editor-body {
+  position: relative;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -1386,9 +1387,14 @@ summary:focus-visible {
   min-height: 0;
 }
 .editor-error {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
   display: grid;
-  flex: 1;
+  gap: 10px;
   place-items: center;
+  align-content: center;
+  background: var(--surface);
   color: var(--muted);
   font-size: 13px;
 }
