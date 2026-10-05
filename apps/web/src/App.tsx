@@ -2671,7 +2671,9 @@ function EditorDialog({
   onSessionClosed: () => void;
   onSessionCloseError: (error: unknown) => void;
 }) {
-  const container = useRef<HTMLDivElement>(null);
+  // React owns this stable host. DocsAPI owns every child inside it because
+  // DocEditor replaces its placeholder with an iframe and restores it on close.
+  const editorHost = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLElement>(null);
   const editorRef = useRef<ManagedOnlyOfficeEditor | undefined>(undefined);
   const closeTimer = useRef<number | undefined>(undefined);
@@ -2730,6 +2732,10 @@ function EditorDialog({
       if (editorRef.current === owned) editorRef.current = undefined;
     }
   }, []);
+  const cleanEditorHost = useCallback(() => {
+    // The host has no React children; its contents belong entirely to DocsAPI.
+    editorHost.current?.replaceChildren();
+  }, []);
   const switchMode = async (mode: "VIEW" | "EDIT") => {
     const current = activeSessionRef.current;
     if (switchingRef.current || current.session.mode === mode) return;
@@ -2741,10 +2747,16 @@ function EditorDialog({
     try {
       // VIEW sessions close immediately. EDIT sessions must first let
       // ONLYOFFICE initiate its final callback before the API waits for it.
-      if (current.session.mode === "EDIT") disposeEditor();
+      if (current.session.mode === "EDIT") {
+        disposeEditor();
+        cleanEditorHost();
+      }
       await closeSession(current);
       currentSessionClosed = true;
-      if (current.session.mode === "VIEW") disposeEditor();
+      if (current.session.mode === "VIEW") {
+        disposeEditor();
+        cleanEditorHost();
+      }
       const next = await api.createEditorSession(current.nodeId, mode);
       setActiveSession({
         ...next,
@@ -2828,7 +2840,7 @@ function EditorDialog({
     window.addEventListener("pointercancel", stop);
   };
   useEffect(() => {
-    const mount = container.current;
+    const host = editorHost.current;
     if (closeTimer.current !== undefined) {
       window.clearTimeout(closeTimer.current);
       closeTimer.current = undefined;
@@ -2864,15 +2876,19 @@ function EditorDialog({
     };
     const start = () => {
       try {
-        if (cancelled || !window.DocsAPI || !mount) {
+        if (cancelled || !window.DocsAPI || !host) {
           if (!cancelled) {
             setEditorState("error");
             setError(t("editor.failed"));
           }
           return;
         }
-        // Document Server owns this node. A new session must never inherit an
-        // iframe that a previous instance creates asynchronously.
+        // The host is deliberately the only React-owned node in this subtree.
+        // DocsAPI owns the placeholder and iframe created inside it.
+        host.replaceChildren();
+        const placeholder = document.createElement("div");
+        placeholder.id = mountId;
+        host.appendChild(placeholder);
         const editorConfig = {
           ...activeSession.config,
           editorConfig: {
@@ -2887,7 +2903,7 @@ function EditorDialog({
             onWarning: handleWarning,
           },
         };
-        const createdEditor = new window.DocsAPI.DocEditor(mountId, editorConfig);
+        const createdEditor = new window.DocsAPI.DocEditor(placeholder.id, editorConfig);
         editor = { editor: createdEditor, disposed: false };
         editorRef.current = editor;
         setEditorState("ready");
@@ -2929,6 +2945,7 @@ function EditorDialog({
         }
       }
       disposeEditor(editor, false);
+      host?.replaceChildren();
       // Strict Mode immediately replays effects in development. Deferring the
       // close lets the replacement effect cancel it, while a real unmount
       // still closes the server-side session.
@@ -2940,7 +2957,7 @@ function EditorDialog({
         );
       }, 0);
     };
-  }, [activeSession, closeSession, disposeEditor, mountId]);
+  }, [activeSession, cleanEditorHost, closeSession, disposeEditor, mountId]);
   return (
     <div className="editor-backdrop">
       <section
@@ -2998,7 +3015,7 @@ function EditorDialog({
           </div>
         </header>
         <div className="editor-body" aria-busy={switching || editorState === "loading"}>
-          <div key={mountId} id={mountId} ref={container} className="editor-frame" />
+          <div ref={editorHost} className="editor-host" />
           {(switching || editorState === "loading") && (
             <div className="editor-error" role="status">{t("editor.opening")}</div>
           )}
