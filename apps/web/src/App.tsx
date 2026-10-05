@@ -714,7 +714,7 @@ function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile
 
 function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: () => void }) {
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const canAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
@@ -727,26 +727,20 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
       if (!triggerElement || !menuElement) return;
 
       const triggerRect = triggerElement.getBoundingClientRect();
+      const width = Math.min(triggerRect.width, window.innerWidth);
+      menuElement.style.width = `${width}px`;
       const menuRect = menuElement.getBoundingClientRect();
-      const margin = 12;
       const gap = 8;
-      const maxLeft = Math.max(margin, window.innerWidth - margin - menuRect.width);
-      const maxTop = Math.max(margin, window.innerHeight - margin - menuRect.height);
-
-      const preferredRight = triggerRect.right + gap;
-      const fallbackLeft = triggerRect.left - menuRect.width - gap;
-      const preferredLeft =
-        preferredRight + menuRect.width <= window.innerWidth - margin
-          ? preferredRight
-          : fallbackLeft;
-      const left = Math.min(maxLeft, Math.max(margin, preferredLeft));
+      const maxLeft = Math.max(0, window.innerWidth - menuRect.width);
+      const left = Math.min(maxLeft, Math.max(0, triggerRect.left));
 
       const preferredAbove = triggerRect.top - menuRect.height - gap;
       const preferredBelow = triggerRect.bottom + gap;
-      const preferredTop = preferredAbove >= margin ? preferredAbove : preferredBelow;
-      const top = Math.min(maxTop, Math.max(margin, preferredTop));
+      const preferredTop = preferredAbove >= 0 ? preferredAbove : preferredBelow;
+      const maxTop = Math.max(0, window.innerHeight - menuRect.height);
+      const top = Math.min(maxTop, Math.max(0, preferredTop));
 
-      setPosition({ top, left });
+      setPosition({ top, left, width });
     };
 
     place();
@@ -802,6 +796,7 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
         style={{
           top: position?.top ?? 0,
           left: position?.left ?? 0,
+          width: position?.width,
           visibility: position ? "visible" : "hidden",
         }}
       >
