@@ -68,7 +68,7 @@ export class GoogleAuthController {
         throw this.authenticationFailed();
       }
 
-      const tokens = await this.googleAuth.completeAuthorization({
+      const result = await this.googleAuth.completeAuthorization({
         code,
         state,
         expectedState,
@@ -78,14 +78,26 @@ export class GoogleAuthController {
         ipAddress: request.ip,
         userAgent: request.get('user-agent') ?? undefined,
       });
-      response.cookie(
-        this.authCookies.refreshCookieName(),
-        tokens.refreshToken,
-        this.authCookies.refreshOptions(),
-      );
       this.clearFlowCookies(response);
       flowCookiesCleared = true;
-      response.redirect(this.googleConfig().loginSuccessRedirectUrl);
+      const googleConfig = this.googleConfig();
+      if (result.outcome === 'pending_approval') {
+        response.clearCookie(
+          this.authCookies.refreshCookieName(),
+          this.authCookies.refreshOptions(false),
+        );
+        response.redirect(
+          new URL('/auth/pending', googleConfig.loginSuccessRedirectUrl).toString(),
+        );
+        return;
+      }
+
+      response.cookie(
+        this.authCookies.refreshCookieName(),
+        result.tokens.refreshToken,
+        this.authCookies.refreshOptions(),
+      );
+      response.redirect(googleConfig.loginSuccessRedirectUrl);
     } finally {
       if (!flowCookiesCleared) {
         this.clearFlowCookies(response);

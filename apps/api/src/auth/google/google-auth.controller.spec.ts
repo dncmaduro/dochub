@@ -32,9 +32,12 @@ function controllerFor() {
       codeVerifier: 'verifier',
     }),
     completeAuthorization: vi.fn().mockResolvedValue({
-      accessToken: 'application-access-token',
-      refreshToken: 'application-refresh-token',
-      expiresIn: 900,
+      outcome: 'authenticated',
+      tokens: {
+        accessToken: 'application-access-token',
+        refreshToken: 'application-refresh-token',
+        expiresIn: 900,
+      },
     }),
   } as unknown as GoogleAuthService;
   const authCookies = {
@@ -120,6 +123,35 @@ describe('GoogleAuthController', () => {
     );
     expect(JSON.stringify(response.redirect.mock.calls)).not.toContain(
       'application-refresh-token',
+    );
+  });
+
+  it('routes pending approval without setting a normal refresh cookie', async () => {
+    const { controller, googleAuth, response } = controllerFor();
+    vi.mocked(googleAuth.completeAuthorization).mockResolvedValueOnce({
+      outcome: 'pending_approval',
+    });
+    const request = {
+      query: { code: 'code', state: 'state' },
+      originalUrl: '/auth/google/callback?code=code&state=state',
+      cookies: {
+        dochub_google_state: 'state',
+        dochub_google_nonce: 'nonce',
+        dochub_google_verifier: 'verifier',
+      },
+      ip: '127.0.0.1',
+      get: vi.fn().mockReturnValue('test-agent'),
+    };
+
+    await controller.callback(request as never, response as never);
+
+    expect(response.cookie).not.toHaveBeenCalled();
+    expect(response.clearCookie).toHaveBeenCalledWith(
+      'dochub_refresh',
+      expect.any(Object),
+    );
+    expect(response.redirect).toHaveBeenCalledWith(
+      'http://localhost:5173/auth/pending',
     );
   });
 

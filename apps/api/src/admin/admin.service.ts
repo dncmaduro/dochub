@@ -155,6 +155,39 @@ export class AdminService {
     };
   }
 
+  async approveUser(
+    actorUserId: string,
+    userId: string,
+  ): Promise<AdminUserResponse> {
+    const user = await this.database.prisma.$transaction(async (transaction) => {
+      await this.lockAdminMutations(transaction);
+      const current = await transaction.user.findUnique({
+        where: { id: userId },
+        select: userSelect,
+      });
+      if (!current) throw new NotFoundException('User not found');
+      if (current.status === UserStatus.ACTIVE) return current;
+      if (current.status !== UserStatus.PENDING_APPROVAL) {
+        throw new ConflictException('Only pending approval users can be approved');
+      }
+
+      const updated = await transaction.user.update({
+        where: { id: userId },
+        data: { status: UserStatus.ACTIVE },
+        select: userSelect,
+      });
+      await this.writeAudit(transaction, {
+        actorUserId,
+        action: 'USER_APPROVED',
+        resourceType: 'USER',
+        resourceId: userId,
+        metadata: { from: UserStatus.PENDING_APPROVAL, to: UserStatus.ACTIVE },
+      });
+      return updated;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    return this.userResponse(user);
+  }
+
   async updateUser(
     actorUserId: string,
     userId: string,
@@ -189,6 +222,11 @@ export class AdminService {
           dto.systemRole !== undefined &&
           dto.systemRole !== current.systemRole
         ) {
+          if (current.status === UserStatus.PENDING_APPROVAL) {
+            throw new ConflictException(
+              'Pending approval users cannot have their role changed',
+            );
+          }
           await this.assertActiveAdminRemains(
             transaction,
             current,
@@ -265,6 +303,9 @@ export class AdminService {
       const current = await transaction.user.findUnique({ where: { id: userId }, select: userSelect });
       if (!current) throw new NotFoundException('User not found');
       if (current.status === nextStatus) return current;
+      if (current.status === UserStatus.PENDING_APPROVAL) {
+        throw new ConflictException('Pending approval users can only be approved');
+      }
       await this.assertActiveAdminRemains(transaction, current, current.systemRole, nextStatus);
       const updated = await transaction.user.update({ where: { id: userId }, data: { status: nextStatus }, select: userSelect });
       await this.writeAudit(transaction, {

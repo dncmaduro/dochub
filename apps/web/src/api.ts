@@ -115,7 +115,7 @@ interface UploadResponse {
   node: Node;
 }
 export type SystemRole = "ADMIN" | "MEMBER";
-export type UserStatus = "INVITED" | "ACTIVE" | "SUSPENDED";
+export type UserStatus = "INVITED" | "PENDING_APPROVAL" | "ACTIVE" | "SUSPENDED";
 export interface CurrentUser {
   displayName: string;
   email: string;
@@ -316,6 +316,7 @@ export class ApiClient {
   async updateAdminUser(userId: string, input: Partial<Pick<AdminUser, "displayName" | "systemRole">>) {
     return this.request<AdminUser>(`/admin/users/${userId}`, { method: "PATCH", body: JSON.stringify(input) });
   }
+  async approveAdminUser(userId: string) { return this.request<AdminUser>(`/admin/users/${userId}/approve`, { method: "POST" }); }
   async suspendAdminUser(userId: string) { return this.request<AdminUser>(`/admin/users/${userId}/suspend`, { method: "POST" }); }
   async reactivateAdminUser(userId: string) { return this.request<AdminUser>(`/admin/users/${userId}/reactivate`, { method: "POST" }); }
   async listAdminGroups() {

@@ -40,6 +40,11 @@ export class AdminUsersController {
     return this.admin.getUser(params.userId);
   }
 
+  @Post(':userId/approve')
+  approve(@CurrentAuth() auth: AuthPrincipal, @Param() params: UserIdParamDto) {
+    return this.admin.approveUser(auth.userId, params.userId);
+  }
+
   @Patch(':userId')
   update(
     @CurrentAuth() auth: AuthPrincipal,

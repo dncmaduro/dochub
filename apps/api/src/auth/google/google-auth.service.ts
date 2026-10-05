@@ -4,7 +4,14 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
-import { AuthProvider, Prisma, UserStatus } from '@dochub/database';
+import {
+  AuditActorType,
+  AuditResult,
+  AuthProvider,
+  Prisma,
+  SystemRole,
+  UserStatus,
+} from '@dochub/database';
 import * as oidc from 'openid-client';
 import { DatabaseService } from '../../database/database.service.js';
 import { AuthSessionService } from '../auth-session.service.js';
@@ -39,13 +46,25 @@ export interface GoogleCallbackInput extends Omit<
 interface GoogleIdentity {
   sub: string;
   normalizedEmail: string;
+  displayName: string;
 }
 
 interface GoogleClaims {
   sub?: unknown;
   email?: unknown;
   email_verified?: unknown;
+  name?: unknown;
+  given_name?: unknown;
+  family_name?: unknown;
 }
+
+type IdentityResolution =
+  | { kind: 'active'; userId: string }
+  | { kind: 'pending_approval' };
+
+export type GoogleCallbackResult =
+  | { outcome: 'authenticated'; tokens: SessionTokens }
+  | { outcome: 'pending_approval' };
 
 @Injectable()
 export class GoogleAuthService {
@@ -82,7 +101,7 @@ export class GoogleAuthService {
 
   async completeAuthorization(
     input: GoogleCallbackInput,
-  ): Promise<SessionTokens> {
+  ): Promise<GoogleCallbackResult> {
     if (input.state !== input.expectedState) {
       throw this.authenticationFailed();
     }
@@ -95,12 +114,18 @@ export class GoogleAuthService {
         codeVerifier: input.codeVerifier,
       });
       const identity = this.validatedIdentity(claims);
-      const userId = await this.resolveOrBindIdentity(identity);
-      return await this.authSessions.createSession({
-        userId,
-        ipAddress: input.ipAddress,
-        userAgent: input.userAgent,
-      });
+      const resolution = await this.resolveOrBindIdentity(identity);
+      if (resolution.kind === 'pending_approval') {
+        return { outcome: 'pending_approval' };
+      }
+      return {
+        outcome: 'authenticated',
+        tokens: await this.authSessions.createSession({
+          userId: resolution.userId,
+          ipAddress: input.ipAddress,
+          userAgent: input.userAgent,
+        }),
+      };
     } catch (error) {
       if (error instanceof UnauthorizedException) {
         throw error;
@@ -129,12 +154,26 @@ export class GoogleAuthService {
     return {
       sub: claims.sub,
       normalizedEmail: normalizeEmail(claims.email),
+      displayName: this.trustedDisplayName(claims, claims.email),
     };
+  }
+
+  private trustedDisplayName(claims: GoogleClaims, email: string): string {
+    if (typeof claims.name === 'string' && claims.name.trim()) {
+      return claims.name.trim();
+    }
+
+    const profileName = [claims.given_name, claims.family_name]
+      .filter((part): part is string => typeof part === 'string')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(' ');
+    return profileName || email.trim().split('@')[0];
   }
 
   private async resolveOrBindIdentity(
     identity: GoogleIdentity,
-  ): Promise<string> {
+  ): Promise<IdentityResolution> {
     for (let attempt = 0; attempt < MAX_BINDING_ATTEMPTS; attempt += 1) {
       try {
         return await this.database.prisma.$transaction(
@@ -159,7 +198,7 @@ export class GoogleAuthService {
   private async resolveOrBindInTransaction(
     transaction: Prisma.TransactionClient,
     identity: GoogleIdentity,
-  ): Promise<string> {
+  ): Promise<IdentityResolution> {
     const existingAccount = await transaction.authAccount.findUnique({
       where: {
         provider_providerAccountId: {
@@ -176,8 +215,39 @@ export class GoogleAuthService {
     const lockedUsers = await transaction.$queryRaw<{ id: string }[]>`
       SELECT "id" FROM "User" WHERE "normalizedEmail" = ${identity.normalizedEmail} FOR UPDATE
     `;
-    if (lockedUsers.length !== 1) {
+    if (lockedUsers.length > 1) {
       throw this.authenticationFailed();
+    }
+
+    if (lockedUsers.length === 0) {
+      const user = await transaction.user.create({
+        data: {
+          email: identity.normalizedEmail,
+          normalizedEmail: identity.normalizedEmail,
+          displayName: identity.displayName,
+          status: UserStatus.PENDING_APPROVAL,
+          systemRole: SystemRole.MEMBER,
+        },
+        select: { id: true, status: true },
+      });
+      await transaction.authAccount.create({
+        data: {
+          userId: user.id,
+          provider: AuthProvider.GOOGLE,
+          providerAccountId: identity.sub,
+        },
+      });
+      await transaction.auditLog.create({
+        data: {
+          actorType: AuditActorType.SYSTEM,
+          action: 'USER_ACCESS_REQUESTED',
+          resourceType: 'USER',
+          resourceId: user.id,
+          result: AuditResult.SUCCESS,
+          metadata: { source: 'GOOGLE_OIDC' },
+        },
+      });
+      return { kind: 'pending_approval' };
     }
 
     const user = await transaction.user.findUnique({
@@ -227,12 +297,15 @@ export class GoogleAuthService {
   private async activateIfInvited(
     transaction: Prisma.TransactionClient,
     user: { id: string; status: UserStatus },
-  ): Promise<string> {
+  ): Promise<IdentityResolution> {
     if (user.status === UserStatus.SUSPENDED) {
       throw this.authenticationFailed();
     }
     if (user.status === UserStatus.ACTIVE) {
-      return user.id;
+      return { kind: 'active', userId: user.id };
+    }
+    if (user.status === UserStatus.PENDING_APPROVAL) {
+      return { kind: 'pending_approval' };
     }
 
     const activated = await transaction.user.updateMany({
@@ -240,7 +313,7 @@ export class GoogleAuthService {
       data: { status: UserStatus.ACTIVE },
     });
     if (activated.count === 1) {
-      return user.id;
+      return { kind: 'active', userId: user.id };
     }
 
     const currentUser = await transaction.user.findUnique({
@@ -248,7 +321,10 @@ export class GoogleAuthService {
       select: { id: true, status: true },
     });
     if (currentUser?.status === UserStatus.ACTIVE) {
-      return currentUser.id;
+      return { kind: 'active', userId: currentUser.id };
+    }
+    if (currentUser?.status === UserStatus.PENDING_APPROVAL) {
+      return { kind: 'pending_approval' };
     }
     throw this.authenticationFailed();
   }

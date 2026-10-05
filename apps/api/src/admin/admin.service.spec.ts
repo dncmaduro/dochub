@@ -157,6 +157,75 @@ describe('AdminService user mutations', () => {
     expect(page.nextCursor).toBeTypeOf('string');
   });
 
+  it('approves pending users idempotently and audits only the status transition', async () => {
+    const transaction = transactionMock();
+    const { service } = serviceFor(transaction);
+    transaction.user.findUnique.mockResolvedValue(
+      user({ status: UserStatus.PENDING_APPROVAL }),
+    );
+    transaction.user.update.mockResolvedValue(
+      user({ status: UserStatus.ACTIVE }),
+    );
+
+    await expect(service.approveUser(actorId, userId)).resolves.toMatchObject({
+      status: UserStatus.ACTIVE,
+      systemRole: SystemRole.MEMBER,
+    });
+    expect(transaction.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: userId },
+        data: { status: UserStatus.ACTIVE },
+      }),
+    );
+    expect(transaction.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'USER_APPROVED',
+          actorId,
+          resourceId: userId,
+          metadata: {
+            from: UserStatus.PENDING_APPROVAL,
+            to: UserStatus.ACTIVE,
+          },
+        }),
+      }),
+    );
+    expect(transaction.groupMember.create).not.toHaveBeenCalled();
+
+    transaction.user.findUnique.mockResolvedValue(
+      user({ status: UserStatus.ACTIVE }),
+    );
+    await service.approveUser(actorId, userId);
+    expect(transaction.user.update).toHaveBeenCalledTimes(1);
+    expect(transaction.auditLog.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not allow changing the role before approval', async () => {
+    const transaction = transactionMock();
+    transaction.user.findUnique.mockResolvedValue(
+      user({ status: UserStatus.PENDING_APPROVAL }),
+    );
+    const { service } = serviceFor(transaction);
+
+    await expect(
+      service.updateUser(actorId, userId, { systemRole: SystemRole.ADMIN }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(transaction.user.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps pending users on the explicit approval path', async () => {
+    const transaction = transactionMock();
+    transaction.user.findUnique.mockResolvedValue(
+      user({ status: UserStatus.PENDING_APPROVAL }),
+    );
+    const { service } = serviceFor(transaction);
+
+    await expect(service.suspendUser(actorId, userId)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(transaction.user.update).not.toHaveBeenCalled();
+  });
+
   it('returns an unbound suspended user to INVITED and keeps Google-bound users ACTIVE', async () => {
     const transaction = transactionMock();
     const { service } = serviceFor(transaction);

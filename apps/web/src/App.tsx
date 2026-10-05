@@ -475,6 +475,11 @@ function App() {
   }));
   useEffect(() => {
     let active = true;
+    if (window.location.pathname === "/auth/pending") {
+      return () => {
+        active = false;
+      };
+    }
     void api.refresh().then(
       () => api.currentUser(),
     ).then(
@@ -501,6 +506,7 @@ function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+  if (window.location.pathname === "/auth/pending") return <PendingApproval />;
   if (authenticated === null)
     return <div className="auth-state">{t("auth.checkingSession")}</div>;
   if (!authenticated) return <SignIn />;
@@ -588,10 +594,20 @@ function AdminUsers() {
     setAddOpen(false);
     setNotice({ tone: "success", message: t("admin.userAdded") });
   }
-  async function action(user: AdminUser, kind: "role" | "status") {
+  async function action(user: AdminUser, kind: "approve" | "role" | "status") {
     if (kind === "status" && user.status !== "SUSPENDED" && !window.confirm(t("admin.suspendConfirm", { name: user.displayName }))) return;
     setOpenMenuId(null);
-    try { const updated = kind === "role" ? await api.updateAdminUser(user.id, { systemRole: user.systemRole === "ADMIN" ? "MEMBER" : "ADMIN" }) : user.status === "SUSPENDED" ? await api.reactivateAdminUser(user.id) : await api.suspendAdminUser(user.id); setUsers((items) => items.map((item) => item.id === user.id ? updated : item)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); }
+    try {
+      const updated = kind === "approve"
+        ? await api.approveAdminUser(user.id)
+        : kind === "role"
+          ? await api.updateAdminUser(user.id, { systemRole: user.systemRole === "ADMIN" ? "MEMBER" : "ADMIN" })
+          : user.status === "SUSPENDED"
+            ? await api.reactivateAdminUser(user.id)
+            : await api.suspendAdminUser(user.id);
+      setUsers((items) => items.map((item) => item.id === user.id ? updated : item));
+      if (kind === "approve") setNotice({ tone: "success", message: t("admin.accountApproved") });
+    } catch (error) { setNotice({ tone: "error", message: displayError(error) }); }
   }
   const matching = users.filter((user) => `${user.displayName} ${user.email}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <>
@@ -603,14 +619,18 @@ function AdminUsers() {
   </>;
 }
 
-function AdminUserRow({ user, menuOpen, onToggleMenu, onCloseMenu, onAction }: { user: AdminUser; menuOpen: boolean; onToggleMenu: () => void; onCloseMenu: () => void; onAction: (kind: "role" | "status") => void }) {
+function AdminUserRow({ user, menuOpen, onToggleMenu, onCloseMenu, onAction }: { user: AdminUser; menuOpen: boolean; onToggleMenu: () => void; onCloseMenu: () => void; onAction: (kind: "approve" | "role" | "status") => void }) {
   const trigger = useRef<HTMLButtonElement>(null);
   return <tr><td>{user.displayName}</td><td>{user.email}</td><td>{systemRoleLabel(user.systemRole)}</td><td>{userStatusLabel(user.status)}</td><td className="row-actions">
     <button ref={trigger} type="button" className="icon-button" aria-label={t("admin.actionsFor", { name: user.displayName })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><Icon name="more" /></button>
     {menuOpen && <RowMenu id={`admin-user-menu-${user.id}`} trigger={trigger} onClose={onCloseMenu}>
-      <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onAction("role"); }}>{user.systemRole === "ADMIN" ? t("admin.makeMember") : t("admin.makeAdmin")}</button>
-      <div className="row-menu-divider" />
-      <button type="button" role="menuitem" className={user.status === "SUSPENDED" ? "" : "menu-danger"} onClick={() => { onCloseMenu(); onAction("status"); }}>{user.status === "SUSPENDED" ? t("admin.reactivate") : t("admin.suspend")}</button>
+      {user.status === "PENDING_APPROVAL" ? (
+        <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onAction("approve"); }}>{t("admin.approve")}</button>
+      ) : <>
+        <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onAction("role"); }}>{user.systemRole === "ADMIN" ? t("admin.makeMember") : t("admin.makeAdmin")}</button>
+        <div className="row-menu-divider" />
+        <button type="button" role="menuitem" className={user.status === "SUSPENDED" ? "" : "menu-danger"} onClick={() => { onCloseMenu(); onAction("status"); }}>{user.status === "SUSPENDED" ? t("admin.reactivate") : t("admin.suspend")}</button>
+      </>}
     </RowMenu>}
   </td></tr>;
 }
@@ -691,6 +711,26 @@ function SignIn() {
         <p>{t("auth.signInDescription")}</p>
         <a className="button button-primary" href={api.googleAuthUrl()} onClick={() => setPending(true)}>
           {pending ? t("auth.signingIn") : t("auth.signInWithGoogle")}
+        </a>
+      </section>
+    </main>
+  );
+}
+
+function PendingApproval() {
+  return (
+    <main className="sign-in">
+      <section>
+        <Icon name="drive" size={30} />
+        <h1>Docs Hub</h1>
+        <h2>{t("auth.accessRequestSubmitted")}</h2>
+        <p>{t("auth.googleAccountRegistered")}</p>
+        <p role="status" aria-label={t("auth.awaitingAdministratorApproval")}>
+          {t("auth.yourAccountWaitingForApproval")}
+        </p>
+        <p>{t("auth.trySignInAfterApproval")}</p>
+        <a className="button button-primary" href={api.googleAuthUrl()}>
+          {t("auth.signInAgain")}
         </a>
       </section>
     </main>

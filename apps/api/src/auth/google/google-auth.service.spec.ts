@@ -44,11 +44,16 @@ function transactionMock() {
       create: vi.fn().mockResolvedValue({ id: 'account-id' }),
     },
     user: {
+      create: vi.fn().mockResolvedValue({
+        id: userId,
+        status: UserStatus.PENDING_APPROVAL,
+      }),
       findUnique: vi
         .fn()
         .mockResolvedValue({ id: userId, status: UserStatus.ACTIVE }),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
+    auditLog: { create: vi.fn().mockResolvedValue({}) },
     $queryRaw: vi.fn().mockResolvedValue([{ id: userId }]),
   };
 }
@@ -146,7 +151,9 @@ describe('GoogleAuthService account binding', () => {
       googleClaims({ email: 'new-email@example.test' }),
     );
 
-    await service.completeAuthorization(callbackInput);
+    await expect(service.completeAuthorization(callbackInput)).resolves.toMatchObject({
+      outcome: 'authenticated',
+    });
 
     expect(transaction.$queryRaw).not.toHaveBeenCalled();
     expect(transaction.authAccount.create).not.toHaveBeenCalled();
@@ -157,14 +164,52 @@ describe('GoogleAuthService account binding', () => {
     });
   });
 
-  it('does not auto-provision an unknown verified email', async () => {
+  it('creates and links an unknown verified identity as pending without a session', async () => {
     const transaction = transactionMock();
     transaction.$queryRaw.mockResolvedValue([]);
     const { service, sessions } = serviceFor(transaction);
 
-    await expect(
-      service.completeAuthorization(callbackInput),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(service.completeAuthorization(callbackInput)).resolves.toEqual({
+      outcome: 'pending_approval',
+    });
+    expect(transaction.user.create).toHaveBeenCalledWith({
+      data: {
+        email: 'member@example.test',
+        normalizedEmail: 'member@example.test',
+        displayName: 'Member',
+        status: UserStatus.PENDING_APPROVAL,
+        systemRole: 'MEMBER',
+      },
+      select: { id: true, status: true },
+    });
+    expect(transaction.authAccount.create).toHaveBeenCalledWith({
+      data: {
+        userId,
+        provider: AuthProvider.GOOGLE,
+        providerAccountId: 'google-stable-subject',
+      },
+    });
+    expect(transaction.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'USER_ACCESS_REQUESTED',
+        resourceId: userId,
+        metadata: { source: 'GOOGLE_OIDC' },
+      }),
+    });
+    expect(sessions.createSession).not.toHaveBeenCalled();
+  });
+
+  it('returns the same pending outcome for a repeated login using its linked account', async () => {
+    const transaction = transactionMock();
+    transaction.authAccount.findUnique.mockResolvedValueOnce({
+      user: { id: userId, status: UserStatus.PENDING_APPROVAL },
+    });
+    const { service, sessions } = serviceFor(transaction);
+
+    await expect(service.completeAuthorization(callbackInput)).resolves.toEqual({
+      outcome: 'pending_approval',
+    });
+    expect(transaction.user.create).not.toHaveBeenCalled();
     expect(transaction.authAccount.create).not.toHaveBeenCalled();
     expect(sessions.createSession).not.toHaveBeenCalled();
   });

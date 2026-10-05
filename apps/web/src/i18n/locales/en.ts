@@ -54,6 +54,13 @@ const en = {
     signingIn: "Signing in…",
     authenticationFailed: "Authentication failed.",
     sessionExpired: "Your session has expired. Please sign in again.",
+    pendingApproval: "Pending approval",
+    accessRequestSubmitted: "Access request submitted",
+    googleAccountRegistered: "Your Google account has been registered.",
+    awaitingAdministratorApproval: "Awaiting administrator approval",
+    yourAccountWaitingForApproval: "Your account is waiting for approval.",
+    trySignInAfterApproval: "An administrator must approve your account before you can access Docs Hub. You can try signing in again after your account has been approved.",
+    signInAgain: "Sign in again",
   },
   admin: {
     title: "Admin",
@@ -89,6 +96,8 @@ const en = {
     makeMember: "Make member",
     suspend: "Suspend",
     reactivate: "Reactivate",
+    approve: "Approve",
+    accountApproved: "Account approved",
     actionsFor: "Actions for {{name}}",
   },
   profile: {
@@ -267,7 +276,7 @@ const en = {
     directoryUnavailable: "Directory search is unavailable.",
   },
   roles: { ADMIN: "Administrator", MEMBER: "Member", VIEWER: "Viewer", EDITOR: "Editor", OWNER: "Owner" },
-  statuses: { INVITED: "Invited", ACTIVE: "Active", SUSPENDED: "Suspended" },
+  statuses: { INVITED: "Invited", PENDING_APPROVAL: "Pending approval", ACTIVE: "Active", SUSPENDED: "Suspended" },
   principalTypes: { USER: "User", GROUP: "Group" },
   language: { language: "Language", vietnamese: "Tiếng Việt", english: "English" },
 } as const;
