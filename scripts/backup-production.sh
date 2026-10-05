@@ -34,7 +34,11 @@ min_free_kb=${BACKUP_MIN_FREE_KB:-1048576}
 [[ $min_free_kb =~ ^[0-9]+$ ]] || die 'BACKUP_MIN_FREE_KB must be a positive integer'
 (( $(df -Pk "$tmp_dir" | awk 'NR==2 {print $4}') > min_free_kb )) || die "less than configured temporary-dump free-space minimum (${min_free_kb} KiB)"
 note 'checking active EDIT sessions'
-active=$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc 'SELECT count(*) FROM "EditorSession" WHERE "status" = '\''ACTIVE'\'' AND "mode" = '\''EDIT'\'';')
+editor_close_grace=${ONLYOFFICE_EDIT_CLOSE_GRACE_SECONDS:-60}
+[[ $editor_close_grace =~ ^[0-9]+$ ]] && (( editor_close_grace >= 15 && editor_close_grace <= 900 )) || die 'ONLYOFFICE_EDIT_CLOSE_GRACE_SECONDS must be between 15 and 900'
+editor_callback_ttl=${ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS:-3600}
+[[ $editor_callback_ttl =~ ^[0-9]+$ ]] && (( editor_callback_ttl >= 60 && editor_callback_ttl <= 86400 )) || die 'ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS must be between 60 and 86400'
+active=$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM \"EditorSession\" WHERE \"status\" = 'ACTIVE' AND \"mode\" = 'EDIT' AND ((\"closedAt\" IS NULL AND \"createdAt\" > now() - interval '${editor_callback_ttl} seconds') OR (\"closedAt\" IS NOT NULL AND \"closedAt\" > now() - interval '${editor_close_grace} seconds')); ")
 [[ $active =~ ^[0-9]+$ ]] || die 'could not inspect editor sessions'; (( active == 0 )) || { echo "backup: postponed: $active active EDIT session(s)" >&2; exit 75; }
 note 'stopping write-capable services'; "${compose[@]}" stop web api worker onlyoffice; stopped=1
 note 'creating PostgreSQL logical dump'; dump="$tmp_dir/postgres.dump"

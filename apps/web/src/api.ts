@@ -32,7 +32,7 @@ export interface CollectionItem extends Node {
   lastAccessedAt?: string;
 }
 export interface EditorSession {
-  session: { id: string };
+  session: { id: string; mode: "VIEW" | "EDIT" };
   documentServer: { apiUrl: string };
   config: Record<string, unknown>;
 }
@@ -215,10 +215,10 @@ export class ApiClient {
       body: JSON.stringify({ name }),
     });
   }
-  async createEditorSession(nodeId: string) {
+  async createEditorSession(nodeId: string, mode: "VIEW" | "EDIT" = "VIEW") {
     return this.request<EditorSession>(`/nodes/${nodeId}/editor-sessions`, {
       method: "POST",
-      body: JSON.stringify({ mode: "VIEW" }),
+      body: JSON.stringify({ mode }),
     });
   }
   async createPreviewSession(nodeId: string) {

@@ -19,12 +19,16 @@ describe('editor configuration', () => {
   it('validates URLs, secrets, and bounded fetch TTL', () => {
     expect(loadEditorConfig(env)?.fetchTokenTtlSeconds).toBe(900);
     expect(loadEditorConfig(env)?.callbackTokenTtlSeconds).toBe(3600);
+    expect(loadEditorConfig(env)?.editCloseGraceSeconds).toBe(60);
     expect(() =>
       loadEditorConfig({ ...env, ONLYOFFICE_JWT_SECRET: 'short' }),
     ).toThrow('at least 32');
     expect(() =>
       loadEditorConfig({ ...env, ONLYOFFICE_FETCH_TOKEN_TTL_SECONDS: '2' }),
     ).toThrow('between 60 and 3600');
+    expect(() =>
+      loadEditorConfig({ ...env, ONLYOFFICE_EDIT_CLOSE_GRACE_SECONDS: '2' }),
+    ).toThrow('between 15 and 900');
   });
 
   it('rejects insecure public document-server URLs and placeholder secrets in production', () => {

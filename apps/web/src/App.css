@@ -927,10 +927,11 @@ summary:focus-visible {
   font-size: 13px;
 }
 .editor-dialog {
+  position: relative;
   display: flex;
   flex-direction: column;
-  width: min(1200px, calc(100vw - 48px));
-  height: min(800px, calc(100vh - 48px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
   overflow: hidden;
   border-radius: 9px;
   background: var(--surface);
@@ -1027,8 +1028,18 @@ summary:focus-visible {
   font-size: 13px;
   font-weight: 500;
 }
+.editor-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
 .editor-frame {
   flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   min-height: 0;
 }
 .editor-error {
@@ -1037,6 +1048,32 @@ summary:focus-visible {
   place-items: center;
   color: var(--muted);
   font-size: 13px;
+}
+.editor-resize-handle {
+  position: absolute;
+  z-index: 2;
+  touch-action: none;
+}
+.editor-resize-right {
+  top: 44px;
+  right: 0;
+  bottom: 10px;
+  width: 8px;
+  cursor: ew-resize;
+}
+.editor-resize-bottom {
+  right: 10px;
+  bottom: 0;
+  left: 0;
+  height: 8px;
+  cursor: ns-resize;
+}
+.editor-resize-corner {
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
 }
 .auth-state,
 .sign-in {
@@ -1145,8 +1182,6 @@ summary:focus-visible {
     display: none;
   }
   .editor-dialog {
-    width: 100vw;
-    height: 100vh;
     border-radius: 0;
   }
   .permission-row {

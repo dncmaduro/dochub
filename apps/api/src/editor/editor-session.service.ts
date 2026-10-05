@@ -10,6 +10,8 @@ import {
   Inject,
   Injectable,
   Logger,
+  OnModuleDestroy,
+  OnModuleInit,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -63,8 +65,9 @@ interface OnlyOfficeCallback {
 class CallbackFailure extends Error {}
 
 @Injectable()
-export class EditorSessionService {
+export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EditorSessionService.name);
+  private closeCleanupTimer: NodeJS.Timeout | undefined;
 
   constructor(
     private readonly database: DatabaseService,
@@ -75,6 +78,20 @@ export class EditorSessionService {
     @Inject(STORAGE_SERVICE) private readonly objectStorage: StorageService,
     private readonly collections?: CollectionsService,
   ) {}
+
+  onModuleInit() {
+    if (!this.config) return;
+    this.closeCleanupTimer = setInterval(() => {
+      void this.closeExpiredEditSessions().catch((error: unknown) => {
+        this.logger.error('Unable to close expired editor sessions', error);
+      });
+    }, 5_000);
+    this.closeCleanupTimer.unref();
+  }
+
+  onModuleDestroy() {
+    if (this.closeCleanupTimer) clearInterval(this.closeCleanupTimer);
+  }
 
   /**
    * ONLYOFFICE uses this key as its document-server cache identity. Its source
@@ -239,26 +256,121 @@ export class EditorSessionService {
   }
 
   async close(actorUserId: string, sessionId: string) {
+    await this.closeExpiredEditSessions();
     const session = await this.database.prisma.editorSession.findFirst({
       where: {
         id: sessionId,
         userId: actorUserId,
         actorType: EditorActorType.USER,
       },
-      select: { id: true, status: true, mode: true, closedAt: true },
+      select: {
+        id: true,
+        status: true,
+        mode: true,
+        closedAt: true,
+        finalizedFileVersionId: true,
+      },
     });
     if (!session) throw new NotFoundException('Editor session not found');
-    if (session.status === EditorSessionStatus.ACTIVE)
+    if (session.status !== EditorSessionStatus.ACTIVE) return session;
+    if (session.mode === EditorMode.VIEW)
       return this.database.prisma.editorSession.update({
         where: { id: session.id },
         data: { status: EditorSessionStatus.CLOSED, closedAt: new Date() },
         select: { id: true, status: true, mode: true, closedAt: true },
       });
-    return session;
+    if (session.finalizedFileVersionId) return session;
+    const closing = session.closedAt
+      ? session
+      : await this.database.prisma.editorSession.update({
+          where: { id: session.id },
+          // An ACTIVE EDIT session with closedAt set is server-side closing:
+          // its UI is gone, but its signed final callback remains eligible for
+          // the configured bounded grace period.
+          data: { closedAt: new Date() },
+          select: {
+            id: true,
+            status: true,
+            mode: true,
+            closedAt: true,
+            finalizedFileVersionId: true,
+          },
+        });
+    return this.waitForEditClose(closing.id, closing.closedAt!);
+  }
+
+  /** Closes EDIT sessions whose bounded final-callback window has elapsed. */
+  async closeExpiredEditSessions(now = new Date()) {
+    if (!this.config) return { count: 0 };
+    const closeExpiry = new Date(
+      now.getTime() - this.config.editCloseGraceSeconds * 1_000,
+    );
+    // A UI that disappears without calling close cannot retain a valid final
+    // callback beyond the capability JWT's own lifetime. Closing such rows
+    // bounds abandoned sessions without shortening an already-valid callback.
+    const abandonedExpiry = new Date(
+      now.getTime() - this.config.callbackTokenTtlSeconds * 1_000,
+    );
+    return this.database.prisma.editorSession.updateMany({
+      where: {
+        mode: EditorMode.EDIT,
+        status: EditorSessionStatus.ACTIVE,
+        finalizedFileVersionId: null,
+        OR: [
+          { closedAt: { not: null, lte: closeExpiry } },
+          { closedAt: null, createdAt: { lte: abandonedExpiry } },
+        ],
+      },
+      data: { status: EditorSessionStatus.CLOSED },
+    });
+  }
+
+  private async waitForEditClose(sessionId: string, closedAt: Date) {
+    const config = this.requireConfig();
+    const deadline = new Date(
+      closedAt.getTime() + config.editCloseGraceSeconds * 1_000,
+    );
+    for (;;) {
+      const session = await this.database.prisma.editorSession.findUnique({
+        where: { id: sessionId },
+        select: {
+          id: true,
+          status: true,
+          mode: true,
+          closedAt: true,
+          finalizedFileVersionId: true,
+        },
+      });
+      if (!session || session.status !== EditorSessionStatus.ACTIVE)
+        return session;
+      if (new Date() >= deadline) {
+        await this.closeExpiredEditSessions(new Date());
+        continue;
+      }
+      // This is a bounded server-side completion contract, not browser-side
+      // timing: the response completes only when finalization wins or the
+      // configured callback eligibility window has definitively expired.
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  private isCallbackEligible(session: {
+    mode: EditorMode;
+    status: EditorSessionStatus;
+    closedAt: Date | null;
+  }) {
+    if (session.status !== EditorSessionStatus.ACTIVE) return false;
+    if (session.mode !== EditorMode.EDIT || !session.closedAt) return true;
+    return (
+      session.closedAt.getTime() +
+        this.requireConfig().editCloseGraceSeconds * 1_000 >
+      Date.now()
+    );
   }
 
   async authorizeFetch(requestedSessionId: string, token: string) {
     const config = this.requireConfig();
+    await this.closeExpiredEditSessions();
     let cap: FetchCapability;
     try {
       cap = await this.jwt.verifyAsync<FetchCapability>(token, {
@@ -288,6 +400,8 @@ export class EditorSessionService {
         baseVersionId: true,
         userId: true,
         mode: true,
+        status: true,
+        closedAt: true,
         file: {
           select: {
             nodeId: true,
@@ -303,6 +417,7 @@ export class EditorSessionService {
       !session.userId ||
       !session.user ||
       session.user.status !== UserStatus.ACTIVE ||
+      !this.isCallbackEligible(session) ||
       session.baseVersion.fileId !== session.fileId ||
       session.file.node.trashOperationId !== null
     )
@@ -327,6 +442,7 @@ export class EditorSessionService {
     input: unknown,
   ): Promise<{ error: number }> {
     const config = this.requireConfig();
+    await this.closeExpiredEditSessions();
     const payload = this.callbackPayload(input);
     let signed: OnlyOfficeCallback;
     try {
@@ -426,9 +542,11 @@ export class EditorSessionService {
         id: true,
         baseVersionId: true,
         documentKey: true,
+        mode: true,
         stagedArtifactId: true,
         finalizedFileVersionId: true,
         status: true,
+        closedAt: true,
         userId: true,
         file: {
           select: {
@@ -444,7 +562,7 @@ export class EditorSessionService {
       throw new CallbackFailure();
     if (session.finalizedFileVersionId) return session;
     if (
-      session.status !== EditorSessionStatus.ACTIVE ||
+      !this.isCallbackEligible(session) ||
       !session.userId ||
       !session.user ||
       session.user.status !== UserStatus.ACTIVE ||
@@ -640,6 +758,7 @@ export class EditorSessionService {
         userId: true,
         mode: true,
         status: true,
+        closedAt: true,
         stagedArtifactId: true,
         stagedSha256: true,
         stagedSizeBytes: true,
@@ -660,7 +779,7 @@ export class EditorSessionService {
     if (session.finalizedFileVersionId) return { created: false };
     if (
       session.mode !== EditorMode.EDIT ||
-      session.status !== EditorSessionStatus.ACTIVE ||
+      !this.isCallbackEligible(session) ||
       !session.userId ||
       session.user?.status !== UserStatus.ACTIVE ||
       !session.stagedArtifactId ||

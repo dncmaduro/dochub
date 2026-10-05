@@ -5,6 +5,7 @@ export interface EditorConfig {
   fetchTokenSecret: string;
   fetchTokenTtlSeconds: number;
   callbackTokenTtlSeconds: number;
+  editCloseGraceSeconds: number;
 }
 
 export const EDITOR_CONFIG = Symbol('EDITOR_CONFIG');
@@ -99,6 +100,22 @@ export function loadEditorConfig(
     throw new Error(
       'ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS must be between 60 and 86400',
     );
+  const rawEditCloseGrace =
+    env.ONLYOFFICE_EDIT_CLOSE_GRACE_SECONDS?.trim() || '60';
+  if (!/^\d+$/.test(rawEditCloseGrace))
+    throw new Error(
+      'ONLYOFFICE_EDIT_CLOSE_GRACE_SECONDS must be a positive integer',
+    );
+  const editCloseGraceSeconds = Number(rawEditCloseGrace);
+  if (
+    !Number.isSafeInteger(editCloseGraceSeconds) ||
+    editCloseGraceSeconds < 15 ||
+    editCloseGraceSeconds > 900 ||
+    editCloseGraceSeconds > callbackTokenTtlSeconds
+  )
+    throw new Error(
+      'ONLYOFFICE_EDIT_CLOSE_GRACE_SECONDS must be between 15 and 900 and no greater than the callback token TTL',
+    );
   const publicUrl = httpUrl(
     'ONLYOFFICE_PUBLIC_URL',
     value('ONLYOFFICE_PUBLIC_URL', env.ONLYOFFICE_PUBLIC_URL),
@@ -116,5 +133,6 @@ export function loadEditorConfig(
     fetchTokenSecret,
     fetchTokenTtlSeconds,
     callbackTokenTtlSeconds,
+    editCloseGraceSeconds,
   };
 }

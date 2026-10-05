@@ -109,8 +109,8 @@ function displayError(error: unknown) {
 function hasCapability(node: Node, capability: string) {
   return node.capabilities.includes(capability);
 }
-function isOfficeFile(name: string) {
-  return /\.(docx?|xlsx?|pptx?)$/i.test(name);
+function isOnlyOfficeEditableFile(name: string) {
+  return /\.(doc|docx|xls|xlsx|ppt|pptx)$/i.test(name);
 }
 async function openFileActivation(
   node: Node,
@@ -119,8 +119,8 @@ async function openFileActivation(
   onError: (notice: Notice) => void,
 ) {
   try {
-    if (isOfficeFile(node.name) && hasCapability(node, "PREVIEW")) {
-      setEditor(await api.createEditorSession(node.id));
+    if (isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")) {
+      setEditor(await api.createEditorSession(node.id, "VIEW"));
       return;
     }
     if (hasCapability(node, "PREVIEW")) {
@@ -138,6 +138,21 @@ async function openFileActivation(
       return;
     }
     if (hasCapability(node, "DOWNLOAD")) await api.download(node);
+  } catch (error) {
+    onError({ tone: "error", message: displayError(error) });
+  }
+}
+async function openEditorForEdit(
+  node: Node,
+  setEditor: (session: EditorSession) => void,
+  onError: (notice: Notice) => void,
+) {
+  try {
+    if (!isOnlyOfficeEditableFile(node.name) || !hasCapability(node, "EDIT")) {
+      onError({ tone: "error", message: "You cannot edit this document." });
+      return;
+    }
+    setEditor(await api.createEditorSession(node.id, "EDIT"));
   } catch (error) {
     onError({ tone: "error", message: displayError(error) });
   }
@@ -641,6 +656,15 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   async function openFile(node: Node) {
     await openFileActivation(node, setEditor, setPreview, setNotice);
   }
+  async function editFile(node: Node) {
+    await openEditorForEdit(node, setEditor, setNotice);
+  }
+  function handleEditorSessionClosed() {
+    void load(folderId);
+  }
+  function handleEditorSessionCloseError(requestError: unknown) {
+    setNotice({ tone: "error", message: displayError(requestError) });
+  }
   async function moveToTrash(node: Node) {
     await api.moveToTrash(node.id);
     setNodes((items) => items.filter((item) => item.id !== node.id));
@@ -732,6 +756,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
               onTrash={setTrashNode}
               onVersions={setVersionNode}
               onOpen={openFile}
+              onEdit={editFile}
               onNotice={setNotice}
               favoriteIds={favoriteIds}
               onFavorite={toggleFavorite}
@@ -781,7 +806,12 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
         />
       )}
       {editor && (
-        <EditorDialog session={editor} onClose={() => setEditor(null)} />
+        <EditorDialog
+          session={editor}
+          onClose={() => setEditor(null)}
+          onSessionClosed={handleEditorSessionClosed}
+          onSessionCloseError={handleEditorSessionCloseError}
+        />
       )}
       {preview && (
         <PreviewDialog
@@ -830,6 +860,7 @@ function FileList({
   onTrash,
   onVersions,
   onOpen,
+  onEdit,
   onNotice,
   favoriteIds,
   onFavorite,
@@ -842,6 +873,7 @@ function FileList({
   onTrash: (node: Node) => void;
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
+  onEdit: (node: Node) => void;
   onNotice: (notice: Notice) => void;
   favoriteIds: ReadonlySet<string>;
   onFavorite: (node: Node) => void;
@@ -876,6 +908,7 @@ function FileList({
               onTrash={onTrash}
               onVersions={onVersions}
               onOpen={onOpen}
+              onEdit={onEdit}
               onNotice={onNotice}
               isFavorite={favoriteIds.has(node.id)}
               onFavorite={onFavorite}
@@ -897,6 +930,7 @@ function FileRow({
   onTrash,
   onVersions,
   onOpen,
+  onEdit,
   onNotice,
   isFavorite,
   onFavorite,
@@ -911,6 +945,7 @@ function FileRow({
   onTrash: (node: Node) => void;
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
+  onEdit: (node: Node) => void;
   onNotice: (notice: Notice) => void;
   isFavorite: boolean;
   onFavorite: (node: Node) => void;
@@ -921,6 +956,10 @@ function FileRow({
     isFolder ||
     hasCapability(node, "PREVIEW") ||
     hasCapability(node, "DOWNLOAD");
+  const canEdit =
+    !isFolder &&
+    isOnlyOfficeEditableFile(node.name) &&
+    hasCapability(node, "EDIT");
   async function download() {
     try {
       await api.download(node);
@@ -980,12 +1019,25 @@ function FileRow({
             >
               {isFolder
                 ? "Open folder"
-                : isOfficeFile(node.name) && hasCapability(node, "PREVIEW")
+                : isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")
                   ? "Open"
                   : hasCapability(node, "PREVIEW")
                     ? "Preview"
                     : "Download"}
             </button>
+            {canEdit && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  onCloseMenu();
+                  void onEdit(node);
+                }}
+              >
+                <Icon name="edit" size={16} />
+                Edit
+              </button>
+            )}
             {!isFolder && hasCapability(node, "DOWNLOAD") && (
               <button
                 type="button"
@@ -1616,6 +1668,15 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   async function openFile(node: Node) {
     await openFileActivation(node, setEditor, setPreview, setNotice);
   }
+  async function editFile(node: Node) {
+    await openEditorForEdit(node, setEditor, setNotice);
+  }
+  function handleEditorSessionClosed() {
+    void load();
+  }
+  function handleEditorSessionCloseError(requestError: unknown) {
+    setNotice({ tone: "error", message: displayError(requestError) });
+  }
 
   async function rename(node: Node, name: string) {
     const updated = await api.renameNode(node.id, name);
@@ -1671,7 +1732,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
           {status === "loading" && <LoadingRows label={`Loading ${title.toLowerCase()}`} />}
           {status === "error" && <CollectionError title={title} message={error} onRetry={() => void load()} />}
           {status === "ready" && displayItems.length === 0 && <SearchState title={emptyTitle} />}
-          {status === "ready" && displayItems.length > 0 && <FileList nodes={displayItems} onFolder={(id) => navigate(id)} onRename={setRenameNode} onShare={setShareNode} onTrash={setTrashNode} onVersions={setVersionNode} onOpen={openFile} onNotice={setNotice} favoriteIds={favoriteIds} onFavorite={toggleFavorite} dateLabel={kind === "recent" ? "Last opened" : "Added"} />}
+          {status === "ready" && displayItems.length > 0 && <FileList nodes={displayItems} onFolder={(id) => navigate(id)} onRename={setRenameNode} onShare={setShareNode} onTrash={setTrashNode} onVersions={setVersionNode} onOpen={openFile} onEdit={editFile} onNotice={setNotice} favoriteIds={favoriteIds} onFavorite={toggleFavorite} dateLabel={kind === "recent" ? "Last opened" : "Added"} />}
         </section>
       </main>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
@@ -1679,7 +1740,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       {shareNode && <ShareDialog node={shareNode} onClose={() => setShareNode(null)} onNotice={setNotice} />}
       {trashNode && <ConfirmDialog title="Move to Trash" message={`Move “${trashNode.name}” to Trash?`} action="Move to Trash" onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
       {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
-      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} />}
+      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={handleEditorSessionClosed} onSessionCloseError={handleEditorSessionCloseError} />}
       {preview && (
         <PreviewDialog
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
@@ -1850,7 +1911,7 @@ function SearchApp({ query }: { query: string }) {
         </section>
       </main>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
-      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} />}
+      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={() => void retry()} onSessionCloseError={(requestError) => setNotice({ tone: "error", message: displayError(requestError) })} />}
       {preview && (
         <PreviewDialog
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
@@ -2328,18 +2389,67 @@ function LoadingRows({ label = "Loading files" }: { label?: string }) {
     </div>
   );
 }
+
+const EDITOR_VIEWPORT_MARGIN = 24;
+const EDITOR_MIN_WIDTH = 720;
+const EDITOR_MIN_HEIGHT = 500;
+
+type EditorSize = { width: number; height: number };
+type EditorResizeDirection = "right" | "bottom" | "corner";
+
+function getEditorSizeBounds() {
+  const maxWidth = Math.max(1, window.innerWidth - EDITOR_VIEWPORT_MARGIN);
+  const maxHeight = Math.max(1, window.innerHeight - EDITOR_VIEWPORT_MARGIN);
+  return {
+    minWidth: Math.min(EDITOR_MIN_WIDTH, maxWidth),
+    minHeight: Math.min(EDITOR_MIN_HEIGHT, maxHeight),
+    maxWidth,
+    maxHeight,
+  };
+}
+
+function clampEditorSize(size: EditorSize): EditorSize {
+  const bounds = getEditorSizeBounds();
+  return {
+    width: Math.min(bounds.maxWidth, Math.max(bounds.minWidth, size.width)),
+    height: Math.min(bounds.maxHeight, Math.max(bounds.minHeight, size.height)),
+  };
+}
+
+function getInitialEditorSize(): EditorSize {
+  const bounds = getEditorSizeBounds();
+  const compact = window.innerWidth <= 800 || window.innerHeight <= 640;
+  return clampEditorSize({
+    width: compact
+      ? bounds.maxWidth
+      : Math.min(1100, window.innerWidth * 0.9),
+    height: compact
+      ? bounds.maxHeight
+      : window.innerHeight * 0.8,
+  });
+}
+
 function EditorDialog({
   session,
   onClose,
+  onSessionClosed,
+  onSessionCloseError,
 }: {
   session: EditorSession;
   onClose: () => void;
+  onSessionClosed: () => void;
+  onSessionCloseError: (error: unknown) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLElement>(null);
   const editorRef = useRef<{ destroyEditor?: () => void } | undefined>(
     undefined,
   );
   const closeTimer = useRef<number | undefined>(undefined);
+  const resizeCleanup = useRef<(() => void) | undefined>(undefined);
+  const sessionClosed = useRef(onSessionClosed);
+  const sessionCloseError = useRef(onSessionCloseError);
+  const [size, setSize] = useState<EditorSize>(getInitialEditorSize);
   const [error, setError] = useState("");
   const mountId = `onlyoffice-editor-${session.session.id}`;
   const documentTitle = (() => {
@@ -2348,6 +2458,69 @@ function EditorDialog({
       return "Document editor";
     return typeof document.title === "string" ? document.title : "Document editor";
   })();
+  useEffect(() => {
+    sessionClosed.current = onSessionClosed;
+    sessionCloseError.current = onSessionCloseError;
+  }, [onSessionCloseError, onSessionClosed]);
+  useEffect(() => {
+    const keepInViewport = () => setSize((current) => clampEditorSize(current));
+    window.addEventListener("resize", keepInViewport);
+    return () => {
+      window.removeEventListener("resize", keepInViewport);
+      resizeCleanup.current?.();
+    };
+  }, []);
+  const startResize = (
+    direction: EditorResizeDirection,
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    resizeCleanup.current?.();
+    const startingSize = dialog.current?.getBoundingClientRect() ?? {
+      width: size.width,
+      height: size.height,
+    };
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor =
+      direction === "right"
+        ? "ew-resize"
+        : direction === "bottom"
+          ? "ns-resize"
+          : "nwse-resize";
+
+    const move = (moveEvent: PointerEvent) => {
+      setSize(
+        clampEditorSize({
+          width:
+            direction === "bottom"
+              ? startingSize.width
+              : startingSize.width + moveEvent.clientX - startX,
+          height:
+            direction === "right"
+              ? startingSize.height
+              : startingSize.height + moveEvent.clientY - startY,
+        }),
+      );
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+      if (resizeCleanup.current === cleanup) resizeCleanup.current = undefined;
+    };
+    const cleanup = stop;
+    resizeCleanup.current = cleanup;
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
   useEffect(() => {
     const mount = container.current;
     if (closeTimer.current !== undefined) {
@@ -2400,20 +2573,25 @@ function EditorDialog({
       // still closes the server-side session.
       closeTimer.current = window.setTimeout(() => {
         closeTimer.current = undefined;
-        void api.closeEditorSession(session.session.id).catch(() => undefined);
+        void api.closeEditorSession(session.session.id).then(
+          () => sessionClosed.current(),
+          (requestError: unknown) => sessionCloseError.current(requestError),
+        );
       }, 0);
     };
   }, [mountId, session]);
   return (
     <div className="editor-backdrop">
       <section
+        ref={dialog}
         className="editor-dialog"
+        style={{ width: size.width, height: size.height }}
         role="dialog"
         aria-modal="true"
         aria-label={`Document editor: ${documentTitle}`}
       >
         <header>
-          <span>{documentTitle}</span>
+          <span>{session.session.mode === "EDIT" ? "Editing" : "Viewing"}: {documentTitle}</span>
           <button
             type="button"
             className="icon-button"
@@ -2423,15 +2601,28 @@ function EditorDialog({
             <Icon name="close" />
           </button>
         </header>
-        {error ? (
-          <div className="editor-error">{error}</div>
-        ) : (
-          <div
-            id={mountId}
-            ref={container}
-            className="editor-frame"
-          />
-        )}
+        <div className="editor-body">
+          {error ? (
+            <div className="editor-error">{error}</div>
+          ) : (
+            <div id={mountId} ref={container} className="editor-frame" />
+          )}
+        </div>
+        <div
+          className="editor-resize-handle editor-resize-right"
+          aria-hidden="true"
+          onPointerDown={(event) => startResize("right", event)}
+        />
+        <div
+          className="editor-resize-handle editor-resize-bottom"
+          aria-hidden="true"
+          onPointerDown={(event) => startResize("bottom", event)}
+        />
+        <div
+          className="editor-resize-handle editor-resize-corner"
+          aria-hidden="true"
+          onPointerDown={(event) => startResize("corner", event)}
+        />
       </section>
     </div>
   );

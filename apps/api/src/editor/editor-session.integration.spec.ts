@@ -27,6 +27,7 @@ withDb('EditorSessionService integration', () => {
     fetchTokenSecret: 'b'.repeat(32),
     fetchTokenTtlSeconds: 900,
     callbackTokenTtlSeconds: 3600,
+    editCloseGraceSeconds: 60,
   };
   const database = { prisma } as unknown as DatabaseService;
   const authorization = new DocumentAuthorizationService(database);
@@ -848,6 +849,116 @@ withDb('EditorSessionService integration', () => {
     await expect(prisma.fileVersion.count({ where: { fileId } })).resolves.toBe(
       count,
     );
+  });
+
+  it('accepts one exact final save callback after an EDIT UI close was requested', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    const artifactId = randomUUID();
+    const bytes = Buffer.from('final callback after graceful close');
+    const pathname = path.join(
+      '/tmp/dochub-editor-test',
+      'editor',
+      created.session.id,
+      artifactId,
+    );
+    await mkdir(path.dirname(pathname), { recursive: true });
+    await writeFile(pathname, bytes);
+    await prisma.editorSession.update({
+      where: { id: created.session.id },
+      // This is the persisted state produced by close() before it waits for
+      // the bounded server-side completion contract.
+      data: {
+        closedAt: new Date(),
+        stagedArtifactId: artifactId,
+        stagedSizeBytes: BigInt(bytes.length),
+        stagedSha256: createHash('sha256').update(bytes).digest('hex'),
+        stagedAt: new Date(),
+      },
+    });
+    const callback = new URL(
+      (created.config.editorConfig as { callbackUrl: string }).callbackUrl,
+    );
+    const capability = callback.searchParams.get('capability')!;
+    const token = new JwtService().sign(
+      { status: 2, key: created.config.document.key },
+      { secret: config.jwtSecret, algorithm: 'HS256' },
+    );
+    await expect(
+      service.handleCallback(created.session.id, capability, {
+        status: 2,
+        key: created.config.document.key,
+        token,
+      }),
+    ).resolves.toEqual({ error: 0 });
+    const finalized = await prisma.editorSession.findUniqueOrThrow({
+      where: { id: created.session.id },
+      include: { finalizedFileVersion: true },
+    });
+    expect(finalized).toMatchObject({ status: 'CLOSED' });
+    expect(finalized.finalizedFileVersion?.source).toBe('EDITOR');
+    permanentKeys.push(finalized.finalizedFileVersion!.storageKey);
+    versionIds.push(finalized.finalizedFileVersionId!);
+    await expect(
+      service.handleCallback(created.session.id, capability, {
+        status: 2,
+        key: created.config.document.key,
+        token,
+      }),
+    ).resolves.toEqual({ error: 0 });
+    await expect(
+      prisma.fileVersion.count({ where: { fileId } }),
+    ).resolves.toBe(finalized.finalizedFileVersion!.versionNumber);
+  });
+
+  it('expires a no-change graceful EDIT close without creating a version', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    const before = await prisma.fileVersion.count({ where: { fileId } });
+    await prisma.editorSession.update({
+      where: { id: created.session.id },
+      data: { closedAt: new Date(0) },
+    });
+    await expect(
+      service.closeExpiredEditSessions(new Date(60_001)),
+    ).resolves.toMatchObject({ count: 1 });
+    await expect(
+      prisma.editorSession.findUniqueOrThrow({
+        where: { id: created.session.id },
+      }),
+    ).resolves.toMatchObject({
+      status: 'CLOSED',
+      finalizedFileVersionId: null,
+    });
+    await expect(prisma.fileVersion.count({ where: { fileId } })).resolves.toBe(
+      before,
+    );
+  });
+
+  it('closes an abandoned EDIT session after its callback capability lifetime', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const created = await service.create(actorId, nodeId, 'EDIT');
+    await prisma.editorSession.update({
+      where: { id: created.session.id },
+      data: { createdAt: new Date(0) },
+    });
+    await expect(
+      service.closeExpiredEditSessions(new Date(3_600_001)),
+    ).resolves.toMatchObject({ count: 1 });
+    await expect(
+      prisma.editorSession.findUniqueOrThrow({
+        where: { id: created.session.id },
+      }),
+    ).resolves.toMatchObject({ status: 'CLOSED', closedAt: null });
   });
 
   it('rejects a second editor session that becomes stale after another save', async () => {
