@@ -63,6 +63,12 @@ type PendingOnlyOfficeClose = {
   resolve: () => void;
   reject: (error: unknown) => void;
 };
+class OnlyOfficeCloseCancelledError extends Error {
+  constructor() {
+    super("ONLYOFFICE close request was cancelled");
+    this.name = "OnlyOfficeCloseCancelledError";
+  }
+}
 
 function previewIsUnavailable(preview: Preview): preview is UnavailablePreview {
   return "unavailable" in preview;
@@ -2696,7 +2702,9 @@ function EditorDialog({
   const [size, setSize] = useState<EditorSize>(getInitialEditorSize);
   const [error, setError] = useState("");
   const [editorState, setEditorState] = useState<"loading" | "ready" | "error">("loading");
+  const [editorPhase, setEditorPhase] = useState<"opening" | "saving">("opening");
   const [switching, setSwitching] = useState(false);
+  const [closeDecisionPending, setCloseDecisionPending] = useState(false);
   const activeSessionRef = useRef(activeSession);
   const mountId = `onlyoffice-editor-${activeSession.session.id}`;
   const documentTitle = (() => {
@@ -2750,12 +2758,12 @@ function EditorDialog({
     const owned = editorRef.current;
     if (!owned || owned.disposed) return;
     if (!owned.editor.requestClose) {
-      // Older DocsAPI builds may not expose requestClose. Keep the bounded
-      // backend close contract as the fallback for those builds.
-      disposeEditor(owned);
-      cleanEditorHost();
+      // Older DocsAPI builds may not expose requestClose. The owning
+      // transition still performs the idempotent dispose before closing the
+      // backend session.
       return;
     }
+    setCloseDecisionPending(true);
     await new Promise<void>((resolve, reject) => {
       pendingEditorClose.current = { editor: owned, resolve, reject };
       try {
@@ -2766,8 +2774,32 @@ function EditorDialog({
         pendingEditorClose.current = undefined;
         reject(requestError);
       }
-    });
-  }, [cleanEditorHost, disposeEditor]);
+    }).finally(() => setCloseDecisionPending(false));
+  }, []);
+  const cancelPendingEditorClose = useCallback(() => {
+    const pending = pendingEditorClose.current;
+    if (!pending) return;
+    pendingEditorClose.current = undefined;
+    pending.reject(new OnlyOfficeCloseCancelledError());
+  }, []);
+  const closeEditorSessionGracefully = useCallback(async (target: ActiveEditorSession) => {
+    const owned = editorRef.current;
+    if (target.session.mode === "EDIT") {
+      await requestEditorClose();
+      setEditorState("loading");
+      setEditorPhase("saving");
+      disposeEditor(owned);
+      cleanEditorHost();
+    } else {
+      setEditorState("loading");
+      setEditorPhase("opening");
+      await closeSession(target);
+      disposeEditor(owned);
+      cleanEditorHost();
+      return;
+    }
+    await closeSession(target);
+  }, [cleanEditorHost, closeSession, disposeEditor, requestEditorClose]);
   const switchMode = async (mode: "VIEW" | "EDIT") => {
     const current = activeSessionRef.current;
     if (switchingRef.current || current.session.mode === mode) return;
@@ -2776,19 +2808,9 @@ function EditorDialog({
     setError("");
     let currentSessionClosed = false;
     try {
-      // VIEW sessions close immediately. EDIT sessions must first let
-      // ONLYOFFICE complete its supported close handshake before the API waits
-      // for the final callback.
-      if (current.session.mode === "EDIT") {
-        await requestEditorClose();
-      }
-      setEditorState("loading");
-      await closeSession(current);
+      await closeEditorSessionGracefully(current);
       currentSessionClosed = true;
-      if (current.session.mode === "VIEW") {
-        disposeEditor();
-        cleanEditorHost();
-      }
+      setEditorPhase("opening");
       const next = await api.createEditorSession(current.nodeId, mode);
       setActiveSession({
         ...next,
@@ -2796,6 +2818,10 @@ function EditorDialog({
         canEdit: current.canEdit,
       });
     } catch (requestError) {
+      if (requestError instanceof OnlyOfficeCloseCancelledError) {
+        setEditorState("ready");
+        return;
+      }
       if (!currentSessionClosed) {
         setActiveSession({ ...current });
       } else if (mode === "EDIT" && current.session.mode === "VIEW") {
@@ -2815,6 +2841,30 @@ function EditorDialog({
         setError(displayError(requestError));
       }
       onSessionCloseError(requestError);
+    } finally {
+      switchingRef.current = false;
+      setSwitching(false);
+    }
+  };
+  const closeDialog = async () => {
+    if (switchingRef.current) return;
+    const current = activeSessionRef.current;
+    if (current.session.mode !== "EDIT") {
+      onClose();
+      return;
+    }
+    switchingRef.current = true;
+    setSwitching(true);
+    setError("");
+    try {
+      await closeEditorSessionGracefully(current);
+      onClose();
+    } catch (requestError) {
+      if (!(requestError instanceof OnlyOfficeCloseCancelledError)) {
+        setEditorState("error");
+        setError(displayError(requestError));
+        onSessionCloseError(requestError);
+      }
     } finally {
       switchingRef.current = false;
       setSwitching(false);
@@ -2926,8 +2976,6 @@ function EditorDialog({
       } finally {
         if (pending && pending.editor === editor) {
           pendingEditorClose.current = undefined;
-          disposeEditor(pending.editor);
-          cleanEditorHost();
           pending.resolve();
         }
       }
@@ -3074,12 +3122,21 @@ function EditorDialog({
                 </button>
               </div>
             )}
+            {closeDecisionPending && (
+              <button
+                type="button"
+                className="button"
+                onClick={cancelPendingEditorClose}
+              >
+                {t("common.cancel")}
+              </button>
+            )}
             <button
               type="button"
               className="icon-button"
               aria-label={t("editor.close")}
               disabled={switching}
-              onClick={onClose}
+              onClick={() => void closeDialog()}
             >
               <Icon name="close" />
             </button>
@@ -3088,12 +3145,14 @@ function EditorDialog({
         <div className="editor-body" aria-busy={switching || editorState === "loading"}>
           <div ref={editorHost} className="editor-host" />
           {editorState === "loading" && (
-            <div className="editor-error" role="status">{t("editor.opening")}</div>
+            <div className="editor-error" role="status">
+              {editorPhase === "saving" ? t("editor.saving") : t("editor.opening")}
+            </div>
           )}
           {editorState === "error" && !switching && (
             <div className="editor-error" role="alert">
               <span>{error || t("editor.failed")}</span>
-              <button type="button" className="button" onClick={onClose}>{t("common.close")}</button>
+              <button type="button" className="button" onClick={() => void closeDialog()}>{t("common.close")}</button>
             </div>
           )}
         </div>

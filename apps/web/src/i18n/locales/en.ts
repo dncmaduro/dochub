@@ -247,6 +247,7 @@ const en = {
     switchToView: "Switch to view mode",
     switchToEdit: "Switch to edit mode",
     switching: "Switching editor mode…",
+    saving: "Saving changes…",
     opening: "Opening editor…",
     close: "Close editor",
     failed: "The document editor could not be opened.",
