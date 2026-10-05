@@ -50,6 +50,11 @@ type ActiveEditorSession = EditorSession & {
   nodeId: string;
   canEdit: boolean;
 };
+type OnlyOfficeEditor = { destroyEditor?: () => void };
+type ManagedOnlyOfficeEditor = {
+  editor: OnlyOfficeEditor;
+  disposed: boolean;
+};
 
 function previewIsUnavailable(preview: Preview): preview is UnavailablePreview {
   return "unavailable" in preview;
@@ -2668,9 +2673,7 @@ function EditorDialog({
 }) {
   const container = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLElement>(null);
-  const editorRef = useRef<{ destroyEditor?: () => void } | undefined>(
-    undefined,
-  );
+  const editorRef = useRef<ManagedOnlyOfficeEditor | undefined>(undefined);
   const closeTimer = useRef<number | undefined>(undefined);
   const resizeCleanup = useRef<(() => void) | undefined>(undefined);
   const switchingRef = useRef(false);
@@ -2716,10 +2719,16 @@ function EditorDialog({
       throw requestError;
     }
   }, []);
-  const destroyEditor = useCallback(() => {
-    editorRef.current?.destroyEditor?.();
-    editorRef.current = undefined;
-    container.current?.replaceChildren();
+  const disposeEditor = useCallback((owned: ManagedOnlyOfficeEditor | undefined = editorRef.current, reportError = true) => {
+    if (!owned || owned.disposed) return;
+    owned.disposed = true;
+    try {
+      owned.editor.destroyEditor?.();
+    } catch (destroyError) {
+      if (reportError) setError(onlyOfficeErrorMessage(destroyError));
+    } finally {
+      if (editorRef.current === owned) editorRef.current = undefined;
+    }
   }, []);
   const switchMode = async (mode: "VIEW" | "EDIT") => {
     const current = activeSessionRef.current;
@@ -2732,10 +2741,10 @@ function EditorDialog({
     try {
       // VIEW sessions close immediately. EDIT sessions must first let
       // ONLYOFFICE initiate its final callback before the API waits for it.
-      if (current.session.mode === "EDIT") destroyEditor();
+      if (current.session.mode === "EDIT") disposeEditor();
       await closeSession(current);
       currentSessionClosed = true;
-      if (current.session.mode === "VIEW") destroyEditor();
+      if (current.session.mode === "VIEW") disposeEditor();
       const next = await api.createEditorSession(current.nodeId, mode);
       setActiveSession({
         ...next,
@@ -2827,7 +2836,7 @@ function EditorDialog({
     let script: HTMLScriptElement | undefined;
     let scriptLoaded = false;
     let cancelled = false;
-    let editor: { destroyEditor?: () => void } | undefined;
+    let editor: ManagedOnlyOfficeEditor | undefined;
     const configuredEvents = activeSession.config.events && typeof activeSession.config.events === "object"
       ? activeSession.config.events as Record<string, unknown>
       : {};
@@ -2864,7 +2873,6 @@ function EditorDialog({
         }
         // Document Server owns this node. A new session must never inherit an
         // iframe that a previous instance creates asynchronously.
-        mount.replaceChildren();
         const editorConfig = {
           ...activeSession.config,
           editorConfig: {
@@ -2879,7 +2887,8 @@ function EditorDialog({
             onWarning: handleWarning,
           },
         };
-        editor = new window.DocsAPI.DocEditor(mountId, editorConfig);
+        const createdEditor = new window.DocsAPI.DocEditor(mountId, editorConfig);
+        editor = { editor: createdEditor, disposed: false };
         editorRef.current = editor;
         setEditorState("ready");
       } catch (constructionError) {
@@ -2912,10 +2921,14 @@ function EditorDialog({
       // removing its defining element while reusing that global corrupts the
       // next editor initialization in some browsers. An unfinished load is
       // still removed so its callback cannot mount after cleanup.
-      if (script && !scriptLoaded) script.remove();
-      editor?.destroyEditor?.();
-      if (editorRef.current === editor) editorRef.current = undefined;
-      mount?.replaceChildren();
+      if (script && !scriptLoaded && script.parentNode) {
+        try {
+          script.parentNode.removeChild(script);
+        } catch {
+          // Another cleanup may have removed the unfinished script already.
+        }
+      }
+      disposeEditor(editor, false);
       // Strict Mode immediately replays effects in development. Deferring the
       // close lets the replacement effect cancel it, while a real unmount
       // still closes the server-side session.
@@ -2927,7 +2940,7 @@ function EditorDialog({
         );
       }, 0);
     };
-  }, [activeSession, closeSession, mountId]);
+  }, [activeSession, closeSession, disposeEditor, mountId]);
   return (
     <div className="editor-backdrop">
       <section
