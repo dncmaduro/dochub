@@ -262,12 +262,6 @@ export class ApiClient {
   async createDocumentEditorSession(nodeId: string) {
     return this.request<EditorSession>(`/documents/${nodeId}/editor-sessions`, { method: "POST" });
   }
-  async closeDocumentEditorSession(nodeId: string, sessionId: string) {
-    return this.request<EditorSessionState>(`/documents/${nodeId}/editor-sessions/${sessionId}/close`, { method: "POST" });
-  }
-  async documentEditorSessionStatus(nodeId: string, sessionId: string) {
-    return this.request<EditorSessionState>(`/documents/${nodeId}/editor-sessions/${sessionId}/status`);
-  }
   async loadDocumentContent(nodeId: string) {
     return this.raw(`/documents/${nodeId}/content`).then((response) => response.blob());
   }

@@ -68,23 +68,11 @@ type EditorSaveContextValue = {
 const EditorSaveContext = createContext<EditorSaveContextValue | null>(null);
 type OnlyOfficeEditor = {
   destroyEditor?: () => void;
-  requestClose?: () => void;
 };
 type ManagedOnlyOfficeEditor = {
   editor: OnlyOfficeEditor;
   disposed: boolean;
 };
-type PendingOnlyOfficeClose = {
-  editor: ManagedOnlyOfficeEditor;
-  resolve: () => void;
-  reject: (error: unknown) => void;
-};
-class OnlyOfficeCloseCancelledError extends Error {
-  constructor() {
-    super("ONLYOFFICE close request was cancelled");
-    this.name = "OnlyOfficeCloseCancelledError";
-  }
-}
 
 function previewIsUnavailable(preview: Preview): preview is UnavailablePreview {
   return "unavailable" in preview;
@@ -2795,7 +2783,7 @@ function DocumentWorkspace({ nodeId, authenticated }: {
   nodeId: string;
   authenticated: boolean;
 }) {
-  const { isFilePending, startFinalization } = useEditorSaveContext();
+  const { isFilePending } = useEditorSaveContext();
   const isFilePendingRef = useRef(isFilePending);
   const [status, setStatus] = useState<"loading" | "ready" | "denied" | "unavailable" | "saving" | "error">("loading");
   const [session, setSession] = useState<ActiveEditorSession | null>(null);
@@ -2895,14 +2883,9 @@ function DocumentWorkspace({ nodeId, authenticated }: {
   if (status === "loading")
     return <main className="document-loading"><a className="document-brand" href="/drive">Docs Hub</a><span>{t("editor.opening")}</span></main>;
   if (session) {
-    const closeSession = () => api.closeDocumentEditorSession(nodeId, session.session.id);
-    const getStatus = () => api.documentEditorSessionStatus(nodeId, session.session.id);
     return (
       <OnlyOfficeDocumentWorkspace
         session={session}
-        onClose={leaveWorkspace}
-        closeSession={closeSession}
-        onEditFinalization={(target) => startFinalization(target, closeSession, getStatus)}
       />
     );
   }
@@ -2929,26 +2912,16 @@ function DocumentFilePreview({ document, src, onClose }: { document: DocumentAcc
 
 function OnlyOfficeDocumentWorkspace({
   session,
-  onClose,
-  closeSession,
-  onEditFinalization,
 }: {
   session: ActiveEditorSession;
-  onClose: () => void;
-  closeSession: () => Promise<EditorSessionState>;
-  onEditFinalization: (session: ActiveEditorSession) => void;
 }) {
   // React owns this stable host. DocsAPI owns every child inside it because
   // DocEditor replaces its placeholder with an iframe and restores it on close.
   const editorHost = useRef<HTMLDivElement>(null);
   const editorRef = useRef<ManagedOnlyOfficeEditor | undefined>(undefined);
   const initializationTimer = useRef<number | undefined>(undefined);
-  const closingRef = useRef(false);
-  const pendingEditorClose = useRef<PendingOnlyOfficeClose | undefined>(undefined);
   const [error, setError] = useState("");
   const [editorState, setEditorState] = useState<"loading" | "ready" | "error">("loading");
-  const [closing, setClosing] = useState(false);
-  const [closeDecisionPending, setCloseDecisionPending] = useState(false);
   const mountId = `onlyoffice-editor-${session.session.id}`;
   const documentTitle = (() => {
     const document = session.config.document;
@@ -2967,71 +2940,6 @@ function OnlyOfficeDocumentWorkspace({
       if (editorRef.current === owned) editorRef.current = undefined;
     }
   }, []);
-  const cleanEditorHost = useCallback(() => {
-    // The host has no React children; its contents belong entirely to DocsAPI.
-    editorHost.current?.replaceChildren();
-  }, []);
-  const requestEditorClose = useCallback(async () => {
-    const owned = editorRef.current;
-    if (!owned || owned.disposed) return;
-    if (!owned.editor.requestClose) {
-      // Older DocsAPI builds may not expose requestClose. The workspace close
-      // still disposes the editor and asks the server to finalize the session.
-      return;
-    }
-    setCloseDecisionPending(true);
-    await new Promise<void>((resolve, reject) => {
-      pendingEditorClose.current = { editor: owned, resolve, reject };
-      try {
-        // ONLYOFFICE performs its unsaved-change check and emits onRequestClose
-        // only after the editor has accepted the close request.
-        owned.editor.requestClose?.();
-      } catch (requestError) {
-        pendingEditorClose.current = undefined;
-        reject(requestError);
-      }
-    }).finally(() => setCloseDecisionPending(false));
-  }, []);
-  const cancelPendingEditorClose = useCallback(() => {
-    const pending = pendingEditorClose.current;
-    if (!pending) return;
-    pendingEditorClose.current = undefined;
-    pending.reject(new OnlyOfficeCloseCancelledError());
-  }, []);
-  const closeEditorSessionGracefully = useCallback(async (target: ActiveEditorSession) => {
-    const owned = editorRef.current;
-    if (target.session.mode === "EDIT") {
-      await requestEditorClose();
-      disposeEditor(owned);
-      cleanEditorHost();
-      onEditFinalization(target);
-      onClose();
-      return;
-    } else {
-      disposeEditor(owned);
-      cleanEditorHost();
-      await closeSession();
-      onClose();
-    }
-  }, [cleanEditorHost, closeSession, disposeEditor, onClose, onEditFinalization, requestEditorClose]);
-  const closeDialog = async () => {
-    if (closingRef.current) return;
-    const current = session;
-    closingRef.current = true;
-    setClosing(true);
-    setError("");
-    try {
-      await closeEditorSessionGracefully(current);
-    } catch (requestError) {
-      if (!(requestError instanceof OnlyOfficeCloseCancelledError)) {
-        setEditorState("error");
-        setError(displayError(requestError));
-      }
-    } finally {
-      closingRef.current = false;
-      setClosing(false);
-    }
-  };
   useEffect(() => {
     const host = editorHost.current;
     let script: HTMLScriptElement | undefined;
@@ -3076,17 +2984,6 @@ function OnlyOfficeDocumentWorkspace({
     const handleWarning = (...args: unknown[]) => {
       callConfiguredEvent("onWarning", args);
     };
-    const handleRequestClose = (...args: unknown[]) => {
-      const pending = pendingEditorClose.current;
-      try {
-        callConfiguredEvent("onRequestClose", args);
-      } finally {
-        if (pending && pending.editor === editor) {
-          pendingEditorClose.current = undefined;
-          pending.resolve();
-        }
-      }
-    };
     const start = () => {
       try {
         if (cancelled || !window.DocsAPI || !host) {
@@ -3114,7 +3011,6 @@ function OnlyOfficeDocumentWorkspace({
             onDocumentReady: handleDocumentReady,
             onError: handleError,
             onWarning: handleWarning,
-            onRequestClose: handleRequestClose,
           },
         };
         const createdEditor = new window.DocsAPI.DocEditor(placeholder.id, editorConfig);
@@ -3154,11 +3050,6 @@ function OnlyOfficeDocumentWorkspace({
     return () => {
       cancelled = true;
       clearInitializationTimer();
-      const pending = pendingEditorClose.current;
-      if (pending && pending.editor === editor) {
-        pendingEditorClose.current = undefined;
-        pending.reject(new Error("ONLYOFFICE editor was closed before the close handshake completed"));
-      }
       // Keep a successfully loaded DocsAPI script: DocsAPI remains global and
       // removing its defining element while reusing that global corrupts the
       // next editor initialization in some browsers. An unfinished load is
@@ -3172,11 +3063,11 @@ function OnlyOfficeDocumentWorkspace({
       }
       disposeEditor(editor, false);
       host?.replaceChildren();
-      // Session close belongs to the explicit close flow. Unmount only
-      // disposes local DocsAPI resources; backend EDIT finalization may still
-      // be waiting for ONLYOFFICE's final callback.
+      // Unmount only disposes local DocsAPI resources; backend EDIT
+      // finalization remains independent and may still be waiting for the
+      // final callback.
     };
-  }, [session, cleanEditorHost, disposeEditor, mountId]);
+  }, [session, disposeEditor, mountId]);
   return (
     <main className="document-workspace">
       <header className="document-workspace-header">
@@ -3186,31 +3077,18 @@ function OnlyOfficeDocumentWorkspace({
             {session.session.mode === "EDIT" ? t("editor.editing") : t("editor.viewing")}
           </span>
         </div>
-        <div className="editor-header-actions">
-          {closeDecisionPending && (
-            <button type="button" className="button" onClick={cancelPendingEditorClose}>
-              {t("common.cancel")}
-            </button>
-          )}
-          <button type="button" className="button" disabled={closing} onClick={() => void closeDialog()}>
-            {t("editor.close")}
-          </button>
-        </div>
       </header>
       <section className="document-canvas" aria-label={t("editor.ariaTitle", { title: documentTitle })}>
         <div className="editor-body" aria-busy={editorState === "loading"}>
           <div ref={editorHost} className="editor-host" />
           {editorState === "loading" && (
             <div className="editor-error" role="status">
-              {closing && session.session.mode === "EDIT"
-                ? t("editor.saving")
-                : t("editor.opening")}
+              {t("editor.opening")}
             </div>
           )}
           {editorState === "error" && (
             <div className="editor-error" role="alert">
               <span>{error || t("editor.failed")}</span>
-              <button type="button" className="button" onClick={() => void closeDialog()}>{t("common.close")}</button>
             </div>
           )}
         </div>
@@ -3344,7 +3222,7 @@ declare global {
       DocEditor: new (
         elementId: string,
         config: Record<string, unknown>,
-      ) => { destroyEditor?: () => void; requestClose?: () => void };
+      ) => { destroyEditor?: () => void };
     };
   }
 }

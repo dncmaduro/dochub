@@ -249,7 +249,6 @@ const en = {
     changesSaved: "Changes saved.",
     saveFailed: "Could not save changes.",
     stillSaving: "This file is still being saved. Please try again in a moment.",
-    close: "Close editor",
     failed: "The document editor could not be opened.",
     unavailable: "The document editor is unavailable.",
     title: "Document editor",
