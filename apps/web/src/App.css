@@ -1234,13 +1234,13 @@ summary:focus-visible {
 .document-workspace {
   display: flex;
   flex-direction: column;
-  width: 100%;
+  width: 100vw;
   height: 100vh;
   min-height: 0;
   overflow: hidden;
   background: #f1f3f4;
 }
-.document-workspace-header {
+.preview-workspace-header {
   display: flex;
   flex: none;
   align-items: center;
@@ -1250,25 +1250,9 @@ summary:focus-visible {
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface);
 }
-.document-brand {
-  flex: none;
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 600;
-  text-decoration: none;
-}
-.document-brand:hover {
-  color: var(--accent);
-}
-.document-title-group {
-  display: flex;
+.preview-title {
   min-width: 0;
   flex: 1;
-  align-items: center;
-  gap: 10px;
-}
-.document-title {
-  min-width: 0;
   overflow: hidden;
   color: var(--text);
   font-size: 14px;
@@ -1454,13 +1438,6 @@ summary:focus-visible {
 .editor-header-title > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.editor-header-mode {
-  flex: none;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 400;
   white-space: nowrap;
 }
 .editor-body {

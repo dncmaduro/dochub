@@ -26,7 +26,7 @@ const en = {
     members: "Members",
   },
   nav: {
-    files: "Files",
+    drive: "Drive",
     recent: "Recent",
     favorites: "Favorites",
     trash: "Trash",
@@ -244,8 +244,6 @@ const en = {
     sources: { UPLOAD: "Uploaded", EDITOR: "Edited", RESTORE: "Restored", SYSTEM: "System" },
   },
   editor: {
-    viewing: "Viewing",
-    editing: "Editing",
     opening: "Opening editor…",
     saving: "Saving changes…",
     savingChanges: "Saving changes...",
@@ -264,7 +262,6 @@ const en = {
     linkUnavailable: "This link is no longer available.",
     linkUnavailableMessage: "Check the link or ask the person who shared it for a new one.",
     signIn: "Sign in",
-    backToDrive: "Back to Docs Hub",
     latestChangesSaving: "Latest changes are still being saved.",
     tryAgainSoon: "Please try again in a moment.",
   },

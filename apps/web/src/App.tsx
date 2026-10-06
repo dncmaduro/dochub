@@ -847,7 +847,7 @@ function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile
           onClick={() => navigate(null)}
         >
           <Icon name="folder" />
-          <span>{t("nav.files")}</span>
+          <span>{t("nav.drive")}</span>
         </button>
         <button
           className={`nav-item${active === "recent" ? " is-active" : ""}`}
@@ -1274,7 +1274,7 @@ function Breadcrumbs({
   return (
     <nav className="breadcrumbs" aria-label={t("nav.breadcrumb")}>
       <button type="button" onClick={() => navigate(null)}>
-        {t("nav.files")}
+        {t("nav.drive")}
       </button>
       {items.map((item, index) => (
         <span key={item.id} className="crumb">
@@ -2315,7 +2315,7 @@ function searchLocationLabel(location: SearchLocation | null | undefined) {
   if (location === undefined) return t("search.loadingLocation");
   if (location === null) return t("search.locationUnavailable");
   const parents = location.items.slice(0, -1).map((item) => item.name);
-  if (!parents.length) return location.truncated ? t("search.sharedLocation") : t("nav.files");
+  if (!parents.length) return location.truncated ? t("search.sharedLocation") : t("nav.drive");
   return `${location.truncated ? "… / " : ""}${parents.join(" / ")}`;
 }
 
@@ -2871,12 +2871,10 @@ function DocumentAccessState({ kind, showSignIn, message }: {
   return (
     <main className="document-state-page">
       <section className="document-state-card">
-        <a className="document-brand" href="/drive">Docs Hub</a>
         <h1>{denied ? t("document.accessDeniedTitle") : t("document.linkUnavailable")}</h1>
         <p>{denied ? t("document.accessDeniedMessage") : t("document.linkUnavailableMessage")}</p>
         {message && <p className="document-state-detail">{message}</p>}
         {showSignIn && <a className="button button-primary" href={api.googleAuthUrl()}>{t("document.signIn")}</a>}
-        {!showSignIn && <a className="button" href="/drive">{t("document.backToDrive")}</a>}
       </section>
     </main>
   );
@@ -2965,7 +2963,6 @@ function DocumentWorkspace({ nodeId, authenticated }: {
     return (
       <main className="document-state-page">
         <section className="document-state-card">
-          <a className="document-brand" href="/drive">Docs Hub</a>
           <h1>{t("document.latestChangesSaving")}</h1>
           <p>{t("document.tryAgainSoon")}</p>
           <button type="button" className="button" onClick={() => setAttempt((value) => value + 1)}>{t("common.retry")}</button>
@@ -2976,7 +2973,6 @@ function DocumentWorkspace({ nodeId, authenticated }: {
     return (
       <main className="document-state-page">
         <section className="document-state-card">
-          <a className="document-brand" href="/drive">Docs Hub</a>
           <h1>{status === "unavailable" ? t("document.linkUnavailable") : t("editor.failed")}</h1>
           <p>{status === "unavailable" ? t("document.linkUnavailableMessage") : error}</p>
           <button type="button" className="button" onClick={() => setAttempt((value) => value + 1)}>{t("common.retry")}</button>
@@ -2984,7 +2980,7 @@ function DocumentWorkspace({ nodeId, authenticated }: {
       </main>
     );
   if (status === "loading")
-    return <main className="document-loading"><a className="document-brand" href="/drive">Docs Hub</a><span>{t("editor.opening")}</span></main>;
+    return <main className="document-loading"><span>{t("editor.opening")}</span></main>;
   if (session) {
     return (
       <OnlyOfficeDocumentWorkspace
@@ -3000,8 +2996,8 @@ function DocumentFilePreview({ document, src, onClose }: { document: DocumentAcc
   const type = document.node.mimeType ?? "";
   return (
     <main className="document-workspace">
-      <header className="document-workspace-header">
-        <strong className="document-title" title={document.node.name}>{document.node.name}</strong>
+      <header className="preview-workspace-header">
+        <strong className="preview-title" title={document.node.name}>{document.node.name}</strong>
         <button type="button" className="button" onClick={onClose}>{t("preview.close")}</button>
       </header>
       <section className="shared-preview-canvas">
@@ -3173,14 +3169,6 @@ function OnlyOfficeDocumentWorkspace({
   }, [session, disposeEditor, mountId]);
   return (
     <main className="document-workspace">
-      <header className="document-workspace-header">
-        <div className="document-title-group">
-          <strong className="document-title" title={documentTitle}>{documentTitle}</strong>
-          <span className="editor-header-mode">
-            {session.session.mode === "EDIT" ? t("editor.editing") : t("editor.viewing")}
-          </span>
-        </div>
-      </header>
       <section className="document-canvas" aria-label={t("editor.ariaTitle", { title: documentTitle })}>
         <div className="editor-body" aria-busy={editorState === "loading"}>
           <div ref={editorHost} className="editor-host" />
