@@ -141,7 +141,7 @@ withDb('SearchService integration', () => {
     await node('Bao public', NodeType.FOLDER, false).then((row) =>
       prisma.node.update({
         where: { id: row.id },
-        data: { publicAccess: true },
+        data: { generalAccessRole: 'VIEWER' },
       }),
     );
     const report = await search.search(actorId, { q: 'bao cao', limit: 2 });
@@ -621,7 +621,7 @@ withDb('SearchService integration', () => {
     );
     await prisma.node.update({
       where: { id: publicOnly.id },
-      data: { publicAccess: true },
+      data: { generalAccessRole: 'VIEWER' },
     });
     const visible = (term: string) =>
       search

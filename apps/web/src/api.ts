@@ -40,9 +40,24 @@ export interface PreviewSession { sessionId: string; nodeId: string; contentUrl:
 export type DocumentRole = "VIEWER" | "EDITOR" | "OWNER";
 export interface SharingState {
   nodeId: string;
-  publicAccess: boolean;
-  shareLink: { exists: boolean };
+  generalAccessRole: "RESTRICTED" | "VIEWER" | "EDITOR";
+  documentUrl: string;
   canManageSharing: boolean;
+}
+export interface DocumentAccess {
+  node: { id: string; type: "FILE" | "FOLDER"; name: string; mimeType: string | null };
+  access: {
+    mode: "AUTHENTICATED" | "PUBLIC";
+    generalAccessRole: "RESTRICTED" | "VIEWER" | "EDITOR";
+    editorMode: "VIEW" | "EDIT";
+    canPreview: boolean;
+    canDownload: boolean;
+  };
+}
+export interface EditorSessionState {
+  id: string;
+  state: "ACTIVE" | "FINALIZING" | "CLOSED" | "FAILED";
+  status: "ACTIVE" | "CLOSED" | "FAILED";
 }
 export interface PermissionEntry {
   id: string;
@@ -235,45 +250,46 @@ export class ApiClient {
       body: JSON.stringify({ name }),
     });
   }
-  async createEditorSession(nodeId: string, mode: "VIEW" | "EDIT" = "VIEW") {
+  async createEditorSession(nodeId: string, mode?: "VIEW" | "EDIT") {
     return this.request<EditorSession>(`/nodes/${nodeId}/editor-sessions`, {
       method: "POST",
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify(mode ? { mode } : {}),
     });
+  }
+  async documentAccess(nodeId: string) {
+    return this.request<DocumentAccess>(`/documents/${nodeId}`);
+  }
+  async createDocumentEditorSession(nodeId: string) {
+    return this.request<EditorSession>(`/documents/${nodeId}/editor-sessions`, { method: "POST" });
+  }
+  async closeDocumentEditorSession(nodeId: string, sessionId: string) {
+    return this.request<EditorSessionState>(`/documents/${nodeId}/editor-sessions/${sessionId}/close`, { method: "POST" });
+  }
+  async documentEditorSessionStatus(nodeId: string, sessionId: string) {
+    return this.request<EditorSessionState>(`/documents/${nodeId}/editor-sessions/${sessionId}/status`);
+  }
+  async loadDocumentContent(nodeId: string) {
+    return this.raw(`/documents/${nodeId}/content`).then((response) => response.blob());
   }
   async createPreviewSession(nodeId: string) {
     const result = await this.request<PreviewSession | { previewable: false }>(`/nodes/${nodeId}/preview-session`, { method: "POST" });
     return "previewable" in result ? null : { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` };
   }
   async closeEditorSession(sessionId: string) {
-    return this.request<{ status: "ACTIVE" | "CLOSED" | "FAILED" }>(`/editor-sessions/${sessionId}/close`, {
+    return this.request<EditorSessionState>(`/editor-sessions/${sessionId}/close`, {
       method: "POST",
     });
+  }
+  async editorSessionStatus(sessionId: string) {
+    return this.request<EditorSessionState>(`/editor-sessions/${sessionId}/status`);
   }
   async sharing(nodeId: string) {
     return this.request<SharingState>(`/nodes/${nodeId}/sharing`);
   }
-  async createShareLink(nodeId: string) {
-    return this.request<{
-      nodeId: string;
-      shareLink: { id: string; created: boolean; url: string | null };
-    }>(`/nodes/${nodeId}/share-link`, { method: "POST" });
-  }
-  async resetShareLink(nodeId: string) {
-    return this.request<{
-      nodeId: string;
-      shareLink: { id: string; created: boolean; url: string | null };
-    }>(`/nodes/${nodeId}/share-link/reset`, { method: "POST" });
-  }
-  async revokeShareLink(nodeId: string) {
-    await this.request<void>(`/nodes/${nodeId}/share-link`, {
-      method: "DELETE",
-    });
-  }
-  async setPublicAccess(nodeId: string, publicAccess: boolean) {
-    return this.request<{ nodeId: string; publicAccess: boolean }>(
+  async setGeneralAccessRole(nodeId: string, generalAccessRole: SharingState["generalAccessRole"]) {
+    return this.request<{ nodeId: string; generalAccessRole: SharingState["generalAccessRole"]; documentUrl: string }>(
       `/nodes/${nodeId}/sharing`,
-      { method: "PATCH", body: JSON.stringify({ publicAccess }) },
+      { method: "PATCH", body: JSON.stringify({ generalAccessRole }) },
     );
   }
   async permissions(nodeId: string) {

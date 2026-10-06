@@ -50,7 +50,7 @@ export async function createRetentionFixture() {
         normalizedName: nodeId,
         createdById: actorId,
         inheritPermissions: false,
-        publicAccess: false,
+        generalAccessRole: 'RESTRICTED',
       },
     });
     const file = await database.file.create({

@@ -7,9 +7,8 @@ describe('loadAuthConfig', () => {
       'AUTH_ACCESS_TOKEN_SECRET is required',
     );
 
-    expect(
-      loadAuthConfig({ AUTH_ACCESS_TOKEN_SECRET: 'test-secret' }),
-    ).toMatchObject({
+    const config = loadAuthConfig({ AUTH_ACCESS_TOKEN_SECRET: 'test-secret' });
+    expect(config).toMatchObject({
       accessTokenTtlSeconds: 900,
       refreshTokenTtlDays: 30,
       refreshCookieName: 'dochub_refresh',

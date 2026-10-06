@@ -95,7 +95,7 @@ describe('retention with PostgreSQL and isolated LocalFileStorage', () => {
     expect(doc.node).toMatchObject({
       parentId: null,
       inheritPermissions: false,
-      publicAccess: false,
+      generalAccessRole: 'RESTRICTED',
     });
     const originalDelete = fixture.storage.delete.bind(fixture.storage);
     const deletion = vi

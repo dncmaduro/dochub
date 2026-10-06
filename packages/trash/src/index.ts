@@ -159,16 +159,8 @@ export class TrashPurgeEngine {
           });
           await tx.editorSession.deleteMany({
             where: {
-              OR: [
-                ...(plan.fileIds.length > 0
-                  ? [{ fileId: { in: plan.fileIds } }]
-                  : []),
-                { shareLink: { nodeId: { in: plan.nodeIds } } },
-              ],
+              fileId: { in: plan.fileIds },
             },
-          });
-          await tx.shareLink.deleteMany({
-            where: { nodeId: { in: plan.nodeIds } },
           });
           await tx.permissionEntry.deleteMany({
             where: { nodeId: { in: plan.nodeIds } },

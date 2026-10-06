@@ -312,6 +312,7 @@ withDatabase('FilesService version history integration', () => {
         copiedKey = storageKey;
         await storage.putStream(storageKey, readable);
       },
+      promote: storage.promote.bind(storage),
       openReadStream: storage.openReadStream.bind(storage),
       stat: storage.stat.bind(storage),
       exists: storage.exists.bind(storage),

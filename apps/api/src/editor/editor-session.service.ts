@@ -1,9 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rename, rm } from 'node:fs/promises';
-import path from 'node:path';
-import { Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 import {
   ConflictException,
   ForbiddenException,
@@ -22,6 +18,7 @@ import {
   EditorActorType,
   EditorMode,
   EditorSessionStatus,
+  GeneralAccessRole,
   FileProcessingTaskType,
   FileVersionSource,
   NodeType,
@@ -68,6 +65,7 @@ class CallbackFailure extends Error {}
 export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EditorSessionService.name);
   private closeCleanupTimer: NodeJS.Timeout | undefined;
+  private readonly finalizationsInFlight = new Map<string, Promise<void>>();
 
   constructor(
     private readonly database: DatabaseService,
@@ -108,15 +106,66 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
   async create(
     actorUserId: string,
     nodeId: string,
-    mode: 'VIEW' | 'EDIT' = 'VIEW',
+    requestedMode?: 'VIEW' | 'EDIT',
   ) {
-    const config = this.requireConfig();
     await this.closeExpiredEditSessions();
-    const node = await this.database.prisma.node.findFirst({
+    const node = await this.workspaceNode(nodeId);
+    if (!node) throw new NotFoundException('Node not found');
+    const capabilities = await this.authorization.resolveCapabilities(
+      actorUserId,
+      node.id,
+    );
+    const effective = new Set(capabilities.capabilities);
+    for (const capability of this.generalAccessCapabilities(node.generalAccessRole))
+      effective.add(capability);
+    if (!effective.has(DocumentCapability.VIEW))
+      throw new NotFoundException('Node not found');
+    const canEdit = effective.has(DocumentCapability.EDIT);
+    const mode = requestedMode ?? (canEdit ? 'EDIT' : 'VIEW');
+    if ((mode === 'EDIT' && !canEdit) || !effective.has(DocumentCapability.PREVIEW))
+      throw new ForbiddenException(
+        'You do not have the required document capability',
+      );
+    const actor = await this.database.prisma.user.findFirst({
+      where: { id: actorUserId, status: UserStatus.ACTIVE },
+      select: { id: true, displayName: true },
+    });
+    if (!actor) throw new NotFoundException('Node not found');
+    return this.createResolvedSession(node, effective, {
+      actorType: EditorActorType.USER,
+      userId: actor.id,
+      userName: actor.displayName,
+      mode,
+    });
+  }
+
+  async createPublic(nodeId: string, requestedMode?: 'VIEW' | 'EDIT') {
+    await this.closeExpiredEditSessions();
+    const node = await this.workspaceNode(nodeId);
+    if (!node || node.type !== NodeType.FILE)
+      throw new NotFoundException('Document not found');
+    const capabilities = this.generalAccessCapabilities(node.generalAccessRole);
+    if (!capabilities.has(DocumentCapability.VIEW))
+      throw new ForbiddenException('You do not have access to this document');
+    const canEdit = capabilities.has(DocumentCapability.EDIT);
+    const mode = requestedMode ?? (canEdit ? 'EDIT' : 'VIEW');
+    if ((mode === 'EDIT' && !canEdit) || !capabilities.has(DocumentCapability.PREVIEW))
+      throw new ForbiddenException('You do not have the required document capability');
+    return this.createResolvedSession(node, capabilities, {
+      actorType: EditorActorType.PUBLIC,
+      userId: null,
+      userName: 'Link guest',
+      mode,
+    });
+  }
+
+  private async workspaceNode(nodeId: string) {
+    return this.database.prisma.node.findFirst({
       where: { id: nodeId, trashOperationId: null },
       select: {
         id: true,
         type: true,
+        generalAccessRole: true,
         file: {
           select: {
             id: true,
@@ -128,23 +177,20 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
-    if (!node) throw new NotFoundException('Node not found');
-    const capabilities = await this.authorization.resolveCapabilities(
-      actorUserId,
-      node.id,
-    );
-    if (!capabilities.capabilities.has(DocumentCapability.VIEW))
-      throw new NotFoundException('Node not found');
-    if (
-      mode === 'EDIT'
-        ? !capabilities.capabilities.has(DocumentCapability.EDIT)
-        : !capabilities.capabilities.has(DocumentCapability.PREVIEW)
-    )
-      throw new ForbiddenException(
-        'You do not have the required document capability',
-      );
-    if (node.type !== NodeType.FILE)
-      throw new ConflictException('Node is not a file');
+  }
+
+  private async createResolvedSession(
+    node: NonNullable<Awaited<ReturnType<EditorSessionService['workspaceNode']>>>,
+    capabilities: ReadonlySet<DocumentCapability>,
+    actor: {
+      actorType: EditorActorType;
+      userId: string | null;
+      userName: string;
+      mode: 'VIEW' | 'EDIT';
+    },
+  ) {
+    const config = this.requireConfig();
+    if (node.type !== NodeType.FILE) throw new ConflictException('Node is not a file');
     if (!node.file?.currentVersionId || !node.file.currentVersion)
       throw new ServiceUnavailableException('File is unavailable');
     const closingSession = await this.database.prisma.editorSession.findFirst({
@@ -160,35 +206,29 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     if (closingSession)
       throw new ConflictException('File is still being saved');
     const version = node.file.currentVersion;
-    const extension = fileExtension(
-      version.originalFilename,
-      version.extension,
-    );
+    const extension = fileExtension(version.originalFilename, version.extension);
     const documentType = officeDocumentType(extension);
     if (!documentType)
       throw new UnsupportedMediaTypeException(
         'ONLYOFFICE supports Office documents only',
       );
-    const actor = await this.database.prisma.user.findFirst({
-      where: { id: actorUserId, status: UserStatus.ACTIVE },
-      select: { id: true, displayName: true },
-    });
-    if (!actor) throw new NotFoundException('Node not found');
+    if (actor.mode === 'EDIT' && !capabilities.has(DocumentCapability.EDIT))
+      throw new ForbiddenException('You do not have permission to edit');
     const sessionId = randomUUID();
     const session = await this.database.prisma.editorSession.create({
       data: {
         id: sessionId,
         fileId: node.file.id,
         baseVersionId: version.id,
-        // VIEW sources are session-bound and revoked at close; EDIT remains
-        // version-scoped so existing concurrent-editor behavior is unchanged.
         documentKey: EditorSessionService.documentKey(
           version.id,
-          mode === 'VIEW' ? sessionId : undefined,
+          actor.mode === 'VIEW' || actor.actorType === EditorActorType.PUBLIC
+            ? sessionId
+            : undefined,
         ),
-        actorType: EditorActorType.USER,
-        userId: actor.id,
-        mode: mode === 'EDIT' ? EditorMode.EDIT : EditorMode.VIEW,
+        actorType: actor.actorType,
+        userId: actor.userId,
+        mode: actor.mode === 'EDIT' ? EditorMode.EDIT : EditorMode.VIEW,
         status: EditorSessionStatus.ACTIVE,
       },
       select: {
@@ -199,17 +239,16 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         documentKey: true,
       },
     });
-    const fetchToken = await this.signFetchToken(
-      session.id,
-      version.id,
-      config,
-    );
+    const fetchToken = await this.signFetchToken(session.id, version.id, config);
     const documentUrl = new URL(
       `editor-sessions/${session.id}/content`,
       config.internalApiUrl,
     );
     documentUrl.searchParams.set('token', fetchToken);
-    const editable = mode === 'EDIT';
+    const editable = actor.mode === 'EDIT';
+    const allowDownload =
+      actor.actorType === EditorActorType.USER &&
+      capabilities.has(DocumentCapability.DOWNLOAD);
     const unsignedConfig: Record<string, unknown> = {
       documentType,
       document: {
@@ -223,13 +262,16 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
           review: false,
           fillForms: false,
           modifyFilter: false,
-          download: capabilities.capabilities.has(DocumentCapability.DOWNLOAD),
-          print: capabilities.capabilities.has(DocumentCapability.DOWNLOAD),
+          download: allowDownload,
+          print: allowDownload,
         },
       },
       editorConfig: {
         mode: editable ? 'edit' : 'view',
-        user: { id: actor.id, name: actor.displayName },
+        user: {
+          id: actor.userId ?? `guest-${randomUUID()}`,
+          name: actor.userName,
+        },
       },
     };
     if (editable) {
@@ -248,9 +290,29 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       secret: config.jwtSecret,
       algorithm: 'HS256',
     });
-    void this.collections
-      ?.recordRecent(actorUserId, nodeId)
-      .catch(() => undefined);
+    await this.database.prisma.auditLog.create({
+      data: {
+        actorType:
+          actor.actorType === EditorActorType.PUBLIC
+            ? AuditActorType.PUBLIC
+            : AuditActorType.USER,
+        actorId: actor.userId,
+        action: actor.actorType === EditorActorType.PUBLIC
+          ? 'PUBLIC_EDITOR_SESSION_CREATED'
+          : 'EDITOR_SESSION_CREATED',
+        resourceType: 'NODE',
+        resourceId: node.id,
+        result: AuditResult.SUCCESS,
+        metadata: {
+          editorSessionId: session.id,
+          mode: actor.mode,
+        },
+      },
+    });
+    if (actor.userId)
+      void this.collections
+        ?.recordRecent(actor.userId, node.id)
+        .catch(() => undefined);
     return {
       session: {
         id: session.id,
@@ -269,47 +331,102 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
   }
 
   async close(actorUserId: string, sessionId: string) {
-    await this.closeExpiredEditSessions();
     const session = await this.database.prisma.editorSession.findFirst({
       where: {
         id: sessionId,
         userId: actorUserId,
         actorType: EditorActorType.USER,
       },
-      select: {
-        id: true,
-        status: true,
-        mode: true,
-        closedAt: true,
-        finalizedFileVersionId: true,
-      },
+      select: { id: true, status: true, mode: true, closedAt: true },
     });
     if (!session) throw new NotFoundException('Editor session not found');
-    if (session.status !== EditorSessionStatus.ACTIVE) return session;
-    if (session.mode === EditorMode.VIEW)
-      return this.database.prisma.editorSession.update({
-        where: { id: session.id },
-        data: { status: EditorSessionStatus.CLOSED, closedAt: new Date() },
-        select: { id: true, status: true, mode: true, closedAt: true },
-      });
-    if (session.finalizedFileVersionId) return session;
-    const closing = session.closedAt
-      ? session
-      : await this.database.prisma.editorSession.update({
-          where: { id: session.id },
-          // An ACTIVE EDIT session with closedAt set is server-side closing:
-          // its UI is gone, but its signed final callback remains eligible for
-          // the configured bounded grace period.
-          data: { closedAt: new Date() },
-          select: {
-            id: true,
-            status: true,
-            mode: true,
-            closedAt: true,
-            finalizedFileVersionId: true,
-          },
+    return this.acceptClose(session);
+  }
+
+  async closePublic(nodeId: string, sessionId: string) {
+    const session = await this.database.prisma.editorSession.findFirst({
+      where: {
+        id: sessionId,
+        actorType: EditorActorType.PUBLIC,
+        file: { nodeId },
+      },
+      select: { id: true, status: true, mode: true, closedAt: true },
+    });
+    if (!session) throw new NotFoundException('Editor session not found');
+    return this.acceptClose(session);
+  }
+
+  async status(actorUserId: string, sessionId: string) {
+    const session = await this.database.prisma.editorSession.findFirst({
+      where: { id: sessionId, userId: actorUserId, actorType: EditorActorType.USER },
+      select: { id: true, status: true, mode: true, closedAt: true },
+    });
+    if (!session) throw new NotFoundException('Editor session not found');
+    return this.safeSessionState(session);
+  }
+
+  async statusPublic(nodeId: string, sessionId: string) {
+    const session = await this.database.prisma.editorSession.findFirst({
+      where: {
+        id: sessionId,
+        actorType: EditorActorType.PUBLIC,
+        file: { nodeId },
+      },
+      select: { id: true, status: true, mode: true, closedAt: true },
+    });
+    if (!session) throw new NotFoundException('Editor session not found');
+    return this.safeSessionState(session);
+  }
+
+  private async acceptClose(session: {
+    id: string;
+    status: EditorSessionStatus;
+    mode: EditorMode;
+    closedAt: Date | null;
+  }) {
+    if (session.status === EditorSessionStatus.ACTIVE) {
+      if (session.mode === EditorMode.VIEW) {
+        await this.database.prisma.editorSession.updateMany({
+          where: { id: session.id, status: EditorSessionStatus.ACTIVE },
+          data: { status: EditorSessionStatus.CLOSED, closedAt: new Date() },
         });
-    return this.waitForEditClose(closing.id, closing.closedAt!);
+      } else if (!session.closedAt) {
+        // Persist close acceptance before responding. The ONLYOFFICE callback
+        // then owns finalization even if this browser tab disappears.
+        await this.database.prisma.editorSession.updateMany({
+          where: {
+            id: session.id,
+            status: EditorSessionStatus.ACTIVE,
+            closedAt: null,
+            finalizedFileVersionId: null,
+          },
+          data: { closedAt: new Date() },
+        });
+      }
+    }
+    const current = await this.database.prisma.editorSession.findUnique({
+      where: { id: session.id },
+      select: { id: true, status: true, mode: true, closedAt: true },
+    });
+    if (!current) throw new NotFoundException('Editor session not found');
+    return this.safeSessionState(current);
+  }
+
+  private safeSessionState(session: {
+    id: string;
+    status: EditorSessionStatus;
+    mode: EditorMode;
+    closedAt: Date | null;
+  }) {
+    const state =
+      session.status === EditorSessionStatus.FAILED
+        ? 'FAILED'
+        : session.status === EditorSessionStatus.CLOSED
+          ? 'CLOSED'
+          : session.closedAt && session.mode === EditorMode.EDIT
+            ? 'FINALIZING'
+            : 'ACTIVE';
+    return { id: session.id, state, status: session.status };
   }
 
   /** Marks expired explicit closes failed and closes abandoned EDIT sessions. */
@@ -343,36 +460,34 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       },
       data: { status: EditorSessionStatus.CLOSED },
     });
-    return { count: failedClose.count + abandoned.count };
-  }
-
-  private async waitForEditClose(sessionId: string, closedAt: Date) {
-    const config = this.requireConfig();
-    const deadline = new Date(
-      closedAt.getTime() + config.editCloseGraceSeconds * 1_000,
+    const expiredArtifacts = await this.database.prisma.editorSession.findMany({
+      where: {
+        mode: EditorMode.EDIT,
+        status: { in: [EditorSessionStatus.FAILED, EditorSessionStatus.CLOSED] },
+        finalizedFileVersionId: null,
+        stagedArtifactId: { not: null },
+        OR: [
+          { closedAt: { not: null, lte: closeExpiry } },
+          { closedAt: null, createdAt: { lte: abandonedExpiry } },
+        ],
+      },
+      select: { id: true, stagedArtifactId: true },
+    });
+    await Promise.all(
+      expiredArtifacts.map(async (artifact) => {
+        if (!artifact.stagedArtifactId) return;
+        try {
+          await this.objectStorage.delete(
+            this.stagedKey(artifact.id, artifact.stagedArtifactId),
+          );
+        } catch {
+          this.logger.warn(
+            `Unable to remove failed editor staging artifact for session ${artifact.id}`,
+          );
+        }
+      }),
     );
-    for (;;) {
-      const session = await this.database.prisma.editorSession.findUnique({
-        where: { id: sessionId },
-        select: {
-          id: true,
-          status: true,
-          mode: true,
-          closedAt: true,
-          finalizedFileVersionId: true,
-        },
-      });
-      if (!session || session.status !== EditorSessionStatus.ACTIVE)
-        return session;
-      if (new Date() >= deadline) {
-        await this.closeExpiredEditSessions(new Date());
-        continue;
-      }
-      // This is a bounded server-side completion contract, not browser-side
-      // timing: the response completes only when finalization wins or the
-      // configured callback eligibility window has definitively expired.
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
-    }
+    return { count: failedClose.count + abandoned.count };
   }
 
   private isCallbackEligible(session: {
@@ -387,6 +502,39 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         this.requireConfig().editCloseGraceSeconds * 1_000 >
       Date.now()
     );
+  }
+
+  private generalAccessCapabilities(role: GeneralAccessRole) {
+    const capabilities = new Set<DocumentCapability>();
+    if (role !== GeneralAccessRole.RESTRICTED) {
+      capabilities.add(DocumentCapability.VIEW);
+      capabilities.add(DocumentCapability.PREVIEW);
+    }
+    if (role === GeneralAccessRole.EDITOR)
+      capabilities.add(DocumentCapability.EDIT);
+    return capabilities;
+  }
+
+  private async sessionCapabilities(
+    actorType: EditorActorType,
+    userId: string | null,
+    nodeId: string,
+    generalAccessRole: GeneralAccessRole,
+    transaction?: Prisma.TransactionClient,
+  ): Promise<ReadonlySet<DocumentCapability> | null> {
+    if (actorType === EditorActorType.PUBLIC) {
+      if (userId || generalAccessRole === GeneralAccessRole.RESTRICTED)
+        return null;
+      return this.generalAccessCapabilities(generalAccessRole);
+    }
+    if (!userId) return null;
+    const resolved = transaction
+      ? await this.authorization.resolveCapabilities(userId, nodeId, transaction)
+      : await this.authorization.resolveCapabilities(userId, nodeId);
+    const capabilities = new Set(resolved.capabilities);
+    for (const capability of this.generalAccessCapabilities(generalAccessRole))
+      capabilities.add(capability);
+    return capabilities;
   }
 
   async authorizeFetch(requestedSessionId: string, token: string) {
@@ -412,13 +560,13 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       where: {
         id: cap.sessionId,
         baseVersionId: cap.fileVersionId,
-        actorType: EditorActorType.USER,
         status: EditorSessionStatus.ACTIVE,
       },
       select: {
         id: true,
         fileId: true,
         baseVersionId: true,
+        actorType: true,
         userId: true,
         mode: true,
         status: true,
@@ -426,7 +574,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         file: {
           select: {
             nodeId: true,
-            node: { select: { trashOperationId: true } },
+            node: {
+              select: { trashOperationId: true, generalAccessRole: true },
+            },
           },
         },
         baseVersion: { select: { id: true, fileId: true } },
@@ -435,23 +585,27 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     });
     if (
       !session ||
-      !session.userId ||
-      !session.user ||
-      session.user.status !== UserStatus.ACTIVE ||
       !this.isCallbackEligible(session) ||
       session.baseVersion.fileId !== session.fileId ||
       session.file.node.trashOperationId !== null
     )
       throw new NotFoundException('Editor resource not found');
-    const caps = await this.authorization.resolveCapabilities(
+    if (
+      session.actorType === EditorActorType.USER &&
+      (!session.userId || !session.user || session.user.status !== UserStatus.ACTIVE)
+    )
+      throw new NotFoundException('Editor resource not found');
+    const capabilities = await this.sessionCapabilities(
+      session.actorType,
       session.userId,
       session.file.nodeId,
+      session.file.node.generalAccessRole,
     );
     if (
-      !caps.capabilities.has(DocumentCapability.VIEW) ||
+      !capabilities?.has(DocumentCapability.VIEW) ||
       !(session.mode === EditorMode.EDIT
-        ? caps.capabilities.has(DocumentCapability.EDIT)
-        : caps.capabilities.has(DocumentCapability.PREVIEW))
+        ? capabilities.has(DocumentCapability.EDIT)
+        : capabilities.has(DocumentCapability.PREVIEW))
     )
       throw new NotFoundException('Editor resource not found');
     return { nodeId: session.file.nodeId, versionId: session.baseVersionId };
@@ -503,6 +657,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         sessionId,
         cap.baseVersionId,
         signed.key,
+        payload.status === 4,
       );
       // A retried save is acknowledged only after its durable result can be
       // identified. This also permits a CLOSED finalized session to absorb
@@ -512,28 +667,27 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         return { error: 0 };
       }
       if (payload.status === 4) {
-        // A status 4 is a no-change close notification. Keep an EDIT session
-        // open when it was not explicitly closed yet, so a transient
-        // disconnect or a retried save remains eligible. Once the UI close
-        // request has set closedAt, status 4 is the authoritative final
-        // outcome and no version should be created.
-        if (session.closedAt) {
+        // ONLYOFFICE status 4 means the editor closed without changed content.
+        // It is terminal and never creates a FileVersion. If a previous
+        // status-2 callback already durably staged bytes, keep the session
+        // eligible so that callback's retry can finish its save.
+        if (!session.stagedArtifactId) {
           await this.database.prisma.editorSession.updateMany({
             where: {
               id: session.id,
               status: EditorSessionStatus.ACTIVE,
               finalizedFileVersionId: null,
             },
-            data: {
-              status: EditorSessionStatus.CLOSED,
-              closedAt: session.closedAt,
-            },
+            data: { status: EditorSessionStatus.CLOSED, closedAt: new Date() },
           });
         }
         return { error: 0 };
       }
       if (payload.status === 3 || payload.status === 7) return { error: 1 };
-      if (payload.status !== 2 && payload.status !== 6) return { error: 0 };
+      // Forcesave callbacks are recovery checkpoints, never immutable version
+      // events. This implementation deliberately does not stage them.
+      if (payload.status === 6) return { error: 0 };
+      if (payload.status !== 2) return { error: 0 };
       if (!session.stagedArtifactId) {
         if (!payload.url) throw new CallbackFailure();
         await this.stageEditedDocument(session, payload.url);
@@ -569,18 +723,19 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     sessionId: string,
     baseVersionId: string,
     key?: string,
+    allowNoChangeClosed = false,
   ) {
     const session = await this.database.prisma.editorSession.findFirst({
       where: {
         id: sessionId,
         baseVersionId,
         mode: EditorMode.EDIT,
-        actorType: EditorActorType.USER,
       },
       select: {
         id: true,
         baseVersionId: true,
         documentKey: true,
+        actorType: true,
         mode: true,
         stagedArtifactId: true,
         finalizedFileVersionId: true,
@@ -591,7 +746,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
           select: {
             currentVersionId: true,
             nodeId: true,
-            node: { select: { trashOperationId: true } },
+            node: {
+              select: { trashOperationId: true, generalAccessRole: true },
+            },
           },
         },
         user: { select: { status: true } },
@@ -600,22 +757,28 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     if (!session || (key !== undefined && key !== session.documentKey))
       throw new CallbackFailure();
     if (session.finalizedFileVersionId) return session;
+    if (allowNoChangeClosed && session.status === EditorSessionStatus.CLOSED)
+      return session;
     if (
       !this.isCallbackEligible(session) ||
-      !session.userId ||
-      !session.user ||
-      session.user.status !== UserStatus.ACTIVE ||
       session.file.node.trashOperationId !== null ||
       session.file.currentVersionId !== session.baseVersionId
     )
       throw new CallbackFailure();
-    const caps = await this.authorization.resolveCapabilities(
+    if (
+      session.actorType === EditorActorType.USER &&
+      (!session.userId || !session.user || session.user.status !== UserStatus.ACTIVE)
+    )
+      throw new CallbackFailure();
+    const capabilities = await this.sessionCapabilities(
+      session.actorType,
       session.userId,
       session.file.nodeId,
+      session.file.node.generalAccessRole,
     );
     if (
-      !caps.capabilities.has(DocumentCapability.VIEW) ||
-      !caps.capabilities.has(DocumentCapability.EDIT)
+      !capabilities?.has(DocumentCapability.VIEW) ||
+      !capabilities.has(DocumentCapability.EDIT)
     )
       throw new CallbackFailure();
     return session;
@@ -639,51 +802,35 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     )
       throw new CallbackFailure();
     const artifactId = randomUUID();
-    const directory = path.join(
-      this.storage.uploadTempRoot,
-      'editor',
-      session.id,
-    );
-    const finalPath = path.join(directory, artifactId);
-    const partialPath = `${finalPath}.partial`;
-    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const stagedKey = this.stagedKey(session.id, artifactId);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60_000);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 60_000);
-      let response: Response;
-      try {
-        response = await fetch(source, {
-          redirect: 'error',
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
+      const response = await fetch(source, {
+        redirect: 'error',
+        signal: controller.signal,
+      });
       if (!response.ok || !response.body) throw new CallbackFailure();
       const hash = createHash('sha256');
       let size = 0n;
-      const counter = new Transform({
-        transform: (chunk: Buffer, _encoding, done) => {
-          size += BigInt(chunk.length);
-          if (size > BigInt(this.storage.uploadMaxBytes))
-            return done(new CallbackFailure());
-          hash.update(chunk);
-          done(null, chunk);
-        },
-      });
-      await pipeline(
-        response.body as unknown as NodeJS.ReadableStream,
-        counter,
-        createWriteStream(partialPath, {
-          flags: 'wx',
-          mode: 0o600,
-          flush: true,
-        }),
-      );
-      await rename(partialPath, finalPath);
+      const maximumBytes = BigInt(this.storage.uploadMaxBytes);
+      async function* checkedBytes() {
+        for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += BigInt(bytes.length);
+          if (size > maximumBytes) throw new CallbackFailure();
+          hash.update(bytes);
+          yield bytes;
+        }
+      }
+      // Stream the ONLYOFFICE response directly into an immutable staged
+      // storage object. Its writer flushes a sibling temp file and atomically
+      // publishes the completed stage, so finalization needs no second copy.
+      await this.objectStorage.putStream(stagedKey, Readable.from(checkedBytes()));
       const staged = await this.database.prisma.editorSession.updateMany({
         where: {
           id: session.id,
+          status: EditorSessionStatus.ACTIVE,
           stagedArtifactId: null,
           finalizedFileVersionId: null,
         },
@@ -696,15 +843,30 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       });
       // Another callback won the staging race. Its artifact is authoritative;
       // never replace it with a second download of the same logical save.
-      if (staged.count !== 1) await rm(finalPath, { force: true });
+      if (staged.count !== 1) await this.objectStorage.delete(stagedKey);
     } catch (error) {
-      await rm(partialPath, { force: true }).catch(() => undefined);
-      await rm(finalPath, { force: true }).catch(() => undefined);
+      await this.objectStorage.delete(stagedKey).catch(() => undefined);
       throw error instanceof CallbackFailure ? error : new CallbackFailure();
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   private async finalizeStagedDocument(sessionId: string): Promise<void> {
+    let finalization = this.finalizationsInFlight.get(sessionId);
+    if (!finalization) {
+      finalization = this.finalizeStagedDocumentOnce(sessionId);
+      this.finalizationsInFlight.set(sessionId, finalization);
+    }
+    try {
+      await finalization;
+    } finally {
+      if (this.finalizationsInFlight.get(sessionId) === finalization)
+        this.finalizationsInFlight.delete(sessionId);
+    }
+  }
+
+  private async finalizeStagedDocumentOnce(sessionId: string): Promise<void> {
     const staged = await this.database.prisma.editorSession.findUnique({
       where: { id: sessionId },
       select: {
@@ -724,12 +886,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     )
       throw new CallbackFailure();
 
-    const stagedPath = this.stagedPath(sessionId, staged.stagedArtifactId);
-    await this.assertStagedArtifact(
-      stagedPath,
-      staged.stagedSizeBytes,
-      staged.stagedSha256,
-    );
+    const stagedKey = this.stagedKey(sessionId, staged.stagedArtifactId);
 
     // Storage precedes the database transaction: a committed FileVersion can
     // therefore never point at an absent immutable object. On transaction
@@ -744,10 +901,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       if (!identity) throw new CallbackFailure();
       if (identity.finalizedFileVersionId) return;
       storageKey = `files/${identity.fileId}/versions/${versionId}`;
-      await this.objectStorage.putStream(
-        storageKey,
-        createReadStream(stagedPath),
-      );
+      if ((await this.objectStorage.stat(stagedKey)).sizeBytes !== staged.stagedSizeBytes)
+        throw new CallbackFailure();
+      await this.objectStorage.promote(stagedKey, storageKey);
 
       const finalized = await this.database.prisma.$transaction((transaction) =>
         this.commitEditorVersion(
@@ -758,7 +914,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         ),
       );
       if (finalized.created) {
-        await rm(stagedPath, { force: true }).catch(() => {
+        await this.objectStorage.delete(stagedKey).catch(() => {
           this.logger.warn(
             `Unable to remove finalized editor staging artifact for session ${sessionId}`,
           );
@@ -774,6 +930,13 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
           );
         });
       }
+      // A concurrent callback may have committed and removed the staging
+      // object before this invocation reached promotion.
+      const winner = await this.database.prisma.editorSession.findUnique({
+        where: { id: sessionId },
+        select: { finalizedFileVersionId: true },
+      }).catch(() => null);
+      if (winner?.finalizedFileVersionId) return;
       throw error instanceof CallbackFailure ? error : new CallbackFailure();
     }
   }
@@ -794,6 +957,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         id: true,
         fileId: true,
         baseVersionId: true,
+        actorType: true,
         userId: true,
         mode: true,
         status: true,
@@ -805,7 +969,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         file: {
           select: {
             nodeId: true,
-            node: { select: { trashOperationId: true } },
+            node: {
+              select: { trashOperationId: true, generalAccessRole: true },
+            },
           },
         },
         baseVersion: {
@@ -819,22 +985,27 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     if (
       session.mode !== EditorMode.EDIT ||
       !this.isCallbackEligible(session) ||
-      !session.userId ||
-      session.user?.status !== UserStatus.ACTIVE ||
       !session.stagedArtifactId ||
       !session.stagedSha256 ||
       session.stagedSizeBytes === null ||
       session.file.node.trashOperationId !== null
     )
       throw new CallbackFailure();
-    const caps = await this.authorization.resolveCapabilities(
+    if (
+      session.actorType === EditorActorType.USER &&
+      (!session.userId || session.user?.status !== UserStatus.ACTIVE)
+    )
+      throw new CallbackFailure();
+    const capabilities = await this.sessionCapabilities(
+      session.actorType,
       session.userId,
       session.file.nodeId,
+      session.file.node.generalAccessRole,
       transaction,
     );
     if (
-      !caps.capabilities.has(DocumentCapability.VIEW) ||
-      !caps.capabilities.has(DocumentCapability.EDIT)
+      !capabilities?.has(DocumentCapability.VIEW) ||
+      !capabilities.has(DocumentCapability.EDIT)
     )
       throw new CallbackFailure();
     const lockedFiles = await transaction.$queryRaw<
@@ -880,7 +1051,10 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     }
     await transaction.auditLog.create({
       data: {
-        actorType: AuditActorType.USER,
+        actorType:
+          session.actorType === EditorActorType.PUBLIC
+            ? AuditActorType.PUBLIC
+            : AuditActorType.USER,
         actorId: session.userId,
         action: 'FILE_VERSION_CREATED',
         resourceType: 'FILE_VERSION',
@@ -892,6 +1066,8 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
           versionNumber,
           source: 'EDITOR',
           sourceVersionId: session.baseVersionId,
+          editorSessionId: session.id,
+          editorActorType: session.actorType,
           mimeType: session.baseVersion.mimeType,
           sizeBytes: session.stagedSizeBytes.toString(),
         },
@@ -909,41 +1085,14 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     return { created: true };
   }
 
-  private stagedPath(sessionId: string, artifactId: string): string {
+  private stagedKey(sessionId: string, artifactId: string): string {
     if (
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
         artifactId,
       )
     )
       throw new CallbackFailure();
-    return path.join(
-      this.storage.uploadTempRoot,
-      'editor',
-      sessionId,
-      artifactId,
-    );
-  }
-
-  private async assertStagedArtifact(
-    pathname: string,
-    expectedSize: bigint,
-    expectedSha256: string,
-  ): Promise<void> {
-    const hash = createHash('sha256');
-    let size = 0n;
-    try {
-      for await (const chunk of createReadStream(pathname)) {
-        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        size += BigInt(bytes.length);
-        if (size > BigInt(this.storage.uploadMaxBytes))
-          throw new CallbackFailure();
-        hash.update(bytes);
-      }
-    } catch (error) {
-      throw error instanceof CallbackFailure ? error : new CallbackFailure();
-    }
-    if (size !== expectedSize || hash.digest('hex') !== expectedSha256)
-      throw new CallbackFailure();
+    return `tmp/editor/${sessionId}/${artifactId}`;
   }
 
   private signFetchToken(

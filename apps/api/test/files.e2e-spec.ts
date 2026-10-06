@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -14,6 +14,7 @@ import { Test } from '@nestjs/testing';
 import {
   DocumentRole,
   FileProcessingTaskType,
+  GeneralAccessRole,
   NodeType,
   prisma,
   SystemRole,
@@ -133,7 +134,6 @@ describe('streaming file uploads (e2e)', () => {
     await prisma.permissionEntry.deleteMany({
       where: { nodeId: { in: nodes } },
     });
-    await prisma.shareLink.deleteMany({ where: { nodeId: { in: nodes } } });
     await prisma.node.updateMany({
       where: { id: { in: nodes } },
       data: { trashOperationId: null },
@@ -261,7 +261,6 @@ describe('streaming file uploads (e2e)', () => {
         'score',
         'tier',
         'storageKey',
-        'tokenHash',
       ])
         expect(item).not.toHaveProperty(key);
     await request(app.getHttpServer())
@@ -346,7 +345,7 @@ describe('streaming file uploads (e2e)', () => {
     expect(JSON.stringify(response.body)).not.toContain(versionId);
   });
 
-  it('serves an active public ShareLink inline with ranges but forbids anonymous download', async () => {
+  it('serves the canonical document URL according to mutable General Access policy', async () => {
     const bytes = Buffer.from('%PDF-1.7\n0123456789');
     const uploaded = await request(app.getHttpServer())
       .post('/files')
@@ -354,30 +353,31 @@ describe('streaming file uploads (e2e)', () => {
       .attach('file', bytes, 'shared.pdf')
       .expect(201);
     nodes.push(uploaded.body.node.id);
-    const token =
-      randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
     await prisma.node.update({
       where: { id: uploaded.body.node.id },
-      data: { publicAccess: true },
-    });
-    await prisma.shareLink.create({
-      data: {
-        nodeId: uploaded.body.node.id,
-        createdById: actorId,
-        tokenHash: createHash('sha256').update(token).digest('hex'),
-      },
+      data: { generalAccessRole: GeneralAccessRole.VIEWER },
     });
 
     const resolved = await request(app.getHttpServer())
-      .get(`/share/${token}`)
+      .get(`/documents/${uploaded.body.node.id}`)
       .expect(200);
     expect(resolved.body).toEqual({
-      node: { id: uploaded.body.node.id, type: 'FILE', name: 'shared.pdf' },
-      access: { mode: 'PUBLIC', canPreview: true, canDownload: false },
+      node: {
+        id: uploaded.body.node.id,
+        type: 'FILE',
+        name: 'shared.pdf',
+        mimeType: 'application/pdf',
+      },
+      access: {
+        mode: 'PUBLIC',
+        generalAccessRole: 'VIEWER',
+        editorMode: 'VIEW',
+        canPreview: true,
+        canDownload: false,
+      },
     });
-    expect(resolved.body).not.toHaveProperty('tokenHash');
     const content = await request(app.getHttpServer())
-      .get(`/share/${token}/content`)
+      .get(`/documents/${uploaded.body.node.id}/content`)
       .buffer(true)
       .parse((response, callback) => {
         const chunks: Buffer[] = [];
@@ -395,7 +395,7 @@ describe('streaming file uploads (e2e)', () => {
     });
     expect(content.headers['content-disposition']).toContain('inline');
     const range = await request(app.getHttpServer())
-      .get(`/share/${token}/content`)
+      .get(`/documents/${uploaded.body.node.id}/content`)
       .set('Range', 'bytes=11-14')
       .buffer(true)
       .parse((response, callback) => {
@@ -407,8 +407,15 @@ describe('streaming file uploads (e2e)', () => {
     expect(range.body).toEqual(Buffer.from('2345'));
     expect(range.headers['content-range']).toBe('bytes 11-14/19');
     await request(app.getHttpServer())
-      .get(`/share/${token}/download`)
-      .expect(403);
+      .get(`/documents/${uploaded.body.node.id}/download`)
+      .expect(404);
+    await prisma.node.update({
+      where: { id: uploaded.body.node.id },
+      data: { generalAccessRole: GeneralAccessRole.RESTRICTED },
+    });
+    await request(app.getHttpServer())
+      .get(`/documents/${uploaded.body.node.id}`)
+      .expect(401);
   });
 
   it('restores a trashed file through the lifecycle route without changing its binary or version metadata', async () => {
@@ -844,7 +851,7 @@ describe('streaming file uploads (e2e)', () => {
   it('hides invisible/public files, hides trashed files, and rejects visible folders', async () => {
     const makeNode = async (options: {
       parentId?: string | null;
-      publicAccess?: boolean;
+      generalAccessRole?: 'RESTRICTED' | 'VIEWER' | 'EDITOR';
       trashed?: boolean;
       type?: NodeType;
     }) => {
@@ -864,7 +871,7 @@ describe('streaming file uploads (e2e)', () => {
           type: options.type ?? NodeType.FILE,
           name: `visibility-${id}`,
           normalizedName: `visibility-${id}`,
-          publicAccess: options.publicAccess,
+          generalAccessRole: options.generalAccessRole,
           trashOperationId,
           createdById: actorId,
         },
@@ -872,7 +879,7 @@ describe('streaming file uploads (e2e)', () => {
       return { id, trashOperationId };
     };
     const invisible = await makeNode({ parentId: null });
-    const publicOnly = await makeNode({ parentId: null, publicAccess: true });
+    const publicOnly = await makeNode({ parentId: null, generalAccessRole: 'VIEWER' });
     for (const { id } of [invisible, publicOnly]) {
       await request(app.getHttpServer())
         .get(`/nodes/${id}/content`)

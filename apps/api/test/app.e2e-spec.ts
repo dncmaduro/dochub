@@ -52,6 +52,43 @@ describe('API authentication routes (e2e)', () => {
     return request(app.getHttpServer()).get('/nodes/root').expect(401);
   });
 
+  it('a document URL identifier does not authenticate the private node APIs', async () => {
+    const nodeId = '00000000-0000-4000-8000-000000000000';
+    const bearer = `Bearer ${'A'.repeat(43)}`;
+    await request(app.getHttpServer())
+      .get('/nodes/root')
+      .set('Authorization', bearer)
+      .expect(401);
+    await request(app.getHttpServer())
+      .get(`/nodes/${nodeId}`)
+      .set('Authorization', bearer)
+      .expect(401);
+    await request(app.getHttpServer())
+      .patch(`/nodes/${nodeId}`)
+      .set('Authorization', bearer)
+      .send({ name: 'renamed' })
+      .expect(401);
+    await request(app.getHttpServer())
+      .post(`/nodes/${nodeId}/move`)
+      .set('Authorization', bearer)
+      .send({ parentId: null })
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`/nodes/${nodeId}`)
+      .set('Authorization', bearer)
+      .expect(401);
+    await request(app.getHttpServer())
+      .get(`/nodes/${nodeId}/permissions`)
+      .set('Authorization', bearer)
+      .expect(401);
+    await request(app.getHttpServer())
+      .patch(`/nodes/${nodeId}/sharing`)
+      .set('Authorization', bearer)
+      .send({ generalAccessRole: 'RESTRICTED' })
+      .expect(401);
+    await request(app.getHttpServer()).get(`/share/${'A'.repeat(43)}`).expect(404);
+  });
+
   it('/trash/:operationId (DELETE) rejects unauthenticated requests', () => {
     return request(app.getHttpServer())
       .delete('/trash/00000000-0000-4000-8000-000000000000')
@@ -71,16 +108,10 @@ describe('API authentication routes (e2e)', () => {
       .expect(401);
     await request(app.getHttpServer())
       .post(`/nodes/${nodeId}/share-link`)
-      .expect(401);
-    await request(app.getHttpServer())
-      .post(`/nodes/${nodeId}/share-link/reset`)
-      .expect(401);
-    await request(app.getHttpServer())
-      .delete(`/nodes/${nodeId}/share-link`)
-      .expect(401);
+      .expect(404);
     await request(app.getHttpServer())
       .patch(`/nodes/${nodeId}/sharing`)
-      .send({ publicAccess: true })
+      .send({ generalAccessRole: 'VIEWER' })
       .expect(401);
   });
 

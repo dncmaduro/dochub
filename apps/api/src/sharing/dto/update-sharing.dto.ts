@@ -1,4 +1,5 @@
-import { IsBoolean, IsUUID } from 'class-validator';
+import { IsEnum, IsUUID } from 'class-validator';
+import { GeneralAccessRole } from '@dochub/database';
 
 export class SharingNodeParamDto {
   @IsUUID()
@@ -6,6 +7,6 @@ export class SharingNodeParamDto {
 }
 
 export class UpdateSharingDto {
-  @IsBoolean()
-  publicAccess!: boolean;
+  @IsEnum(GeneralAccessRole)
+  generalAccessRole!: GeneralAccessRole;
 }

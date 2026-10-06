@@ -23,12 +23,14 @@ import {
   type CollectionItem,
   type CurrentUser,
   type DocumentRole,
+  type EditorSessionState,
   type EditorSession,
   type FileVersion,
   type Node,
   type PermissionEntry,
   type PreviewSession,
   type PermissionsState,
+  type DocumentAccess,
   type SearchItem,
   type SharingPrincipal,
   type SharingState,
@@ -55,7 +57,11 @@ type PendingEditorSave = { nodeId: string; sessionId: string; status: "pending" 
 type EditorSaveContextValue = {
   saves: PendingEditorSave[];
   isFilePending: (nodeId: string) => boolean;
-  startFinalization: (session: ActiveEditorSession) => void;
+  startFinalization: (
+    session: ActiveEditorSession,
+    closeSession: () => Promise<EditorSessionState>,
+    getStatus: () => Promise<EditorSessionState>,
+  ) => void;
   notice: Notice;
   dismissNotice: () => void;
 };
@@ -90,6 +96,8 @@ function currentFolderId() {
   );
 }
 function currentRoute() {
+  if (/^\/document\/[0-9a-f-]+$/i.test(window.location.pathname)) return "document";
+  if (/^\/s\//.test(window.location.pathname)) return "legacyShare";
   if (window.location.pathname === "/admin") return "admin";
   if (window.location.pathname === "/profile") return "profile";
   if (window.location.pathname === "/trash") return "trash";
@@ -97,6 +105,14 @@ function currentRoute() {
   if (window.location.pathname === "/recent") return "recent";
   if (window.location.pathname === "/favorites") return "favorites";
   return "drive";
+}
+function currentLocation() {
+  return {
+    route: currentRoute(),
+    searchQuery: currentSearchQuery(),
+    adminTab: currentAdminTab(),
+    documentId: window.location.pathname.match(/^\/document\/([0-9a-f-]+)$/i)?.[1] ?? null,
+  };
 }
 function currentAdminTab(): "users" | "groups" {
   return new URLSearchParams(window.location.search).get("tab") === "groups"
@@ -179,12 +195,8 @@ function hasCapability(node: Node, capability: string) {
 function isOnlyOfficeEditableFile(name: string) {
   return /\.(doc|docx|xls|xlsx|ppt|pptx)$/i.test(name);
 }
-function resolveEditorMode(node: Node): "VIEW" | "EDIT" {
-  return hasCapability(node, "EDIT") ? "EDIT" : "VIEW";
-}
 async function openFileActivation(
   node: Node,
-  setEditor: (session: ActiveEditorSession) => void,
   setPreview: (preview: Preview) => void,
   onError: (notice: Notice) => void,
   isFilePending: (nodeId: string) => boolean = () => false,
@@ -195,11 +207,7 @@ async function openFileActivation(
       return;
     }
     if (isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")) {
-      const session = await api.createEditorSession(node.id, resolveEditorMode(node));
-      setEditor({
-        ...session,
-        nodeId: node.id,
-      });
+      window.open(`/document/${node.id}`, "_blank", "noopener,noreferrer");
       return;
     }
     if (hasCapability(node, "PREVIEW")) {
@@ -438,7 +446,11 @@ function App() {
     (nodeId: string) => pendingSaves.some((save) => save.nodeId === nodeId && save.status === "pending"),
     [pendingSaves],
   );
-  const startFinalization = useCallback((session: ActiveEditorSession) => {
+  const startFinalization = useCallback((
+    session: ActiveEditorSession,
+    closeSession: () => Promise<EditorSessionState>,
+    getStatus: () => Promise<EditorSessionState>,
+  ) => {
     const save: PendingEditorSave = {
       nodeId: session.nodeId,
       sessionId: session.session.id,
@@ -446,33 +458,37 @@ function App() {
     };
     setPendingSaves((current) => [...current.filter((item) => item.sessionId !== save.sessionId), save]);
     setSaveNotice({ tone: "info", message: t("editor.savingChanges"), durationMs: 0 });
-    // This request is owned by the app shell, so EditorDialog unmount and route
-    // changes cannot cancel it.
+    // The app root owns this request and status watcher, so route changes do
+    // not cancel background finalization after the server accepts close.
     const failed = () => {
       setPendingSaves((current) => current.map((item) => item.sessionId === save.sessionId ? { ...item, status: "failure" } : item));
       setSaveNotice({ tone: "error", message: t("editor.saveFailed"), durationMs: 0 });
       window.dispatchEvent(new CustomEvent("editor-session-finalization-failed", { detail: { nodeId: session.nodeId } }));
     };
-    void api.closeEditorSession(session.session.id).then(
-      (result) => {
-        if (result.status === "FAILED") {
-          failed();
-          return;
-        }
+    const complete = () => {
         setPendingSaves((current) => current.map((item) => item.sessionId === save.sessionId ? { ...item, status: "success" } : item));
         setSaveNotice({ tone: "success", message: t("editor.changesSaved") });
         window.dispatchEvent(new CustomEvent("editor-session-finalized", { detail: { nodeId: session.nodeId } }));
-      },
-      failed,
-    );
+    };
+    void (async () => {
+      const accepted = await closeSession();
+      if (accepted.state === "FAILED") return failed();
+      if (accepted.state === "CLOSED") return complete();
+      const deadline = Date.now() + 60_000;
+      let delay = 1_500;
+      while (Date.now() < deadline) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+        const state = await getStatus();
+        if (state.state === "CLOSED") return complete();
+        if (state.state === "FAILED") return failed();
+        delay = Math.min(5_000, delay + 1_000);
+      }
+      failed();
+    })().catch(failed);
   }, []);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [profile, setProfile] = useState<CurrentUser | null>(null);
-  const [location, setLocation] = useState(() => ({
-    route: currentRoute(),
-    searchQuery: currentSearchQuery(),
-    adminTab: currentAdminTab(),
-  }));
+  const [location, setLocation] = useState(currentLocation);
   useEffect(() => {
     let active = true;
     if (window.location.pathname === "/auth/pending") {
@@ -486,11 +502,11 @@ function App() {
       (user) => {
         if (!active) return;
         if (
-          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search|\/recent|\/favorites|\/admin|\/profile)$/i.test(
+          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search|\/recent|\/favorites|\/admin|\/profile|\/document\/[0-9a-f-]+|\/s\/[^/]+)$/i.test(
             window.location.pathname,
           )
         ) window.history.replaceState({}, "", "/drive");
-        setLocation({ route: currentRoute(), searchQuery: currentSearchQuery(), adminTab: currentAdminTab() });
+        setLocation(currentLocation());
         setProfile(user);
         setAuthenticated(true);
       },
@@ -501,14 +517,31 @@ function App() {
     };
   }, []);
   useEffect(() => {
-    const onPopState = () =>
-      setLocation({ route: currentRoute(), searchQuery: currentSearchQuery(), adminTab: currentAdminTab() });
+    const onPopState = () => setLocation(currentLocation());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   if (window.location.pathname === "/auth/pending") return <PendingApproval />;
   if (authenticated === null)
     return <div className="auth-state">{t("auth.checkingSession")}</div>;
+  const editorSaveContext: EditorSaveContextValue = {
+    saves: pendingSaves,
+    isFilePending,
+    startFinalization,
+    notice: saveNotice,
+    dismissNotice: () => setSaveNotice(null),
+  };
+  if (location.route === "legacyShare")
+    return (
+      <DocumentAccessState kind="unavailable" />
+    );
+  if (location.route === "document")
+    return (
+      <EditorSaveContext.Provider value={editorSaveContext}>
+        <DocumentWorkspace key={`document:${location.documentId!}`} nodeId={location.documentId!} authenticated={authenticated} />
+        <Toast notice={saveNotice} onDismiss={() => setSaveNotice(null)} />
+      </EditorSaveContext.Provider>
+    );
   if (!authenticated) return <SignIn />;
   if (!profile) return <div className="auth-state">{t("auth.loadingAccount")}</div>;
   const isAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
@@ -546,13 +579,6 @@ function App() {
   const active: SidebarRoute = location.route === "drive" || location.route === "recent" || location.route === "favorites" || location.route === "trash"
     ? location.route
     : location.route === "admin" && isAdmin ? "admin" : null;
-  const editorSaveContext: EditorSaveContextValue = {
-    saves: pendingSaves,
-    isFilePending,
-    startFinalization,
-    notice: saveNotice,
-    dismissNotice: () => setSaveNotice(null),
-  };
   return (
     <EditorSaveContext.Provider value={editorSaveContext}>
       <AppShell profile={profile} active={active} onSignOut={() => void signOut()}>{page}</AppShell>
@@ -973,7 +999,7 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
 }
 
 function DriveApp({ systemRole }: { systemRole: SystemRole }) {
-  const { isFilePending, startFinalization } = useEditorSaveContext();
+  const { isFilePending } = useEditorSaveContext();
   const [folderId, setFolderId] = useState(currentFolderId);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
@@ -984,7 +1010,6 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   const [notice, setNotice] = useState<Notice>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
-  const [editor, setEditor] = useState<ActiveEditorSession | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
@@ -1064,13 +1089,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
     }
   }
   async function openFile(node: Node) {
-    await openFileActivation(node, setEditor, setPreview, setNotice, isFilePending);
-  }
-  function handleEditorSessionClosed() {
-    void load(folderId);
-  }
-  function handleEditorSessionCloseError(requestError: unknown) {
-    setNotice({ tone: "error", message: displayError(requestError) });
+    await openFileActivation(node, setPreview, setNotice, isFilePending);
   }
   async function moveToTrash(node: Node) {
     await api.moveToTrash(node.id);
@@ -1206,15 +1225,6 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
           node={versionNode}
           onClose={() => setVersionNode(null)}
           onNotice={setNotice}
-        />
-      )}
-      {editor && (
-        <EditorDialog
-          session={editor}
-          onClose={() => setEditor(null)}
-          onSessionClosed={handleEditorSessionClosed}
-          onSessionCloseError={handleEditorSessionCloseError}
-          onEditFinalization={startFinalization}
         />
       )}
       {preview && (
@@ -1624,7 +1634,6 @@ function ShareDialog({
   const [permissions, setPermissions] = useState<PermissionsState | null>(null);
   const [principalResults, setPrincipalResults] = useState<SharingPrincipal[]>([]);
   const [principalQuery, setPrincipalQuery] = useState("");
-  const [linkUrl, setLinkUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [lookupError, setLookupError] = useState("");
   const [pending, setPending] = useState(false);
@@ -1726,12 +1735,16 @@ function ShareDialog({
   }
 
   async function copyLink() {
-    if (!linkUrl) return;
+    setPending(true);
+    setError("");
     try {
-      await navigator.clipboard.writeText(linkUrl);
+      if (!sharing) throw new Error("Document URL is unavailable");
+      await navigator.clipboard.writeText(sharing.documentUrl);
       onNotice({ tone: "success", message: t("share.linkCopied") });
     } catch {
       onNotice({ tone: "error", message: t("share.linkCopyFailed") });
+    } finally {
+      setPending(false);
     }
   }
 
@@ -1881,56 +1894,31 @@ function ShareDialog({
 
             <section className="share-section">
               <h3>{t("share.generalAccess")}</h3>
-              <label className="access-setting">
-                <span>
-                  <strong>{sharing.publicAccess ? t("share.anyoneWithLink") : t("share.restricted")}</strong>
-                  <small>{sharing.publicAccess ? t("share.anyoneCanView") : t("share.onlyPeopleCanView")}</small>
-                </span>
-                <span className="access-toggle">
-                  <span>{t("share.anyoneWithLink")}</span>
-                  <input
-                    type="checkbox"
-                    aria-label={t("share.anyoneCanViewAria")}
-                    checked={sharing.publicAccess}
-                    disabled={pending}
-                    onChange={(event) => void mutate(
-                      () => api.setPublicAccess(node.id, event.target.checked),
-                      t("share.generalAccessUpdated"),
-                    )}
-                  />
-                </span>
+              <label className="general-access-control">
+                <select
+                  aria-label={t("share.generalAccess")}
+                  value={sharing.generalAccessRole}
+                  disabled={pending}
+                  onChange={(event) => {
+                    const role = event.target.value as SharingState["generalAccessRole"];
+                    void mutate(async () => {
+                      await api.setGeneralAccessRole(node.id, role);
+                    }, t("share.generalAccessUpdated"));
+                  }}
+                >
+                  <option value="RESTRICTED">{t("share.restricted")}</option>
+                  <option value="VIEWER">{t("share.anyoneWithLinkViewer")}</option>
+                  <option value="EDITOR">{t("share.anyoneWithLinkEditor")}</option>
+                </select>
+                <small>{sharing.generalAccessRole === "RESTRICTED"
+                  ? t("share.onlyPeopleCanView")
+                  : sharing.generalAccessRole === "EDITOR" ? t("share.anyoneCanEdit") : t("share.anyoneCanView")}</small>
               </label>
-              <div className="issued-link-row">
-                <div className="issued-link-state">
-                  <strong>{t("share.shareLink")}</strong>
-                  <small>{!sharing.shareLink.exists ? t("share.noLinkCreated") : linkUrl ? t("share.linkReady") : t("share.activeLink")}</small>
+              {sharing.generalAccessRole !== "RESTRICTED" && (
+                <div className="issued-link-row">
+                  <strong>{t("share.documentLink")}</strong>
+                  <button type="button" className="button button-primary" disabled={pending} onClick={() => void copyLink()}>{t("share.copyLink")}</button>
                 </div>
-                {!sharing.shareLink.exists ? (
-                  <button type="button" className="button" disabled={pending} onClick={() => void mutate(async () => {
-                    const result = await api.createShareLink(node.id);
-                    setLinkUrl(result.shareLink.url);
-                  }, t("share.linkCreated"))}>{t("share.createLink")}</button>
-                ) : linkUrl ? (
-                  <div className="share-link">
-                    <input readOnly value={linkUrl} aria-label={t("share.issuedLink")} />
-                    <button type="button" className="button" onClick={() => void copyLink()}>{t("common.copy")}</button>
-                  </div>
-                ) : null}
-              </div>
-              {sharing.shareLink.exists && (
-                <details className="link-options">
-                  <summary>{t("share.linkOptions")}</summary>
-                  <div className="link-option-actions">
-                    <button type="button" className="text-button secondary-action" disabled={pending} onClick={() => void mutate(async () => {
-                      const result = await api.resetShareLink(node.id);
-                      setLinkUrl(result.shareLink.url);
-                    }, t("share.linkReset"))}>{t("share.resetLink")}</button>
-                    <button type="button" className="text-button secondary-action" disabled={pending} onClick={() => void mutate(async () => {
-                      await api.revokeShareLink(node.id);
-                      setLinkUrl(null);
-                    }, t("share.linkRevoked"))}>{t("share.revokeLink")}</button>
-                  </div>
-                </details>
               )}
             </section>
 
@@ -2012,13 +2000,12 @@ type SearchLocation = {
 };
 
 function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
-  const { isFilePending, startFinalization } = useEditorSaveContext();
+  const { isFilePending } = useEditorSaveContext();
   const [items, setItems] = useState<CollectionItem[]>([]);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
-  const [editor, setEditor] = useState<ActiveEditorSession | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
@@ -2053,13 +2040,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   }, [load]);
 
   async function openFile(node: Node) {
-    await openFileActivation(node, setEditor, setPreview, setNotice, isFilePending);
-  }
-  function handleEditorSessionClosed() {
-    void load();
-  }
-  function handleEditorSessionCloseError(requestError: unknown) {
-    setNotice({ tone: "error", message: displayError(requestError) });
+    await openFileActivation(node, setPreview, setNotice, isFilePending);
   }
 
   async function rename(node: Node, name: string) {
@@ -2121,7 +2102,6 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       {shareNode && <ShareDialog node={shareNode} onClose={() => setShareNode(null)} onNotice={setNotice} />}
       {trashNode && <ConfirmDialog title={t("files.moveToTrash")} message={t("files.moveToTrashConfirm", { name: trashNode.name })} action={t("files.moveToTrash")} onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
       {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
-      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={handleEditorSessionClosed} onSessionCloseError={handleEditorSessionCloseError} onEditFinalization={startFinalization} />}
       {preview && (
         <PreviewDialog
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
@@ -2139,7 +2119,7 @@ function CollectionError({ title, message, onRetry }: { title: string; message: 
 }
 
 function SearchApp({ query }: { query: string }) {
-  const { isFilePending, startFinalization } = useEditorSaveContext();
+  const { isFilePending } = useEditorSaveContext();
   const normalizedQuery = query.trim();
   const [items, setItems] = useState<SearchItem[]>([]);
   const [locations, setLocations] = useState<Record<string, SearchLocation | null>>({});
@@ -2148,7 +2128,6 @@ function SearchApp({ query }: { query: string }) {
   const [error, setError] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
-  const [editor, setEditor] = useState<ActiveEditorSession | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const requestId = useRef(0);
 
@@ -2268,7 +2247,7 @@ function SearchApp({ query }: { query: string }) {
     }
     try {
       const node = await api.getNode(item.id);
-      await openFileActivation(node, setEditor, setPreview, setNotice, isFilePending);
+      await openFileActivation(node, setPreview, setNotice, isFilePending);
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
     }
@@ -2295,7 +2274,6 @@ function SearchApp({ query }: { query: string }) {
           )}
         </section>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
-      {editor && <EditorDialog session={editor} onClose={() => setEditor(null)} onSessionClosed={() => void retry()} onSessionCloseError={(requestError) => setNotice({ tone: "error", message: displayError(requestError) })} onEditFinalization={startFinalization} />}
       {preview && (
         <PreviewDialog
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
@@ -2780,64 +2758,193 @@ function LoadingRows({ label = t("files.loadingFolder") }: { label?: string }) {
   );
 }
 
-const EDITOR_VIEWPORT_MARGIN = 30;
-const EDITOR_MIN_WIDTH = 720;
-const EDITOR_MIN_HEIGHT = 500;
-
-type EditorSize = { width: number; height: number };
-type EditorResizeDirection = "right" | "bottom" | "corner";
-
-function getEditorSizeBounds() {
-  const maxWidth = Math.max(1, window.innerWidth - EDITOR_VIEWPORT_MARGIN * 2);
-  const maxHeight = Math.max(1, window.innerHeight - EDITOR_VIEWPORT_MARGIN * 2);
-  return {
-    minWidth: Math.min(EDITOR_MIN_WIDTH, maxWidth),
-    minHeight: Math.min(EDITOR_MIN_HEIGHT, maxHeight),
-    maxWidth,
-    maxHeight,
-  };
+const pendingWorkspaceSessionRequests = new Map<string, Promise<EditorSession>>();
+function createWorkspaceEditorSession(key: string, create: () => Promise<EditorSession>) {
+  const pending = pendingWorkspaceSessionRequests.get(key);
+  if (pending) return pending;
+  const request = create();
+  pendingWorkspaceSessionRequests.set(key, request);
+  void request.then(
+    () => pendingWorkspaceSessionRequests.delete(key),
+    () => pendingWorkspaceSessionRequests.delete(key),
+  );
+  return request;
 }
 
-function clampEditorSize(size: EditorSize): EditorSize {
-  const bounds = getEditorSizeBounds();
-  return {
-    width: Math.min(bounds.maxWidth, Math.max(bounds.minWidth, size.width)),
-    height: Math.min(bounds.maxHeight, Math.max(bounds.minHeight, size.height)),
-  };
+function DocumentAccessState({ kind, showSignIn, message }: {
+  kind: "denied" | "unavailable";
+  showSignIn?: boolean;
+  message?: string;
+}) {
+  const denied = kind === "denied";
+  return (
+    <main className="document-state-page">
+      <section className="document-state-card">
+        <a className="document-brand" href="/drive">Docs Hub</a>
+        <h1>{denied ? t("document.accessDeniedTitle") : t("document.linkUnavailable")}</h1>
+        <p>{denied ? t("document.accessDeniedMessage") : t("document.linkUnavailableMessage")}</p>
+        {message && <p className="document-state-detail">{message}</p>}
+        {showSignIn && <a className="button button-primary" href={api.googleAuthUrl()}>{t("document.signIn")}</a>}
+        {!showSignIn && <a className="button" href="/drive">{t("document.backToDrive")}</a>}
+      </section>
+    </main>
+  );
 }
 
-function getInitialEditorSize(): EditorSize {
-  const bounds = getEditorSizeBounds();
-  return clampEditorSize({
-    width: bounds.maxWidth,
-    height: bounds.maxHeight,
-  });
+function DocumentWorkspace({ nodeId, authenticated }: {
+  nodeId: string;
+  authenticated: boolean;
+}) {
+  const { isFilePending, startFinalization } = useEditorSaveContext();
+  const isFilePendingRef = useRef(isFilePending);
+  const [status, setStatus] = useState<"loading" | "ready" | "denied" | "unavailable" | "saving" | "error">("loading");
+  const [session, setSession] = useState<ActiveEditorSession | null>(null);
+  const [document, setDocument] = useState<DocumentAccess | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    isFilePendingRef.current = isFilePending;
+  }, [isFilePending]);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    const load = async () => {
+      try {
+        const resolved = await api.documentAccess(nodeId);
+        if (!active) return;
+        setDocument(resolved);
+        if (resolved.node.type !== "FILE") {
+          setStatus("unavailable");
+          return;
+        }
+        if (!resolved.access.canPreview) {
+          setStatus("denied");
+          return;
+        }
+        if (isOnlyOfficeEditableFile(resolved.node.name)) {
+          if (isFilePendingRef.current(resolved.node.id)) {
+            setStatus("saving");
+            return;
+          }
+          const created = await createWorkspaceEditorSession(
+            `document:${nodeId}`,
+            () => api.createDocumentEditorSession(nodeId),
+          );
+          if (!active) return;
+          setSession({ ...created, nodeId: resolved.node.id });
+          setStatus("ready");
+          return;
+        }
+        const blob = await api.loadDocumentContent(nodeId);
+        objectUrl = URL.createObjectURL(blob);
+        if (!active) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setPreviewUrl(objectUrl);
+        setStatus("ready");
+      } catch (requestError) {
+        if (!active) return;
+        if (requestError instanceof ApiError && requestError.status === 409 && requestError.message === "File is still being saved") {
+          setStatus("saving");
+        } else if (requestError instanceof ApiError && [401, 403, 404].includes(requestError.status)) {
+          setStatus("denied");
+        } else {
+          setError(displayEditorOpenError(requestError));
+          setStatus("error");
+        }
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+      if (objectUrl?.startsWith("blob:")) URL.revokeObjectURL(objectUrl);
+    };
+  }, [nodeId, attempt, authenticated]);
+
+  function leaveWorkspace() {
+    navigate(null);
+  }
+
+  if (status === "denied") return <DocumentAccessState kind="denied" showSignIn={!authenticated} />;
+  if (status === "saving")
+    return (
+      <main className="document-state-page">
+        <section className="document-state-card">
+          <a className="document-brand" href="/drive">Docs Hub</a>
+          <h1>{t("document.latestChangesSaving")}</h1>
+          <p>{t("document.tryAgainSoon")}</p>
+          <button type="button" className="button" onClick={() => setAttempt((value) => value + 1)}>{t("common.retry")}</button>
+        </section>
+      </main>
+    );
+  if (status === "error" || status === "unavailable")
+    return (
+      <main className="document-state-page">
+        <section className="document-state-card">
+          <a className="document-brand" href="/drive">Docs Hub</a>
+          <h1>{status === "unavailable" ? t("document.linkUnavailable") : t("editor.failed")}</h1>
+          <p>{status === "unavailable" ? t("document.linkUnavailableMessage") : error}</p>
+          <button type="button" className="button" onClick={() => setAttempt((value) => value + 1)}>{t("common.retry")}</button>
+        </section>
+      </main>
+    );
+  if (status === "loading")
+    return <main className="document-loading"><a className="document-brand" href="/drive">Docs Hub</a><span>{t("editor.opening")}</span></main>;
+  if (session) {
+    const closeSession = () => api.closeDocumentEditorSession(nodeId, session.session.id);
+    const getStatus = () => api.documentEditorSessionStatus(nodeId, session.session.id);
+    return (
+      <OnlyOfficeDocumentWorkspace
+        session={session}
+        onClose={leaveWorkspace}
+        closeSession={closeSession}
+        onEditFinalization={(target) => startFinalization(target, closeSession, getStatus)}
+      />
+    );
+  }
+  if (document && previewUrl) return <DocumentFilePreview document={document} src={previewUrl} onClose={leaveWorkspace} />;
+  return <DocumentAccessState kind="unavailable" />;
 }
 
-function EditorDialog({
+function DocumentFilePreview({ document, src, onClose }: { document: DocumentAccess; src: string; onClose: () => void }) {
+  const type = document.node.mimeType ?? "";
+  return (
+    <main className="document-workspace">
+      <header className="document-workspace-header">
+        <strong className="document-title" title={document.node.name}>{document.node.name}</strong>
+        <button type="button" className="button" onClick={onClose}>{t("preview.close")}</button>
+      </header>
+      <section className="shared-preview-canvas">
+        {type.startsWith("image/") ? <img src={src} alt={document.node.name} /> :
+          type.startsWith("video/") ? <video src={src} controls /> :
+            <iframe src={src} title={document.node.name} />}
+      </section>
+    </main>
+  );
+}
+
+function OnlyOfficeDocumentWorkspace({
   session,
   onClose,
-  onSessionClosed,
-  onSessionCloseError,
+  closeSession,
   onEditFinalization,
 }: {
   session: ActiveEditorSession;
   onClose: () => void;
-  onSessionClosed: () => void;
-  onSessionCloseError: (error: unknown) => void;
+  closeSession: () => Promise<EditorSessionState>;
   onEditFinalization: (session: ActiveEditorSession) => void;
 }) {
   // React owns this stable host. DocsAPI owns every child inside it because
   // DocEditor replaces its placeholder with an iframe and restores it on close.
   const editorHost = useRef<HTMLDivElement>(null);
-  const dialog = useRef<HTMLElement>(null);
   const editorRef = useRef<ManagedOnlyOfficeEditor | undefined>(undefined);
   const initializationTimer = useRef<number | undefined>(undefined);
-  const resizeCleanup = useRef<(() => void) | undefined>(undefined);
   const closingRef = useRef(false);
-  const closedSessionIds = useRef(new Set<string>());
   const pendingEditorClose = useRef<PendingOnlyOfficeClose | undefined>(undefined);
-  const [size, setSize] = useState<EditorSize>(getInitialEditorSize);
   const [error, setError] = useState("");
   const [editorState, setEditorState] = useState<"loading" | "ready" | "error">("loading");
   const [closing, setClosing] = useState(false);
@@ -2849,25 +2956,6 @@ function EditorDialog({
       return t("editor.title");
     return typeof document.title === "string" ? document.title : t("editor.title");
   })();
-  useEffect(() => {
-    const keepInViewport = () => setSize((current) => clampEditorSize(current));
-    window.addEventListener("resize", keepInViewport);
-    return () => {
-      window.removeEventListener("resize", keepInViewport);
-      resizeCleanup.current?.();
-    };
-  }, []);
-  const closeSession = useCallback(async (target: ActiveEditorSession) => {
-    if (closedSessionIds.current.has(target.session.id)) return false;
-    closedSessionIds.current.add(target.session.id);
-    try {
-      await api.closeEditorSession(target.session.id);
-      return true;
-    } catch (requestError) {
-      closedSessionIds.current.delete(target.session.id);
-      throw requestError;
-    }
-  }, []);
   const disposeEditor = useCallback((owned: ManagedOnlyOfficeEditor | undefined = editorRef.current, reportError = true) => {
     if (!owned || owned.disposed) return;
     owned.disposed = true;
@@ -2887,8 +2975,8 @@ function EditorDialog({
     const owned = editorRef.current;
     if (!owned || owned.disposed) return;
     if (!owned.editor.requestClose) {
-      // Older DocsAPI builds may not expose requestClose. The dialog close
-      // still performs the idempotent dispose before closing the session.
+      // Older DocsAPI builds may not expose requestClose. The workspace close
+      // still disposes the editor and asks the server to finalize the session.
       return;
     }
     setCloseDecisionPending(true);
@@ -2922,11 +3010,10 @@ function EditorDialog({
     } else {
       disposeEditor(owned);
       cleanEditorHost();
-      await closeSession(target);
-      onSessionClosed();
+      await closeSession();
       onClose();
     }
-  }, [cleanEditorHost, closeSession, disposeEditor, onClose, onEditFinalization, onSessionClosed, requestEditorClose]);
+  }, [cleanEditorHost, closeSession, disposeEditor, onClose, onEditFinalization, requestEditorClose]);
   const closeDialog = async () => {
     if (closingRef.current) return;
     const current = session;
@@ -2939,63 +3026,11 @@ function EditorDialog({
       if (!(requestError instanceof OnlyOfficeCloseCancelledError)) {
         setEditorState("error");
         setError(displayError(requestError));
-        onSessionCloseError(requestError);
       }
     } finally {
       closingRef.current = false;
       setClosing(false);
     }
-  };
-  const startResize = (
-    direction: EditorResizeDirection,
-    event: React.PointerEvent<HTMLDivElement>,
-  ) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    resizeCleanup.current?.();
-    const startingSize = dialog.current?.getBoundingClientRect() ?? {
-      width: size.width,
-      height: size.height,
-    };
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const previousUserSelect = document.body.style.userSelect;
-    const previousCursor = document.body.style.cursor;
-    document.body.style.userSelect = "none";
-    document.body.style.cursor =
-      direction === "right"
-        ? "ew-resize"
-        : direction === "bottom"
-          ? "ns-resize"
-          : "nwse-resize";
-
-    const move = (moveEvent: PointerEvent) => {
-      setSize(
-        clampEditorSize({
-          width:
-            direction === "bottom"
-              ? startingSize.width
-              : startingSize.width + moveEvent.clientX - startX,
-          height:
-            direction === "right"
-              ? startingSize.height
-              : startingSize.height + moveEvent.clientY - startY,
-        }),
-      );
-    };
-    const stop = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-      document.body.style.userSelect = previousUserSelect;
-      document.body.style.cursor = previousCursor;
-      if (resizeCleanup.current === cleanup) resizeCleanup.current = undefined;
-    };
-    const cleanup = stop;
-    resizeCleanup.current = cleanup;
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
   };
   useEffect(() => {
     const host = editorHost.current;
@@ -3143,43 +3178,26 @@ function EditorDialog({
     };
   }, [session, cleanEditorHost, disposeEditor, mountId]);
   return (
-    <div className="editor-backdrop">
-      <section
-        ref={dialog}
-        className="editor-dialog"
-        style={{ width: size.width, height: size.height }}
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("editor.ariaTitle", { title: documentTitle })}
-      >
-        <header>
-          <div className="editor-header-title">
-            <span>{documentTitle}</span>
-            <span className="editor-header-mode">
-              {session.session.mode === "EDIT" ? t("editor.editing") : t("editor.viewing")}
-            </span>
-          </div>
-          <div className="editor-header-actions">
-            {closeDecisionPending && (
-              <button
-                type="button"
-                className="button"
-                onClick={cancelPendingEditorClose}
-              >
-                {t("common.cancel")}
-              </button>
-            )}
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={t("editor.close")}
-              disabled={closing}
-              onClick={() => void closeDialog()}
-            >
-              <Icon name="close" />
+    <main className="document-workspace">
+      <header className="document-workspace-header">
+        <div className="document-title-group">
+          <strong className="document-title" title={documentTitle}>{documentTitle}</strong>
+          <span className="editor-header-mode">
+            {session.session.mode === "EDIT" ? t("editor.editing") : t("editor.viewing")}
+          </span>
+        </div>
+        <div className="editor-header-actions">
+          {closeDecisionPending && (
+            <button type="button" className="button" onClick={cancelPendingEditorClose}>
+              {t("common.cancel")}
             </button>
-          </div>
-        </header>
+          )}
+          <button type="button" className="button" disabled={closing} onClick={() => void closeDialog()}>
+            {t("editor.close")}
+          </button>
+        </div>
+      </header>
+      <section className="document-canvas" aria-label={t("editor.ariaTitle", { title: documentTitle })}>
         <div className="editor-body" aria-busy={editorState === "loading"}>
           <div ref={editorHost} className="editor-host" />
           {editorState === "loading" && (
@@ -3196,26 +3214,8 @@ function EditorDialog({
             </div>
           )}
         </div>
-        <div
-          className="editor-resize-handle editor-resize-right"
-          role="separator"
-          aria-label={t("editor.resize")}
-          onPointerDown={(event) => startResize("right", event)}
-        />
-        <div
-          className="editor-resize-handle editor-resize-bottom"
-          role="separator"
-          aria-label={t("editor.resize")}
-          onPointerDown={(event) => startResize("bottom", event)}
-        />
-        <div
-          className="editor-resize-handle editor-resize-corner"
-          role="separator"
-          aria-label={t("editor.resize")}
-          onPointerDown={(event) => startResize("corner", event)}
-        />
       </section>
-    </div>
+    </main>
   );
 }
 

@@ -92,7 +92,6 @@ async function createFixture() {
     });
     await prisma.trashOperation.deleteMany({ where: { trashedById: actorId } });
     await prisma.permissionEntry.deleteMany({ where: { nodeId: { in: ids } } });
-    await prisma.shareLink.deleteMany({ where: { nodeId: { in: ids } } });
     const files = await prisma.file.findMany({
       where: { nodeId: { in: ids } },
       select: { id: true },
@@ -126,9 +125,6 @@ test('purges a nested subtree after storage deletion and preserves unrelated rec
     await prisma.permissionEntry.create({
       data: { nodeId: root.id, userId: fixture.actorId, role: DocumentRole.OWNER },
     });
-    const share = await prisma.shareLink.create({
-      data: { nodeId: child.id, tokenHash: `engine-share-${randomUUID()}` },
-    });
     const old = await fixture.operation(nested.id, [nested.id]);
     const newer = await fixture.operation(root.id, [root.id, child.id]);
     const deleted = [];
@@ -155,7 +151,6 @@ test('purges a nested subtree after storage deletion and preserves unrelated rec
     assert.equal(await prisma.node.count({ where: { id: { in: [root.id, child.id, nested.id] } } }), 0);
     assert.ok(await prisma.node.findUnique({ where: { id: sibling.id } }));
     assert.ok(await prisma.file.findUnique({ where: { id: siblingFile.id } }));
-    assert.equal(await prisma.shareLink.findUnique({ where: { id: share.id } }), null);
     assert.equal((await prisma.trashOperation.findUniqueOrThrow({ where: { id: old.id } })).status, TrashOperationStatus.PURGED);
     const audit = await prisma.auditLog.findFirstOrThrow({
       where: { action: 'NODE_PURGED', resourceId: root.id },

@@ -96,6 +96,23 @@ test('does not overwrite immutable objects', async () => {
   });
 });
 
+test('atomically promotes a complete staged object without replacing a final object', async () => {
+  await withStorage(async (_root, storage) => {
+    const stagedKey = 'tmp/editor/session/artifact';
+    const finalKey = 'files/a/versions/v2';
+    await storage.putStream(stagedKey, Readable.from(['complete bytes']));
+    await storage.promote(stagedKey, finalKey);
+    assert.equal((await readAll(await storage.openReadStream(finalKey))).toString(), 'complete bytes');
+    assert.equal(await storage.exists(stagedKey), true);
+    await assert.rejects(
+      storage.promote(stagedKey, finalKey),
+      StorageObjectAlreadyExists,
+    );
+    await storage.delete(stagedKey);
+    assert.equal(await storage.exists(finalKey), true);
+  });
+});
+
 test('cleans up a partial object after a source stream failure', async () => {
   await withStorage(async (_root, storage) => {
     const key = 'files/a/versions/failing';

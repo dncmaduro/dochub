@@ -25,7 +25,7 @@ const SENSITIVE_ROUTES: ReadonlyArray<{
     limit: { windowMs: MINUTE, max: 30 },
   },
   {
-    match: (r) => r.path.startsWith('/share/'),
+    match: (r) => r.path.startsWith('/documents/'),
     limit: { windowMs: MINUTE, max: 120 },
   },
   {
@@ -34,7 +34,7 @@ const SENSITIVE_ROUTES: ReadonlyArray<{
   },
   {
     match: (r) =>
-      /^\/nodes\/[^/]+\/(?:preview-session|editor-sessions|share-link|sharing)$/.test(
+      /^\/nodes\/[^/]+\/(?:preview-session|editor-sessions|sharing)$/.test(
         r.path,
       ) ||
       r.path === '/files' ||
@@ -58,8 +58,8 @@ export class RequestRateLimitMiddleware implements NestMiddleware {
         if (entry.resetAt <= now) this.entries.delete(key);
     }
     const key = `${request.ip}:${request.method}:${rule.limit.windowMs}:${request.path}`;
-    // Public-share paths include an untrusted opaque token. Keep the limiter
-    // itself from becoming an unbounded memory target under token spraying.
+    // Public document paths contain UUID locators. Keep the limiter itself
+    // bounded when callers probe many different document IDs.
     if (this.entries.size >= 10_000 && !this.entries.has(key)) {
       const oldestKey = this.entries.keys().next().value as string | undefined;
       if (oldestKey) this.entries.delete(oldestKey);

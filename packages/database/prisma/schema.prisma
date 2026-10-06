@@ -85,6 +85,12 @@ enum EditorSessionStatus {
   FAILED
 }
 
+enum GeneralAccessRole {
+  RESTRICTED
+  VIEWER
+  EDITOR
+}
+
 model User {
   id                       String            @id @default(uuid()) @db.Uuid
   email                    String
@@ -104,7 +110,6 @@ model User {
   createdFileVersions      FileVersion[]     @relation("FileVersionCreatedBy")
   permissionEntries        PermissionEntry[] @relation("PermissionEntryUser")
   createdPermissionEntries PermissionEntry[] @relation("PermissionEntryCreatedBy")
-  createdShareLinks        ShareLink[]       @relation("ShareLinkCreatedBy")
   trashOperations          TrashOperation[]  @relation("TrashOperationTrashedBy")
   auditLogEntries          AuditLog[]        @relation("AuditLogActor")
   editorSessions           EditorSession[]   @relation("EditorSessionUser")
@@ -169,13 +174,14 @@ model GroupMember {
 
 // Active-name uniqueness is enforced by partial indexes in the Trash lifecycle migration.
 model Node {
+  // UUIDv4 is stable and also identifies the canonical /document/<id> URL.
   id                                String            @id @default(uuid()) @db.Uuid
   parentId                          String?           @db.Uuid
   type                              NodeType
   name                              String
   normalizedName                    String
   inheritPermissions                Boolean           @default(true)
-  publicAccess                      Boolean           @default(false)
+  generalAccessRole                 GeneralAccessRole @default(RESTRICTED)
   createdById                       String            @db.Uuid
   updatedById                       String?           @db.Uuid
   createdAt                         DateTime          @default(now())
@@ -187,7 +193,6 @@ model Node {
   // Node.type = FILE iff a File row exists is an application/domain invariant.
   file                              File?
   permissionEntries                 PermissionEntry[]
-  shareLinks                        ShareLink[]
   trashOperationId                  String?           @db.Uuid
   trashOperation                    TrashOperation?   @relation("TrashOperationNodes", fields: [trashOperationId], references: [id], onDelete: Restrict)
   trashOperationsAsRoot             TrashOperation[]  @relation("TrashOperationRootNode")
@@ -277,18 +282,6 @@ model PermissionEntry {
   @@unique([nodeId, groupId])
   @@index([userId])
   @@index([groupId])
-}
-
-model ShareLink {
-  id             String          @id @default(uuid()) @db.Uuid
-  nodeId         String          @db.Uuid
-  tokenHash      String          @unique
-  createdById    String?         @db.Uuid
-  createdAt      DateTime        @default(now())
-  revokedAt      DateTime?
-  node           Node            @relation(fields: [nodeId], references: [id], onDelete: Restrict)
-  createdBy      User?           @relation("ShareLinkCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  editorSessions EditorSession[] @relation("EditorSessionShareLink")
 }
 
 model TrashOperation {
@@ -383,7 +376,6 @@ model EditorSession {
   documentKey   String
   actorType     EditorActorType
   userId        String?             @db.Uuid
-  shareLinkId   String?             @db.Uuid
   mode          EditorMode
   status        EditorSessionStatus @default(ACTIVE)
   createdAt     DateTime            @default(now())
@@ -398,7 +390,6 @@ model EditorSession {
   baseVersion   FileVersion         @relation("EditorSessionBaseVersion", fields: [fileId, baseVersionId], references: [fileId, id], onDelete: Restrict)
   finalizedFileVersion FileVersion? @relation("EditorSessionFinalizedVersion", fields: [finalizedFileVersionId], references: [id], onDelete: Restrict)
   user          User?               @relation("EditorSessionUser", fields: [userId], references: [id], onDelete: Restrict)
-  shareLink     ShareLink?          @relation("EditorSessionShareLink", fields: [shareLinkId], references: [id], onDelete: Restrict)
 
   @@index([documentKey])
 }

@@ -37,12 +37,22 @@ export class EditorController {
   }
 
   @Post('editor-sessions/:sessionId/close')
+  @HttpCode(202)
   @UseGuards(AccessTokenGuard)
   close(
     @CurrentAuth() auth: AuthPrincipal,
     @Param('sessionId') sessionId: string,
   ) {
     return this.sessions.close(auth.userId, sessionId);
+  }
+
+  @Get('editor-sessions/:sessionId/status')
+  @UseGuards(AccessTokenGuard)
+  status(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('sessionId') sessionId: string,
+  ) {
+    return this.sessions.status(auth.userId, sessionId);
   }
 
   @Get('editor-sessions/:sessionId/content')

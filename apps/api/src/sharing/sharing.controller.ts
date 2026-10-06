@@ -1,14 +1,10 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
   Header,
-  HttpCode,
-  HttpStatus,
   Param,
   Patch,
-  Post,
   UseGuards,
 } from '@nestjs/common';
 import { AccessTokenGuard } from '../auth/access-token.guard.js';
@@ -34,41 +30,12 @@ export class SharingController {
     return this.sharing.getState(auth.userId, params.nodeId);
   }
 
-  @Post('share-link')
-  @HttpCode(HttpStatus.OK)
-  @Header('Cache-Control', 'private, no-store')
-  ensureLink(
-    @CurrentAuth() auth: AuthPrincipal,
-    @Param() params: SharingNodeParamDto,
-  ) {
-    return this.sharing.ensureLink(auth.userId, params.nodeId);
-  }
-
-  @Post('share-link/reset')
-  @HttpCode(HttpStatus.OK)
-  @Header('Cache-Control', 'private, no-store')
-  resetLink(
-    @CurrentAuth() auth: AuthPrincipal,
-    @Param() params: SharingNodeParamDto,
-  ) {
-    return this.sharing.resetLink(auth.userId, params.nodeId);
-  }
-
-  @Delete('share-link')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async revokeLink(
-    @CurrentAuth() auth: AuthPrincipal,
-    @Param() params: SharingNodeParamDto,
-  ): Promise<void> {
-    await this.sharing.revokeLink(auth.userId, params.nodeId);
-  }
-
   @Patch('sharing')
-  updatePublicAccess(
+  updateGeneralAccess(
     @CurrentAuth() auth: AuthPrincipal,
     @Param() params: SharingNodeParamDto,
     @Body() dto: UpdateSharingDto,
   ) {
-    return this.sharing.updatePublicAccess(auth.userId, params.nodeId, dto);
+    return this.sharing.updateGeneralAccess(auth.userId, params.nodeId, dto);
   }
 }

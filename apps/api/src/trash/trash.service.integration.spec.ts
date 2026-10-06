@@ -120,13 +120,9 @@ describeWithDatabase('TrashService integration', () => {
     });
     await prisma.editorSession.deleteMany({
       where: {
-        OR: [
-          { fileId: { in: files.map((file) => file.id) } },
-          { shareLink: { nodeId: { in: nodeIds } } },
-        ],
+        fileId: { in: files.map((file) => file.id) },
       },
     });
-    await prisma.shareLink.deleteMany({ where: { nodeId: { in: nodeIds } } });
     if (files.length > 0) {
       await prisma.file.updateMany({
         where: { id: { in: files.map((file) => file.id) } },
@@ -649,13 +645,6 @@ describeWithDatabase('TrashService integration', () => {
     await prisma.permissionEntry.create({
       data: { nodeId: root.id, userId: actorId, role: DocumentRole.OWNER },
     });
-    const shareLink = await prisma.shareLink.create({
-      data: {
-        nodeId: root.id,
-        tokenHash: `purge-share-${randomUUID()}`,
-        createdById: actorId,
-      },
-    });
     await prisma.favorite.create({
       data: { userId: actorId, nodeId: root.id },
     });
@@ -682,7 +671,6 @@ describeWithDatabase('TrashService integration', () => {
         documentKey: `purge-session-${randomUUID()}`,
         actorType: EditorActorType.USER,
         userId: actorId,
-        shareLinkId: null,
         mode: EditorMode.VIEW,
       },
     });
@@ -708,9 +696,6 @@ describeWithDatabase('TrashService integration', () => {
     ).toBe(0);
     await expect(
       prisma.permissionEntry.findFirst({ where: { nodeId: root.id } }),
-    ).resolves.toBeNull();
-    await expect(
-      prisma.shareLink.findUnique({ where: { id: shareLink.id } }),
     ).resolves.toBeNull();
     await expect(
       prisma.favorite.findUnique({

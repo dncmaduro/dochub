@@ -38,6 +38,11 @@ placeholders, and use real host paths. The PostgreSQL service uses the durable
 directory must be owned by the PostgreSQL image UID/GID; do not alter ownership
 of a populated directory.
 
+Document URLs use the immutable Node UUID at `/document/<uuid>`. Access is
+resolved from the current ACL and General Access setting. The canonical URL
+migration removes the legacy `ShareLink` table, so existing `/s/<token>` URLs
+stop working; copy the document URL again from the Share dialog.
+
 Set `WEB_ORIGIN=https://docshub.space`,
 `GOOGLE_REDIRECT_URI=https://docshub.space/api/auth/google/callback`,
 `AUTH_LOGIN_SUCCESS_REDIRECT_URL=https://docshub.space/auth/callback`, and

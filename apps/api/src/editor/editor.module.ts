@@ -23,5 +23,6 @@ import { EditorSessionService } from './editor-session.service.js';
     EditorSessionService,
     { provide: EDITOR_CONFIG, useFactory: loadEditorConfig },
   ],
+  exports: [EditorSessionService],
 })
 export class EditorModule {}

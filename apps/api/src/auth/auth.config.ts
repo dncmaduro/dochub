@@ -242,12 +242,13 @@ export function loadAuthConfig(
     );
   }
 
+  const accessTokenSecret = strongSecret(
+    'AUTH_ACCESS_TOKEN_SECRET',
+    requiredValue('AUTH_ACCESS_TOKEN_SECRET', env.AUTH_ACCESS_TOKEN_SECRET),
+    production,
+  );
   return {
-    accessTokenSecret: strongSecret(
-      'AUTH_ACCESS_TOKEN_SECRET',
-      requiredValue('AUTH_ACCESS_TOKEN_SECRET', env.AUTH_ACCESS_TOKEN_SECRET),
-      production,
-    ),
+    accessTokenSecret,
     accessTokenTtlSeconds: positiveInteger(
       'AUTH_ACCESS_TOKEN_TTL_SECONDS',
       env.AUTH_ACCESS_TOKEN_TTL_SECONDS,

@@ -13,6 +13,8 @@ export interface StorageObjectStat {
 /** Backend-neutral immutable binary-object storage contract. */
 export interface StorageService {
   putStream(storageKey: string, readable: Readable): Promise<void>;
+  /** Atomically exposes a complete staged object at a new immutable key. */
+  promote(stagedKey: string, storageKey: string): Promise<void>;
   openReadStream(storageKey: string, options?: StorageReadOptions): Promise<Readable>;
   stat(storageKey: string): Promise<StorageObjectStat>;
   exists(storageKey: string): Promise<boolean>;

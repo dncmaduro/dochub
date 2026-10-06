@@ -1,5 +1,6 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { lstat, mkdir, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
@@ -53,26 +54,50 @@ export class LocalFileStorage implements StorageService {
 
   async putStream(storageKey: string, readable: Readable): Promise<void> {
     const { objectPath } = await this.prepareParent(storageKey);
-    let created = false;
+    const temporaryPath = path.join(
+      path.dirname(objectPath),
+      `.${path.basename(objectPath)}.${randomUUID()}.partial`,
+    );
+    let published = false;
     try {
-      const writable = createWriteStream(objectPath, {
+      const writable = createWriteStream(temporaryPath, {
         flags: "wx",
         flush: true,
       });
-      writable.once("open", () => {
-        created = true;
-      });
       await pipeline(readable, writable);
+      // link() publishes only a fully written object and fails atomically when
+      // an immutable storage key already exists.
+      await link(temporaryPath, objectPath);
+      published = true;
+      await unlink(temporaryPath);
     } catch (error) {
-      if (created) {
-        await unlink(objectPath).catch(() => undefined);
-      }
+      await unlink(temporaryPath).catch(() => undefined);
+      if (published) await unlink(objectPath).catch(() => undefined);
       if (this.errorCode(error) === "EEXIST") {
         throw new StorageObjectAlreadyExists("Storage object already exists", {
           cause: error,
         });
       }
       throw new StorageError("Unable to store object", { cause: error });
+    }
+  }
+
+  async promote(stagedKey: string, storageKey: string): Promise<void> {
+    const { objectPath: stagedPath } = await this.prepareExisting(stagedKey);
+    const { objectPath } = await this.prepareParent(storageKey);
+    try {
+      // The stage and final key live on the same storage volume. A hard link
+      // publishes the already flushed bytes atomically without copying them.
+      // Keep the stage until the metadata transaction commits so a failed
+      // commit can be retried safely.
+      await link(stagedPath, objectPath);
+    } catch (error) {
+      if (this.errorCode(error) === "EEXIST") {
+        throw new StorageObjectAlreadyExists("Storage object already exists", {
+          cause: error,
+        });
+      }
+      throw new StorageError("Unable to promote staged object", { cause: error });
     }
   }
 

@@ -1,13 +1,6 @@
 export interface SharingState {
   nodeId: string;
-  publicAccess: boolean;
-  shareLink: { exists: boolean };
+  generalAccessRole: 'RESTRICTED' | 'VIEWER' | 'EDITOR';
+  documentUrl: string;
   canManageSharing: boolean;
-}
-
-export interface ShareLinkResponse {
-  nodeId: string;
-  shareLink:
-    | { id: string; created: true; url: string }
-    | { id: string; created: false; url: null };
 }
