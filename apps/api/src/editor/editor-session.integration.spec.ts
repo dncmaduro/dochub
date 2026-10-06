@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import {
   DocumentRole,
@@ -144,6 +144,16 @@ withDb('EditorSessionService integration', () => {
     });
     await prisma.file.create({ data: { id: fileId, nodeId } });
     await version(1);
+  });
+  afterEach(async () => {
+    // Each test models its own browser population. A real ONLYOFFICE
+    // generation keeps ACTIVE rows while those browsers remain connected;
+    // close leaked fixtures between tests so they do not affect the next
+    // collaborative generation now that keys are intentionally shared.
+    await prisma.editorSession.updateMany({
+      where: { fileId, status: 'ACTIVE' },
+      data: { status: 'CLOSED' },
+    });
   });
   afterAll(async () => {
     await prisma.auditLog.deleteMany({
@@ -687,7 +697,7 @@ withDb('EditorSessionService integration', () => {
     expect(secondRow.baseVersionId).toBe(v2);
   });
 
-  it('reopens an unchanged VIEW version with an isolated ONLYOFFICE source identity', async () => {
+  it('reopens an unchanged VIEW version in the shared generation with isolated source authorization', async () => {
     const before = await prisma.file.findUniqueOrThrow({
       where: { id: fileId },
       select: { currentVersionId: true, versionCounter: true },
@@ -710,7 +720,7 @@ withDb('EditorSessionService integration', () => {
     const secondToken = secondSource.searchParams.get('token')!;
 
     expect(second.session.id).not.toBe(first.session.id);
-    expect(second.config.document.key).not.toBe(first.config.document.key);
+    expect(second.config.document.key).toBe(first.config.document.key);
     expect(secondSource.pathname).toContain(second.session.id);
     expect(secondSource.pathname).not.toContain(first.session.id);
     await expect(
@@ -758,6 +768,97 @@ withDb('EditorSessionService integration', () => {
       id: second.session.id,
       status: 'CLOSED',
     });
+  });
+
+  it('finalizes one collaborative generation after its last EDIT participant leaves', async () => {
+    await prisma.permissionEntry.updateMany({
+      where: { nodeId, userId: actorId },
+      data: { role: DocumentRole.EDITOR },
+    });
+    const [first, second] = await Promise.all([
+      service.create(actorId, nodeId, 'EDIT'),
+      service.create(actorId, nodeId, 'EDIT'),
+    ]);
+    const viewer = await service.create(actorId, nodeId, 'VIEW');
+    expect(first.config.document.key).toBe(second.config.document.key);
+    expect(viewer.config.document.key).toBe(first.config.document.key);
+
+    const before = await prisma.fileVersion.count({ where: { fileId } });
+    const firstCallback = new URL(
+      (first.config.editorConfig as { callbackUrl: string }).callbackUrl,
+    );
+    const secondCallback = new URL(
+      (second.config.editorConfig as { callbackUrl: string }).callbackUrl,
+    );
+    const firstUrl = new URL('download/first-final.docx', config.publicUrl).toString();
+    const secondUrl = new URL('download/combined-final.docx', config.publicUrl).toString();
+    const sign = (status: number, url: string) =>
+      new JwtService().sign(
+        { status, key: first.config.document.key, url },
+        { secret: config.jwtSecret, algorithm: 'HS256' },
+      );
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(Buffer.from('first participant')))
+        .mockResolvedValueOnce(new Response(Buffer.from('combined collaboration'))),
+    );
+    try {
+      // The first callback may stage bytes, but cannot publish while the
+      // second editor is still connected.
+      await expect(
+        service.handleCallback(first.session.id, firstCallback.searchParams.get('capability')!, {
+          status: 2,
+          url: firstUrl,
+          key: first.config.document.key,
+          token: sign(2, firstUrl),
+        }),
+      ).resolves.toEqual({ error: 1 });
+      await expect(
+        service.handleCallback(second.session.id, secondCallback.searchParams.get('capability')!, {
+          status: 2,
+          url: secondUrl,
+          key: second.config.document.key,
+          token: sign(2, secondUrl),
+        }),
+      ).resolves.toEqual({ error: 0 });
+    } finally {
+      vi.unstubAllGlobals();
+      await prisma.permissionEntry.updateMany({
+        where: { nodeId, userId: actorId },
+        data: { role: DocumentRole.VIEWER },
+      });
+    }
+
+    const finalized = await prisma.editorSession.findMany({
+      where: {
+        id: { in: [first.session.id, second.session.id, viewer.session.id] },
+      },
+      select: {
+        id: true,
+        documentKey: true,
+        finalizedFileVersionId: true,
+        status: true,
+      },
+    });
+    expect(finalized).toHaveLength(3);
+    const firstFinal = finalized.find((row) => row.id === first.session.id)!;
+    const secondFinal = finalized.find((row) => row.id === second.session.id)!;
+    const viewerFinal = finalized.find((row) => row.id === viewer.session.id)!;
+    expect(firstFinal.documentKey).toBe(secondFinal.documentKey);
+    expect(firstFinal.finalizedFileVersionId).toBeTruthy();
+    expect(firstFinal.finalizedFileVersionId).toBe(
+      secondFinal.finalizedFileVersionId,
+    );
+    expect(viewerFinal).toMatchObject({
+      finalizedFileVersionId: null,
+      status: 'ACTIVE',
+      documentKey: first.config.document.key,
+    });
+    expect(firstFinal.status).toBe('CLOSED');
+    expect(secondFinal.status).toBe('CLOSED');
+    expect(await prisma.fileVersion.count({ where: { fileId } })).toBe(before + 1);
   });
 
   it('blocks reopening a file while a closed EDIT session awaits finalization', async () => {
@@ -1488,7 +1589,7 @@ withDb('EditorSessionService integration', () => {
     versionIds.push(winner.finalizedFileVersionId!);
     await expect(
       finalizer.finalizeStagedDocument(second.session.id),
-    ).rejects.toBeTruthy();
+    ).resolves.toBeUndefined();
     const file = await prisma.file.findUniqueOrThrow({ where: { id: fileId } });
     expect(file.currentVersionId).toBe(winner.finalizedFileVersionId);
     expect(file.versionCounter).toBe(
@@ -1497,7 +1598,7 @@ withDb('EditorSessionService integration', () => {
     expect(await prisma.fileVersion.count({ where: { fileId } })).toBe(
       file.versionCounter,
     );
-    await expect(objectStorage.exists(stalePath)).resolves.toBe(true);
+    await expect(objectStorage.exists(stalePath)).resolves.toBe(false);
   });
 
   it('allows exactly one concurrent upload or editor transition from the same base', async () => {

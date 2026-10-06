@@ -99,13 +99,19 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * ONLYOFFICE uses this key as its document-server cache identity. Its source
-   * URL is deliberately session-bound, so a FileVersion-only key would let a
-   * later open reuse an entry whose source capability was revoked on close.
+   * ONLYOFFICE uses this key as its shared document-generation/cache identity.
+   * Source authorization is intentionally separate: every EditorSession still
+   * receives its own session-bound fetch URL and callback capability.
+   *
+   * A new immutable FileVersion necessarily produces a new key, while every
+   * participant opening the same current FileVersion joins the same generation.
+   * The optional second argument is accepted for source compatibility with
+   * older callers, but is deliberately ignored.
    */
-  static documentKey(versionId: string, sessionId?: string): string {
-    const scope = sessionId ? `editor-session:${sessionId}` : 'editor-document';
-    return `oo-${createHash('sha256').update(`dochub-file-version:${versionId}:${scope}`).digest('base64url')}`;
+  static documentKey(versionId: string, _legacySessionId?: string): string {
+    return `oo-${createHash('sha256')
+      .update(`dochub-file-version:${versionId}`)
+      .digest('base64url')}`;
   }
 
   async create(
@@ -219,8 +225,24 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       },
       select: { id: true },
     });
-    if (closingSession)
-      throw new ConflictException('File is still being saved');
+    if (closingSession) {
+      // A closing participant does not stop an already connected collaborator
+      // or viewer from joining the same ONLYOFFICE generation. Once the last
+      // editor has left, however, do not start a new generation while status 2
+      // is still being finalized.
+      const openEditor = await this.database.prisma.editorSession.findFirst({
+        where: {
+          fileId: node.file.id,
+          mode: EditorMode.EDIT,
+          status: EditorSessionStatus.ACTIVE,
+          closedAt: null,
+          finalizedFileVersionId: null,
+        },
+        select: { id: true },
+      });
+      if (!openEditor)
+        throw new ConflictException('File is still being saved');
+    }
     const version = node.file.currentVersion;
     const extension = fileExtension(
       version.originalFilename,
@@ -239,12 +261,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         id: sessionId,
         fileId: node.file.id,
         baseVersionId: version.id,
-        documentKey: EditorSessionService.documentKey(
-          version.id,
-          actor.mode === 'VIEW' || actor.actorType === EditorActorType.PUBLIC
-            ? sessionId
-            : undefined,
-        ),
+        documentKey: EditorSessionService.documentKey(version.id),
         actorType: actor.actorType,
         userId: actor.userId,
         mode: actor.mode === 'EDIT' ? EditorMode.EDIT : EditorMode.VIEW,
@@ -713,12 +730,31 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       // events. This implementation deliberately does not stage them.
       if (payload.status === 6) return { error: 0 };
       if (payload.status !== 2) return { error: 0 };
+      // ONLYOFFICE status 2 is the terminal callback for this generation. A
+      // browser close is normally recorded by close(), but this also handles
+      // a tab disappearing before that request reaches Docs Hub.
+      await this.database.prisma.editorSession.updateMany({
+        where: {
+          id: session.id,
+          status: EditorSessionStatus.ACTIVE,
+          finalizedFileVersionId: null,
+          closedAt: null,
+        },
+        data: { closedAt: new Date() },
+      });
       if (!session.stagedArtifactId) {
         if (!payload.url) throw new CallbackFailure();
         await this.stageEditedDocument(session, payload.url);
       }
-      await this.finalizeStagedDocument(session.id);
-      return { error: 0 };
+      await this.finalizeStagedDocument(session.id, true);
+      const finalized = await this.database.prisma.editorSession.findUnique({
+        where: { id: session.id },
+        select: { finalizedFileVersionId: true },
+      });
+      // If another editor is still connected, retain the staged bytes and ask
+      // ONLYOFFICE to retry. The generation is finalized only once all editor
+      // participants have left.
+      return { error: finalized?.finalizedFileVersionId ? 0 : 1 };
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
       return { error: 1 };
@@ -882,81 +918,140 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async finalizeStagedDocument(sessionId: string): Promise<void> {
-    let finalization = this.finalizationsInFlight.get(sessionId);
+  private async finalizeStagedDocument(
+    sessionId: string,
+    requireGenerationClosed = false,
+  ): Promise<void> {
+    const identity = await this.database.prisma.editorSession.findUnique({
+      where: { id: sessionId },
+      select: { documentKey: true },
+    });
+    if (!identity) throw new CallbackFailure();
+
+    // The lock is per ONLYOFFICE generation, not per browser/session. This is
+    // what makes two callback URLs race-safe when they refer to one document.
+    let finalization = this.finalizationsInFlight.get(identity.documentKey);
     if (!finalization) {
-      finalization = this.finalizeStagedDocumentOnce(sessionId);
-      this.finalizationsInFlight.set(sessionId, finalization);
+      finalization = this.finalizeStagedDocumentOnce(
+        sessionId,
+        requireGenerationClosed,
+      );
+      this.finalizationsInFlight.set(identity.documentKey, finalization);
     }
     try {
       await finalization;
     } finally {
-      if (this.finalizationsInFlight.get(sessionId) === finalization)
-        this.finalizationsInFlight.delete(sessionId);
+      if (this.finalizationsInFlight.get(identity.documentKey) === finalization)
+        this.finalizationsInFlight.delete(identity.documentKey);
     }
   }
 
-  private async finalizeStagedDocumentOnce(sessionId: string): Promise<void> {
-    const staged = await this.database.prisma.editorSession.findUnique({
+  private async finalizeStagedDocumentOnce(
+    sessionId: string,
+    requireGenerationClosed: boolean,
+  ): Promise<void> {
+    const generation = await this.database.prisma.editorSession.findUnique({
       where: { id: sessionId },
+      select: {
+        fileId: true,
+        baseVersionId: true,
+        documentKey: true,
+        finalizedFileVersionId: true,
+      },
+    });
+    if (!generation) throw new CallbackFailure();
+    if (generation.finalizedFileVersionId) return;
+
+    const participants = await this.database.prisma.editorSession.findMany({
+      where: {
+        fileId: generation.fileId,
+        baseVersionId: generation.baseVersionId,
+        documentKey: generation.documentKey,
+      },
+      select: { id: true, mode: true, status: true, closedAt: true },
+    });
+    if (
+      requireGenerationClosed &&
+      participants.some(
+        (participant) =>
+          participant.mode === EditorMode.EDIT &&
+          participant.status === EditorSessionStatus.ACTIVE &&
+          participant.closedAt === null,
+      )
+    )
+      return;
+
+    const staged = await this.database.prisma.editorSession.findMany({
+      where: {
+        fileId: generation.fileId,
+        baseVersionId: generation.baseVersionId,
+        documentKey: generation.documentKey,
+        mode: EditorMode.EDIT,
+        finalizedFileVersionId: null,
+        stagedArtifactId: { not: null },
+        stagedSha256: { not: null },
+        stagedSizeBytes: { not: null },
+      },
+      orderBy: [{ stagedAt: 'desc' }, { createdAt: 'desc' }],
       select: {
         id: true,
         stagedArtifactId: true,
         stagedSha256: true,
         stagedSizeBytes: true,
-        finalizedFileVersionId: true,
       },
     });
-    if (!staged) throw new CallbackFailure();
-    if (staged.finalizedFileVersionId) return;
-    if (
-      !staged.stagedArtifactId ||
-      !staged.stagedSha256 ||
-      staged.stagedSizeBytes === null
-    )
+    const source = staged[0];
+    if (!source || !source.stagedArtifactId || !source.stagedSha256)
       throw new CallbackFailure();
+    if (source.stagedSizeBytes === null) throw new CallbackFailure();
 
-    const stagedKey = this.stagedKey(sessionId, staged.stagedArtifactId);
+    const stagedKey = this.stagedKey(source.id, source.stagedArtifactId);
 
     // Storage precedes the database transaction: a committed FileVersion can
     // therefore never point at an absent immutable object. On transaction
     // failure the object is removed, while staging remains for a safe retry.
     const versionId = randomUUID();
-    let storageKey: string | undefined;
+    const storageKey = `files/${generation.fileId}/versions/${versionId}`;
+    let promoted = false;
     try {
-      const identity = await this.database.prisma.editorSession.findUnique({
-        where: { id: sessionId },
-        select: { fileId: true, finalizedFileVersionId: true },
-      });
-      if (!identity) throw new CallbackFailure();
-      if (identity.finalizedFileVersionId) return;
-      storageKey = `files/${identity.fileId}/versions/${versionId}`;
       if (
         (await this.objectStorage.stat(stagedKey)).sizeBytes !==
-        staged.stagedSizeBytes
+        source.stagedSizeBytes
       )
         throw new CallbackFailure();
       await this.objectStorage.promote(stagedKey, storageKey);
+      promoted = true;
 
       const finalized = await this.database.prisma.$transaction((transaction) =>
         this.commitEditorVersion(
           transaction,
-          sessionId,
+          generation,
+          source.id,
           versionId,
-          storageKey!,
+          storageKey,
+          requireGenerationClosed,
         ),
       );
       if (finalized.created) {
-        await this.objectStorage.delete(stagedKey).catch(() => {
-          this.logger.warn(
-            `Unable to remove finalized editor staging artifact for session ${sessionId}`,
-          );
-        });
+        const cleanup = staged.map((candidate) =>
+          this.objectStorage.delete(
+            this.stagedKey(candidate.id, candidate.stagedArtifactId!),
+          ),
+        );
+        await Promise.all(
+          cleanup.map((operation) =>
+            operation.catch(() => {
+              this.logger.warn(
+                `Unable to remove finalized editor staging artifact for generation ${generation.documentKey}`,
+              );
+            }),
+          ),
+        );
       } else {
         await this.objectStorage.delete(storageKey).catch(() => undefined);
       }
     } catch (error) {
-      if (storageKey) {
+      if (promoted) {
         await this.objectStorage.delete(storageKey).catch(() => {
           this.logger.warn(
             'Editor finalization database failure left a storage orphan',
@@ -966,8 +1061,13 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       // A concurrent callback may have committed and removed the staging
       // object before this invocation reached promotion.
       const winner = await this.database.prisma.editorSession
-        .findUnique({
-          where: { id: sessionId },
+        .findFirst({
+          where: {
+            fileId: generation.fileId,
+            baseVersionId: generation.baseVersionId,
+            documentKey: generation.documentKey,
+            finalizedFileVersionId: { not: null },
+          },
           select: { finalizedFileVersionId: true },
         })
         .catch(() => null);
@@ -978,16 +1078,31 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
 
   private async commitEditorVersion(
     transaction: Prisma.TransactionClient,
-    sessionId: string,
+    generation: {
+      fileId: string;
+      baseVersionId: string;
+      documentKey: string;
+    },
+    stagedSessionId: string,
     versionId: string,
     storageKey: string,
+    requireGenerationClosed: boolean,
   ): Promise<{ created: boolean }> {
-    // Serialize same-session callback retries before examining the File row.
+    // Serialize all callback retries for one shared ONLYOFFICE generation.
     const lockedSessions = await transaction.$queryRaw<Array<{ id: string }>>`
-      SELECT "id" FROM "EditorSession" WHERE "id" = ${sessionId}::uuid FOR UPDATE`;
+      SELECT "id" FROM "EditorSession"
+      WHERE "fileId" = ${generation.fileId}::uuid
+        AND "baseVersionId" = ${generation.baseVersionId}::uuid
+        AND "documentKey" = ${generation.documentKey}
+      FOR UPDATE`;
     if (!lockedSessions[0]) throw new CallbackFailure();
-    const session = await transaction.editorSession.findUnique({
-      where: { id: sessionId },
+
+    const sessions = await transaction.editorSession.findMany({
+      where: {
+        fileId: generation.fileId,
+        baseVersionId: generation.baseVersionId,
+        documentKey: generation.documentKey,
+      },
       select: {
         id: true,
         fileId: true,
@@ -1015,9 +1130,23 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         user: { select: { status: true } },
       },
     });
-    if (!session) throw new CallbackFailure();
-    if (session.finalizedFileVersionId) return { created: false };
+    if (!sessions.length) throw new CallbackFailure();
+    if (sessions.some((session) => session.finalizedFileVersionId))
+      return { created: false };
     if (
+      requireGenerationClosed &&
+      sessions.some(
+        (session) =>
+          session.mode === EditorMode.EDIT &&
+          session.status === EditorSessionStatus.ACTIVE &&
+          session.closedAt === null,
+      )
+    )
+      return { created: false };
+
+    const session = sessions.find((candidate) => candidate.id === stagedSessionId);
+    if (
+      !session ||
       session.mode !== EditorMode.EDIT ||
       !this.isCallbackEligible(session) ||
       !session.stagedArtifactId ||
@@ -1102,19 +1231,27 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
           source: 'EDITOR',
           sourceVersionId: session.baseVersionId,
           editorSessionId: session.id,
+          editorSessionIds: sessions.map((participant) => participant.id),
           editorActorType: session.actorType,
           mimeType: session.baseVersion.mimeType,
           sizeBytes: session.stagedSizeBytes.toString(),
         },
       },
     });
-    await transaction.editorSession.update({
-      where: { id: session.id },
+    await transaction.editorSession.updateMany({
+      where: {
+        id: { in: sessions.map((participant) => participant.id) },
+        mode: EditorMode.EDIT,
+      },
       data: {
         finalizedFileVersionId: versionId,
         finalizedAt: new Date(),
         status: EditorSessionStatus.CLOSED,
         closedAt: new Date(),
+        stagedArtifactId: null,
+        stagedSha256: null,
+        stagedSizeBytes: null,
+        stagedAt: null,
       },
     });
     return { created: true };

@@ -257,7 +257,7 @@ model FileVersion {
   processingTasks                 FileProcessingTask[] @relation("FileVersionProcessingTasks")
   indexedSearchDocuments          SearchDocument[]     @relation("SearchDocumentIndexedVersion")
   editorSessionsBasedOnVersion    EditorSession[]      @relation("EditorSessionBaseVersion")
-  finalizedEditorSession          EditorSession?       @relation("EditorSessionFinalizedVersion")
+  finalizedEditorSessions         EditorSession[]      @relation("EditorSessionFinalizedVersion")
 
   @@unique([fileId, versionNumber])
   @@unique([fileId, id])
@@ -384,7 +384,7 @@ model EditorSession {
   stagedSha256     String?
   stagedSizeBytes  BigInt?
   stagedAt         DateTime?
-  finalizedFileVersionId String? @unique @db.Uuid
+  finalizedFileVersionId String? @db.Uuid
   finalizedAt      DateTime?
   file          File                @relation("EditorSessionFile", fields: [fileId], references: [id], onDelete: Restrict)
   baseVersion   FileVersion         @relation("EditorSessionBaseVersion", fields: [fileId, baseVersionId], references: [fileId, id], onDelete: Restrict)
@@ -392,6 +392,7 @@ model EditorSession {
   user          User?               @relation("EditorSessionUser", fields: [userId], references: [id], onDelete: Restrict)
 
   @@index([documentKey])
+  @@index([fileId, baseVersionId, documentKey, mode, status])
 }
 
 model Favorite {
