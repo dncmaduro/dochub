@@ -6,6 +6,7 @@ import {
   DocumentRole,
   FileProcessingTaskType,
   FileVersionSource,
+  GeneralAccessRole,
   NodeType,
   prisma,
   TrashOperationStatus,
@@ -110,6 +111,7 @@ withDatabase('FilesService version history integration', () => {
         type: NodeType.FILE,
         name: `history-${suffix}.pdf`,
         normalizedName: `history-${suffix}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: ownerId,
       },
     });

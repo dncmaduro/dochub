@@ -18,6 +18,7 @@ import {
   type DocumentAuthorizationClient,
 } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
+import { FolderAccessService } from '../authorization/folder-access.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { CollectionsService } from '../collections/collections.service.js';
 import { contentSearchStatus } from '../common/file-processing-state.js';
@@ -80,6 +81,10 @@ export class NodesService {
     private readonly database: DatabaseService,
     private readonly authorization: DocumentAuthorizationService,
     private readonly collections?: CollectionsService,
+    private readonly folders: FolderAccessService = new FolderAccessService(
+      database,
+      authorization,
+    ),
   ) {}
 
   async createFolder(
@@ -90,20 +95,7 @@ export class NodesService {
     const parentId = dto.parentId ?? null;
     try {
       return await this.database.prisma.$transaction(async (transaction) => {
-        if (parentId === null) {
-          await this.requireActiveRootCreator(actorUserId, transaction);
-        } else {
-          const parent = await this.requireVisibleNode(
-            actorUserId,
-            parentId,
-            transaction,
-          );
-          this.requireFolder(parent.node);
-          this.requireCapability(
-            parent.capabilities,
-            DocumentCapability.CREATE,
-          );
-        }
+        await this.folders.requireCreate(actorUserId, parentId, transaction);
 
         const node = await transaction.node.create({
           data: {
@@ -149,37 +141,8 @@ export class NodesService {
     actorUserId: string,
     query: NodeListQueryDto,
   ): Promise<NodePage> {
-    // Root is a virtual container, not a Node row. Its effective general
-    // access is VIEWER; root listing remains ACL-based, while root creation
-    // is the explicit ACTIVE-user policy enforced by createFolder/files.
-    const groupIds = await this.authorization.findUserGroupIds(actorUserId);
-    if (groupIds === null) {
-      return { items: [], nextCursor: null };
-    }
-    const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
-    const cursor = decodeNodeCursor(query.cursor);
-    const nodes = await this.database.prisma.node.findMany({
-      where: {
-        parentId: null,
-        trashOperationId: null,
-        permissionEntries: {
-          some: { OR: this.principalConditions(actorUserId, groupIds) },
-        },
-        ...(cursor ? { OR: this.afterCursor(cursor) } : {}),
-      },
-      select: nodeSelect,
-      orderBy: [{ normalizedName: 'asc' }, { id: 'asc' }],
-      take: limit + 1,
-    });
-    return this.nodePage(
-      nodes,
-      limit,
-      await this.authorization.resolveExplicitCapabilities(
-        actorUserId,
-        nodes.map((node) => node.id),
-        groupIds,
-      ),
-    );
+    const root = await this.folders.requireBrowse(actorUserId, null);
+    return this.listFolder(actorUserId, root, query);
   }
 
   async listChildren(
@@ -187,9 +150,18 @@ export class NodesService {
     parentId: string,
     query: NodeListQueryDto,
   ): Promise<NodePage> {
-    const parent = await this.requireVisibleNode(actorUserId, parentId);
-    this.requireFolder(parent.node);
-    void this.collections?.recordRecent(actorUserId, parentId).catch(() => undefined);
+    const parent = await this.folders.requireBrowse(actorUserId, parentId);
+    void this.collections
+      ?.recordRecent(actorUserId, parentId)
+      .catch(() => undefined);
+    return this.listFolder(actorUserId, parent, query);
+  }
+
+  private async listFolder(
+    actorUserId: string,
+    folder: Awaited<ReturnType<FolderAccessService['requireBrowse']>>,
+    query: NodeListQueryDto,
+  ): Promise<NodePage> {
     const groupIds = await this.authorization.findUserGroupIds(actorUserId);
     if (groupIds === null) {
       throw new NotFoundException('Node not found');
@@ -198,42 +170,28 @@ export class NodesService {
     const cursor = decodeNodeCursor(query.cursor);
     const nodes = await this.database.prisma.node.findMany({
       where: {
-        parentId,
-        trashOperationId: null,
-        OR: [
-          { inheritPermissions: true },
-          {
-            inheritPermissions: false,
-            permissionEntries: {
-              some: { OR: this.principalConditions(actorUserId, groupIds) },
-            },
-          },
-        ],
+        ...this.folders.childVisibilityWhere(folder, actorUserId, groupIds),
         ...(cursor ? { AND: [{ OR: this.afterCursor(cursor) }] } : {}),
       },
       select: nodeSelect,
       orderBy: [{ normalizedName: 'asc' }, { id: 'asc' }],
       take: limit + 1,
     });
-    const explicit = await this.authorization.resolveExplicitCapabilities(
-      actorUserId,
-      nodes.map((node) => node.id),
-      groupIds,
-    );
-    const capabilitiesByNode = new Map<
-      string,
-      ReadonlySet<DocumentCapability>
-    >();
-    for (const node of nodes) {
-      const capabilities = new Set<DocumentCapability>(
-        node.inheritPermissions ? parent.capabilities : [],
+    const capabilitiesByNode =
+      await this.authorization.resolveCapabilitiesForNodes(
+        actorUserId,
+        nodes.map((node) => node.id),
       );
-      for (const capability of explicit.get(node.id) ?? []) {
-        capabilities.add(capability);
-      }
-      capabilitiesByNode.set(node.id, capabilities);
-    }
-    return this.nodePage(nodes, limit, capabilitiesByNode);
+    return this.nodePage(
+      nodes,
+      limit,
+      new Map(
+        [...capabilitiesByNode].map(([id, resolution]) => [
+          id,
+          resolution.capabilities,
+        ]),
+      ),
+    );
   }
 
   async breadcrumb(
@@ -489,19 +447,6 @@ export class NodesService {
     }
   }
 
-  private async requireActiveRootCreator(
-    actorUserId: string,
-    client: DocumentAuthorizationClient,
-  ): Promise<void> {
-    const user = await client.user.findUnique({
-      where: { id: actorUserId },
-      select: { status: true },
-    });
-    if (user?.status !== UserStatus.ACTIVE) {
-      throw new ForbiddenException('Root placement requires an active user');
-    }
-  }
-
   private requireFolder(node: SelectedNode): void {
     if (node.type !== NodeType.FOLDER) {
       throw new ConflictException('A file cannot be used as a parent folder');
@@ -544,16 +489,6 @@ export class NodesService {
         'A node cannot be moved into itself or its descendant',
       );
     }
-  }
-
-  private principalConditions(
-    userId: string,
-    groupIds: readonly string[],
-  ): Prisma.PermissionEntryWhereInput[] {
-    return [
-      { userId },
-      ...(groupIds.length > 0 ? [{ groupId: { in: [...groupIds] } }] : []),
-    ];
   }
 
   private afterCursor(cursor: {

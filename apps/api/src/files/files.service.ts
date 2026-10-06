@@ -19,7 +19,6 @@ import {
   isSearchableFileMimeType,
   NodeType,
   Prisma,
-  UserStatus,
 } from '@dochub/database';
 import type { StorageService } from '@dochub/storage';
 import { isUUID } from 'class-validator';
@@ -28,6 +27,7 @@ import {
   type DocumentAuthorizationClient,
 } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
+import { FolderAccessService } from '../authorization/folder-access.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
 import { FileValidationService } from './file-validation.service.js';
@@ -102,6 +102,10 @@ export class FilesService {
     private readonly validation: FileValidationService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly officeTemplates: OfficeTemplateService = new OfficeTemplateService(),
+    private readonly folders: FolderAccessService = new FolderAccessService(
+      database,
+      authorization,
+    ),
   ) {}
 
   async createOffice(
@@ -353,7 +357,11 @@ export class FilesService {
           transaction,
         );
         const lockedFiles = await transaction.$queryRaw<
-          Array<{ id: string; versionCounter: number; currentVersionId: string | null }>
+          Array<{
+            id: string;
+            versionCounter: number;
+            currentVersionId: string | null;
+          }>
         >`SELECT "id", "versionCounter", "currentVersionId"
           FROM "File"
           WHERE "id" = ${target.fileId}::uuid
@@ -380,7 +388,9 @@ export class FilesService {
               })
             : null;
           if (!current || current.source === FileVersionSource.EDITOR) {
-            throw new ConflictException('File version changed before upload completed');
+            throw new ConflictException(
+              'File version changed before upload completed',
+            );
           }
         }
         const versionNumber = lockedFile.versionCounter + 1;
@@ -534,7 +544,8 @@ export class FilesService {
             sha256: true,
           },
         });
-        if (!lockedSource) throw new NotFoundException('File version not found');
+        if (!lockedSource)
+          throw new NotFoundException('File version not found');
         const versionNumber = lockedFile.versionCounter + 1;
         const version = await transaction.fileVersion.create({
           data: {
@@ -619,24 +630,8 @@ export class FilesService {
     parentId: string | null,
     client: DocumentAuthorizationClient = this.database.prisma,
   ): Promise<void> {
-    if (parentId === null) {
-      const user = await client.user.findUnique({
-        where: { id: actorUserId },
-        select: { status: true },
-      });
-      if (user?.status !== UserStatus.ACTIVE) {
-        throw new ForbiddenException(
-          'Root placement requires an active user',
-        );
-      }
-      return;
-    }
-    this.assertUuid(parentId, 'Invalid parent ID');
-    const parent = await this.requireVisibleNode(actorUserId, parentId, client);
-    if (parent.type !== NodeType.FOLDER) {
-      throw new ConflictException('A file cannot be used as a parent folder');
-    }
-    this.requireCapability(parent.capabilities, DocumentCapability.CREATE);
+    if (parentId !== null) this.assertUuid(parentId, 'Invalid parent ID');
+    await this.folders.requireCreate(actorUserId, parentId, client);
   }
 
   private async requireEditableFile(
@@ -665,7 +660,12 @@ export class FilesService {
     nodeId: string,
     client: DocumentAuthorizationClient = this.database.prisma,
   ): Promise<VisibleNode & { fileId: string }> {
-    const node = await this.requireVisibleNode(actorUserId, nodeId, client, true);
+    const node = await this.requireVisibleNode(
+      actorUserId,
+      nodeId,
+      client,
+      true,
+    );
     if (node.type !== NodeType.FILE) {
       throw new ConflictException('A folder has no file versions');
     }
@@ -690,7 +690,9 @@ export class FilesService {
         name: true,
         createdAt: true,
         updatedAt: true,
-        ...(includeFile ? { file: { select: { id: true, currentVersionId: true } } } : {}),
+        ...(includeFile
+          ? { file: { select: { id: true, currentVersionId: true } } }
+          : {}),
       },
     });
     if (!node) {
@@ -707,7 +709,10 @@ export class FilesService {
     return {
       ...node,
       ...(includeFile
-        ? { fileId: node.file?.id, currentVersionId: node.file?.currentVersionId }
+        ? {
+            fileId: node.file?.id,
+            currentVersionId: node.file?.currentVersionId,
+          }
         : {}),
       capabilities: resolved.capabilities,
     };

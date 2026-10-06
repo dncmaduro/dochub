@@ -81,6 +81,7 @@ describeWithDatabase('NodesService integration', () => {
         type: NodeType.FOLDER,
         name: `Hidden ${suffix}`,
         normalizedName: `hidden ${suffix}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: adminId,
       },
     });
@@ -234,6 +235,7 @@ describeWithDatabase('NodesService integration', () => {
         name: `hidden-child-${suffix}`,
         normalizedName: `hidden-child-${suffix}`,
         inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: adminId,
       },
     });
@@ -265,6 +267,103 @@ describeWithDatabase('NodesService integration', () => {
     ).rejects.toMatchObject({
       status: 400,
     });
+  });
+
+  it('treats the virtual root as a browsable folder without requiring root ACL', async () => {
+    const direct = await prisma.node.create({
+      data: {
+        parentId: null,
+        type: NodeType.FILE,
+        name: `direct-root-${suffix}`,
+        normalizedName: `direct-root-${suffix}`,
+        inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
+        createdById: adminId,
+      },
+    });
+    const general = await prisma.node.create({
+      data: {
+        parentId: null,
+        type: NodeType.FILE,
+        name: `general-root-${suffix}`,
+        normalizedName: `general-root-${suffix}`,
+        inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.VIEWER,
+        createdById: adminId,
+      },
+    });
+    const restricted = await prisma.node.create({
+      data: {
+        parentId: null,
+        type: NodeType.FILE,
+        name: `restricted-root-${suffix}`,
+        normalizedName: `restricted-root-${suffix}`,
+        inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
+        createdById: adminId,
+      },
+    });
+    const nestedRestricted = await prisma.node.create({
+      data: {
+        parentId: null,
+        type: NodeType.FOLDER,
+        name: `nested-restricted-${suffix}`,
+        normalizedName: `nested-restricted-${suffix}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
+        createdById: adminId,
+      },
+    });
+    const nestedViewer = await prisma.node.create({
+      data: {
+        parentId: null,
+        type: NodeType.FOLDER,
+        name: `nested-viewer-${suffix}`,
+        normalizedName: `nested-viewer-${suffix}`,
+        generalAccessRole: GeneralAccessRole.VIEWER,
+        createdById: adminId,
+      },
+    });
+    nodeIds.add(direct.id);
+    nodeIds.add(general.id);
+    nodeIds.add(restricted.id);
+    nodeIds.add(nestedRestricted.id);
+    nodeIds.add(nestedViewer.id);
+    await prisma.permissionEntry.create({
+      data: {
+        nodeId: direct.id,
+        userId: memberId,
+        role: DocumentRole.VIEWER,
+      },
+    });
+
+    const rootPage = await nodes.listRoot(memberId, { limit: 100 });
+    const rootIds = rootPage.items.map((node) => node.id);
+    expect(rootIds).toContain(direct.id);
+    expect(rootIds).toContain(general.id);
+    expect(rootIds).not.toContain(restricted.id);
+    expect(rootIds).not.toContain(nestedRestricted.id);
+    expect(rootIds).toContain(nestedViewer.id);
+
+    await expect(nodes.getNode(memberId, direct.id)).resolves.toMatchObject({
+      id: direct.id,
+      capabilities: expect.arrayContaining([DocumentCapability.VIEW]),
+    });
+    await expect(
+      nodes.listChildren(memberId, nestedViewer.id, { limit: 100 }),
+    ).resolves.toMatchObject({ items: [] });
+
+    await prisma.permissionEntry.create({
+      data: {
+        nodeId: restricted.id,
+        userId: memberId,
+        role: DocumentRole.VIEWER,
+      },
+    });
+    expect(
+      (await nodes.listRoot(memberId, { limit: 100 })).items.map(
+        (node) => node.id,
+      ),
+    ).toContain(restricted.id);
   });
 
   it('returns only the accessible breadcrumb suffix', async () => {

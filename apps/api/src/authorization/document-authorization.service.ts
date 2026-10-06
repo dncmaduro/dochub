@@ -1,15 +1,22 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { DocumentRole, Prisma, type PrismaClient } from '@dochub/database';
+import {
+  DocumentRole,
+  GeneralAccessRole,
+  Prisma,
+  type PrismaClient,
+} from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
 import {
   DOCUMENT_ROLE_CAPABILITIES,
   DocumentCapability,
+  generalAccessCapabilities,
 } from './document-capability.js';
 
 interface NodeChainRow {
   id: string;
   parentId: string | null;
   inheritPermissions: boolean;
+  generalAccessRole: GeneralAccessRole;
   trashOperationId: string | null;
   depth: number;
 }
@@ -56,13 +63,13 @@ export class DocumentAuthorizationService {
       (NodeChainRow & { targetId: string })[]
     >`
       WITH RECURSIVE node_chain AS (
-        SELECT "id" AS "targetId", "id", "parentId", "inheritPermissions", "trashOperationId", 0 AS depth, ARRAY["id"] AS path
+        SELECT "id" AS "targetId", "id", "parentId", "inheritPermissions", "generalAccessRole", "trashOperationId", 0 AS depth, ARRAY["id"] AS path
         FROM "Node" WHERE "id" IN (${Prisma.join(uniqueIds.map((id) => Prisma.sql`${id}::uuid`))})
         UNION ALL
-        SELECT child."targetId", parent."id", parent."parentId", parent."inheritPermissions", parent."trashOperationId", child.depth + 1, child.path || parent."id"
+        SELECT child."targetId", parent."id", parent."parentId", parent."inheritPermissions", parent."generalAccessRole", parent."trashOperationId", child.depth + 1, child.path || parent."id"
         FROM "Node" AS parent INNER JOIN node_chain AS child ON parent."id" = child."parentId"
         WHERE child."inheritPermissions" = true AND NOT parent."id" = ANY(child.path)
-      ) SELECT "targetId", "id", "parentId", "inheritPermissions", "trashOperationId", depth FROM node_chain
+      ) SELECT "targetId", "id", "parentId", "inheritPermissions", "generalAccessRole", "trashOperationId", depth FROM node_chain
     `;
     const chains = new Map<string, (NodeChainRow & { targetId: string })[]>();
     for (const row of nodeChain)
@@ -91,6 +98,11 @@ export class DocumentAuthorizationService {
         for (const node of chain)
           for (const capability of explicit.get(node.id) ?? [])
             capabilities.add(capability);
+        for (const capability of generalAccessCapabilities(
+          chain.find((node) => node.depth === 0)?.generalAccessRole,
+        )) {
+          capabilities.add(capability);
+        }
         results.set(nodeId, { nodeId, capabilities });
       }
     }
@@ -118,6 +130,7 @@ export class DocumentAuthorizationService {
           "id",
           "parentId",
           "inheritPermissions",
+          "generalAccessRole",
           "trashOperationId",
           0 AS depth,
           ARRAY["id"] AS path
@@ -130,6 +143,7 @@ export class DocumentAuthorizationService {
           parent."id",
           parent."parentId",
           parent."inheritPermissions",
+          parent."generalAccessRole",
           parent."trashOperationId",
           child.depth + 1,
           child.path || parent."id"
@@ -138,7 +152,7 @@ export class DocumentAuthorizationService {
         WHERE child."inheritPermissions" = true
           AND NOT parent."id" = ANY(child.path)
       )
-      SELECT "id", "parentId", "inheritPermissions", "trashOperationId", depth
+      SELECT "id", "parentId", "inheritPermissions", "generalAccessRole", "trashOperationId", depth
       FROM node_chain
     `;
 
@@ -168,6 +182,11 @@ export class DocumentAuthorizationService {
       for (const capability of capabilitiesByNode.get(node.id) ?? []) {
         capabilities.add(capability);
       }
+    }
+    for (const capability of generalAccessCapabilities(
+      nodeChain.find((node) => node.depth === 0)?.generalAccessRole,
+    )) {
+      capabilities.add(capability);
     }
     return { nodeId, capabilities };
   }

@@ -11,7 +11,10 @@ import {
   NodeType,
 } from '@dochub/database';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
-import { DocumentCapability } from '../authorization/document-capability.js';
+import {
+  DocumentCapability,
+  generalAccessCapabilities,
+} from '../authorization/document-capability.js';
 import type { AuthPrincipal } from '../auth/auth.types.js';
 import { DatabaseService } from '../database/database.service.js';
 
@@ -41,7 +44,8 @@ export class DocumentAccessService {
     auth: AuthPrincipal | undefined,
     capability: DocumentCapability,
   ): Promise<ResolvedDocumentAccess> {
-    if (!UUID_PATTERN.test(nodeId)) throw new NotFoundException('Document not found');
+    if (!UUID_PATTERN.test(nodeId))
+      throw new NotFoundException('Document not found');
     const node = await this.database.prisma.node.findFirst({
       where: { id: nodeId, trashOperationId: null },
       select: {
@@ -55,13 +59,17 @@ export class DocumentAccessService {
     if (!node) throw new NotFoundException('Document not found');
     await this.assertActiveChain(node.id);
 
-    const capabilities = this.generalAccessCapabilities(node.generalAccessRole);
+    const capabilities = generalAccessCapabilities(node.generalAccessRole);
     if (auth) {
-      const acl = await this.authorization.resolveCapabilities(auth.userId, node.id);
+      const acl = await this.authorization.resolveCapabilities(
+        auth.userId,
+        node.id,
+      );
       for (const granted of acl.capabilities) capabilities.add(granted);
     }
 
-    const allowed = capabilities.has(DocumentCapability.VIEW) && capabilities.has(capability);
+    const allowed =
+      capabilities.has(DocumentCapability.VIEW) && capabilities.has(capability);
     await this.audit(node.id, auth, capability, allowed);
     if (!capabilities.has(DocumentCapability.VIEW)) {
       if (!auth && node.generalAccessRole === GeneralAccessRole.RESTRICTED)
@@ -69,7 +77,9 @@ export class DocumentAccessService {
       throw new ForbiddenException('You do not have access to this document');
     }
     if (!capabilities.has(capability))
-      throw new ForbiddenException('You do not have permission to access this document');
+      throw new ForbiddenException(
+        'You do not have permission to access this document',
+      );
 
     return {
       node: {
@@ -82,17 +92,6 @@ export class DocumentAccessService {
       mode: auth ? 'AUTHENTICATED' : 'PUBLIC',
       capabilities,
     };
-  }
-
-  private generalAccessCapabilities(role: GeneralAccessRole) {
-    const capabilities = new Set<DocumentCapability>();
-    if (role !== GeneralAccessRole.RESTRICTED) {
-      capabilities.add(DocumentCapability.VIEW);
-      capabilities.add(DocumentCapability.PREVIEW);
-    }
-    if (role === GeneralAccessRole.EDITOR)
-      capabilities.add(DocumentCapability.EDIT);
-    return capabilities;
   }
 
   private audit(
@@ -126,7 +125,10 @@ export class DocumentAccessService {
         WHERE child."inheritPermissions" = true AND NOT parent."id" = ANY(child.path)
       ) SELECT "trashOperationId" FROM node_chain
     `;
-    if (chain.length === 0 || chain.some((row) => row.trashOperationId !== null))
+    if (
+      chain.length === 0 ||
+      chain.some((row) => row.trashOperationId !== null)
+    )
       throw new NotFoundException('Document not found');
   }
 }

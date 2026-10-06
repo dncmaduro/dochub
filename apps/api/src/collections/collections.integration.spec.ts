@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DocumentRole,
+  GeneralAccessRole,
   NodeType,
   prisma,
   SystemRole,
@@ -29,6 +30,7 @@ withDb('CollectionsService integration', () => {
         type: NodeType.FOLDER,
         name: `${name}-${suffix}`,
         normalizedName: `${name}-${suffix}`.toLowerCase(),
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: actorId,
       },
     });

@@ -14,8 +14,10 @@ import {
 } from '@dochub/database';
 import { LocalFileStorage } from '@dochub/storage';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
+import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
 import { FileValidationService } from './file-validation.service.js';
+import { FileReadService } from './file-read.service.js';
 import type { TempUpload } from './file-upload.types.js';
 import { OfficeFileKind } from './office-template.service.js';
 import { FilesService } from './files.service.js';
@@ -42,6 +44,7 @@ withDatabase('root creation access policy integration', () => {
     new FileValidationService(),
     storage,
   );
+  const reads = new FileReadService(database, authorization, storage);
   const nodes = new NodesService(database, authorization);
   const createdVersionIds = new Set<string>();
   const createdOfficeNodeIds: string[] = [];
@@ -133,10 +136,20 @@ withDatabase('root creation access policy integration', () => {
       null,
     );
     const uploaded = await files.createInitial(memberId, rootUpload);
-    await rm(path.dirname(rootUpload.tempPath), { recursive: true, force: true });
+    await rm(path.dirname(rootUpload.tempPath), {
+      recursive: true,
+      force: true,
+    });
     nodeIds.add(uploaded.node.id);
     fileIds.add(uploaded.file.id);
     createdVersionIds.add(uploaded.version.id);
+    const generalAccessRead = await reads.open(
+      viewerId,
+      uploaded.node.id,
+      DocumentCapability.PREVIEW,
+      undefined,
+    );
+    generalAccessRead.stream.destroy();
 
     for (const kind of [
       OfficeFileKind.DOCX,
@@ -183,18 +196,24 @@ withDatabase('root creation access policy integration', () => {
       select: { nodeId: true, role: true },
     });
     expect(ownerEntries).toHaveLength(5);
-    expect(ownerEntries.every((entry) => entry.role === DocumentRole.OWNER)).toBe(
-      true,
-    );
+    expect(
+      ownerEntries.every((entry) => entry.role === DocumentRole.OWNER),
+    ).toBe(true);
 
     const versionRows = await prisma.fileVersion.findMany({
       where: { fileId: { in: [...fileIds] } },
       select: { fileId: true, source: true, versionNumber: true },
     });
     expect(
-      versionRows.filter((version) => version.source === FileVersionSource.SYSTEM),
+      versionRows.filter(
+        (version) => version.source === FileVersionSource.SYSTEM,
+      ),
     ).toHaveLength(3);
-    expect(versionRows.filter((version) => version.source === FileVersionSource.UPLOAD)).toHaveLength(1);
+    expect(
+      versionRows.filter(
+        (version) => version.source === FileVersionSource.UPLOAD,
+      ),
+    ).toHaveLength(1);
 
     await expect(
       prisma.auditLog.findMany({
@@ -235,10 +254,13 @@ withDatabase('root creation access policy integration', () => {
       Buffer.from('%PDF-1.7\ndenied nested upload\n'),
       protectedFolder.id,
     );
-    await expect(files.createInitial(memberId, deniedUpload)).rejects.toMatchObject(
-      { status: 403 },
-    );
-    await rm(path.dirname(deniedUpload.tempPath), { recursive: true, force: true });
+    await expect(
+      files.createInitial(memberId, deniedUpload),
+    ).rejects.toMatchObject({ status: 403 });
+    await rm(path.dirname(deniedUpload.tempPath), {
+      recursive: true,
+      force: true,
+    });
 
     await expect(
       prisma.node.findFirst({
@@ -265,10 +287,13 @@ withDatabase('root creation access policy integration', () => {
         Buffer.from('%PDF-1.7\ndenied root upload\n'),
         null,
       );
-      await expect(files.createInitial(actorId, deniedUpload)).rejects.toMatchObject(
-        { status: 403 },
-      );
-      await rm(path.dirname(deniedUpload.tempPath), { recursive: true, force: true });
+      await expect(
+        files.createInitial(actorId, deniedUpload),
+      ).rejects.toMatchObject({ status: 403 });
+      await rm(path.dirname(deniedUpload.tempPath), {
+        recursive: true,
+        force: true,
+      });
     }
     expect(
       await prisma.node.count({ where: { createdById: { in: actorIds } } }),
@@ -287,7 +312,9 @@ withDatabase('root creation access policy integration', () => {
       },
     });
     await expect(
-      nodes.renameNode(viewerId, fileId, { name: `viewer-rename-${suffix}.docx` }),
+      nodes.renameNode(viewerId, fileId, {
+        name: `viewer-rename-${suffix}.docx`,
+      }),
     ).rejects.toMatchObject({ status: 403 });
     await expect(
       nodes.moveNode(viewerId, fileId, { parentId: null }),
@@ -297,10 +324,13 @@ withDatabase('root creation access policy integration', () => {
       Buffer.from('%PDF-1.7\nviewer version\n'),
       null,
     );
-    await expect(files.createVersion(viewerId, fileId, deniedUpload)).rejects.toMatchObject(
-      { status: 403 },
-    );
-    await rm(path.dirname(deniedUpload.tempPath), { recursive: true, force: true });
+    await expect(
+      files.createVersion(viewerId, fileId, deniedUpload),
+    ).rejects.toMatchObject({ status: 403 });
+    await rm(path.dirname(deniedUpload.tempPath), {
+      recursive: true,
+      force: true,
+    });
   });
 });
 
@@ -309,7 +339,9 @@ async function temporaryUpload(
   bytes: Buffer,
   parentId: string | null,
 ): Promise<TempUpload> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'dochub-root-upload-'));
+  const directory = await mkdtemp(
+    path.join(os.tmpdir(), 'dochub-root-upload-'),
+  );
   const tempPath = path.join(directory, 'upload');
   await writeFile(tempPath, bytes);
   return {

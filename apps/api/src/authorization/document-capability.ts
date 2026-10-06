@@ -1,4 +1,4 @@
-import { DocumentRole } from '@dochub/database';
+import { DocumentRole, GeneralAccessRole } from '@dochub/database';
 
 export enum DocumentCapability {
   VIEW = 'VIEW',
@@ -44,3 +44,18 @@ export const DOCUMENT_ROLE_CAPABILITIES: Readonly<
   [DocumentRole.EDITOR]: editorCapabilities,
   [DocumentRole.OWNER]: ownerCapabilities,
 });
+
+/** Capabilities granted by a node's link/general-access policy. */
+export function generalAccessCapabilities(
+  role: GeneralAccessRole | undefined,
+): Set<DocumentCapability> {
+  const capabilities = new Set<DocumentCapability>();
+  if (role === GeneralAccessRole.VIEWER || role === GeneralAccessRole.EDITOR) {
+    capabilities.add(DocumentCapability.VIEW);
+    capabilities.add(DocumentCapability.PREVIEW);
+  }
+  if (role === GeneralAccessRole.EDITOR) {
+    capabilities.add(DocumentCapability.EDIT);
+  }
+  return capabilities;
+}

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DocumentRole,
+  GeneralAccessRole,
   NodeType,
   prisma,
   SystemRole,
@@ -96,6 +97,7 @@ describeWithDatabase('PermissionsService integration', () => {
         type: NodeType.FOLDER,
         name: `permission-root-${suffix}`,
         normalizedName: `permission-root-${suffix}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: actorId,
       },
     });
@@ -107,6 +109,7 @@ describeWithDatabase('PermissionsService integration', () => {
         name: `permission-node-${suffix}`,
         normalizedName: `permission-node-${suffix}`,
         inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: actorId,
       },
     });
@@ -118,6 +121,7 @@ describeWithDatabase('PermissionsService integration', () => {
         type: NodeType.FOLDER,
         name: `inherited-node-${suffix}`,
         normalizedName: `inherited-node-${suffix}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: actorId,
       },
     });

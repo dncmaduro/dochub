@@ -9,7 +9,7 @@ import { Test } from '@nestjs/testing';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DocumentRole, FileVersionSource, NodeType, prisma, SystemRole, UserStatus } from '@dochub/database';
+import { DocumentRole, FileVersionSource, GeneralAccessRole, NodeType, prisma, SystemRole, UserStatus } from '@dochub/database';
 import { LocalFileStorage } from '@dochub/storage';
 import { AppModule } from '../app.module.js';
 import { AuthSessionService } from '../auth/auth-session.service.js';
@@ -28,7 +28,7 @@ withDatabase('preview HTTP integration', () => {
       { id: deniedUserId, email: `preview-denied-${suffix}@x.test`, normalizedEmail: `preview-denied-${suffix}@x.test`, displayName: 'Preview Denied', status: UserStatus.ACTIVE },
       { id: adminId, email: `preview-admin-${suffix}@x.test`, normalizedEmail: `preview-admin-${suffix}@x.test`, displayName: 'Preview Admin', status: UserStatus.ACTIVE, systemRole: SystemRole.ADMIN },
     ] });
-    await prisma.node.create({ data: { id: nodeId, type: NodeType.FILE, name: 'preview.pdf', normalizedName: `preview-${suffix}`, createdById: userId } }); await prisma.permissionEntry.createMany({ data: [{ nodeId, userId, role: DocumentRole.OWNER }, { nodeId, userId: viewerId, role: DocumentRole.VIEWER }] }); await prisma.file.create({ data: { id: fileId, nodeId } });
+    await prisma.node.create({ data: { id: nodeId, type: NodeType.FILE, name: 'preview.pdf', normalizedName: `preview-${suffix}`, generalAccessRole: GeneralAccessRole.RESTRICTED, createdById: userId } }); await prisma.permissionEntry.createMany({ data: [{ nodeId, userId, role: DocumentRole.OWNER }, { nodeId, userId: viewerId, role: DocumentRole.VIEWER }] }); await prisma.file.create({ data: { id: fileId, nodeId } });
     versionId = randomUUID(); storageKey = `files/${fileId}/versions/${versionId}`; await new LocalFileStorage(root).putStream(storageKey, Readable.from(bytes));
     await prisma.fileVersion.create({ data: { id: versionId, fileId, versionNumber: 1, storageKey, originalFilename: 'preview.pdf', mimeType: 'application/pdf', sizeBytes: BigInt(bytes.length), sha256: createHash('sha256').update(bytes).digest('hex'), source: FileVersionSource.UPLOAD, createdById: userId } }); await prisma.file.update({ where: { id: fileId }, data: { currentVersionId: versionId, versionCounter: 1 } });
     const sessions = app.get(AuthSessionService);

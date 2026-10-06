@@ -6,6 +6,7 @@ import {
   EditorActorType,
   EditorMode,
   FileProcessingTaskType,
+  GeneralAccessRole,
   NodeType,
   prisma,
   SystemRole,
@@ -162,6 +163,7 @@ describeWithDatabase('TrashService integration', () => {
         type,
         name,
         normalizedName: `${name}-${randomUUID()}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: actorId,
       },
     });

@@ -36,6 +36,7 @@ withDb('SearchService integration', () => {
         parentId,
         name,
         normalizedName: `${name.toLowerCase()}-${randomUUID()}`,
+        generalAccessRole: 'RESTRICTED',
         createdById: actorId,
       },
     });
@@ -228,6 +229,7 @@ withDb('SearchService integration', () => {
         type: NodeType.FILE,
         name: `Inherited child ${suffix}`,
         normalizedName: `inherited-child-${randomUUID()}`,
+        generalAccessRole: 'RESTRICTED',
         createdById: actorId,
       },
     });
@@ -239,6 +241,7 @@ withDb('SearchService integration', () => {
         name: `Boundary ${suffix}`,
         normalizedName: `boundary-${randomUUID()}`,
         inheritPermissions: false,
+        generalAccessRole: 'RESTRICTED',
         createdById: actorId,
       },
     });
@@ -249,6 +252,7 @@ withDb('SearchService integration', () => {
         type: NodeType.FILE,
         name: `Boundary child ${suffix}`,
         normalizedName: `boundary-child-${randomUUID()}`,
+        generalAccessRole: 'RESTRICTED',
         createdById: actorId,
       },
     });
@@ -497,10 +501,12 @@ withDb('SearchService integration', () => {
       limit: 2,
       cursor: first.nextCursor!,
     });
-    expect(new Set([...first.items, ...second.items].map((item) => item.id)).size).toBe(3);
-    expect(new Set([...first.items, ...second.items].map((item) => item.id))).toEqual(
-      new Set([named.id, contentOnly.id, trailingVisible.id]),
-    );
+    expect(
+      new Set([...first.items, ...second.items].map((item) => item.id)).size,
+    ).toBe(3);
+    expect(
+      new Set([...first.items, ...second.items].map((item) => item.id)),
+    ).toEqual(new Set([named.id, contentOnly.id, trailingVisible.id]));
     expect(second.nextCursor).toBeNull();
 
     const visibleA = await contentFile('visible-a.pdf', 'hidden cursor needle');
@@ -518,7 +524,10 @@ withDb('SearchService integration', () => {
   });
 
   it('hides trashed content and restores it when current provenance remains valid', async () => {
-    const content = await contentFile('trash-content.pdf', 'restore content needle');
+    const content = await contentFile(
+      'trash-content.pdf',
+      'restore content needle',
+    );
     const operation = await prisma.trashOperation.create({
       data: {
         rootNodeId: content.id,
@@ -633,7 +642,7 @@ withDb('SearchService integration', () => {
     expect(await visible('acl boundary unique')).not.toContain(blocked.id);
     expect(await visible('acl direct child unique')).toContain(directChild.id);
     expect(await visible('acl admin unique')).not.toContain(adminOnly.id);
-    expect(await visible('acl public unique')).not.toContain(publicOnly.id);
+    expect(await visible('acl public unique')).toContain(publicOnly.id);
     expect(
       (await search.search(adminId, { q: 'acl admin unique' })).items.map(
         (item) => item.id,

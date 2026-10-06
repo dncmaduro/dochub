@@ -394,6 +394,10 @@ describe('streaming file uploads (e2e)', () => {
       'x-content-type-options': 'nosniff',
     });
     expect(content.headers['content-disposition']).toContain('inline');
+    await request(app.getHttpServer())
+      .get(`/nodes/${uploaded.body.node.id}/content`)
+      .set('x-test-user', aclLessAdminId)
+      .expect(200);
     const range = await request(app.getHttpServer())
       .get(`/documents/${uploaded.body.node.id}/content`)
       .set('Range', 'bytes=11-14')
@@ -871,7 +875,7 @@ describe('streaming file uploads (e2e)', () => {
           type: options.type ?? NodeType.FILE,
           name: `visibility-${id}`,
           normalizedName: `visibility-${id}`,
-          generalAccessRole: options.generalAccessRole,
+          generalAccessRole: options.generalAccessRole ?? 'RESTRICTED',
           trashOperationId,
           createdById: actorId,
         },
@@ -879,8 +883,7 @@ describe('streaming file uploads (e2e)', () => {
       return { id, trashOperationId };
     };
     const invisible = await makeNode({ parentId: null });
-    const publicOnly = await makeNode({ parentId: null, generalAccessRole: 'VIEWER' });
-    for (const { id } of [invisible, publicOnly]) {
+    for (const { id } of [invisible]) {
       await request(app.getHttpServer())
         .get(`/nodes/${id}/content`)
         .expect(404);
@@ -927,6 +930,7 @@ describe('streaming file uploads (e2e)', () => {
         type: NodeType.FILE,
         name: `admin-${nodeId}.pdf`,
         normalizedName: `admin-${nodeId}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: actorId,
       },
     });

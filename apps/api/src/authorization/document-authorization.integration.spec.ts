@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DocumentRole, NodeType, prisma, UserStatus } from '@dochub/database';
+import {
+  DocumentRole,
+  GeneralAccessRole,
+  NodeType,
+  prisma,
+  UserStatus,
+} from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
 import { DocumentCapability } from './document-capability.js';
 import { DocumentAuthorizationService } from './document-authorization.service.js';
@@ -60,6 +66,7 @@ describeWithDatabase('DocumentAuthorizationService integration', () => {
           type: NodeType.FOLDER,
           name: 'root',
           normalizedName: 'root',
+          generalAccessRole: GeneralAccessRole.RESTRICTED,
           createdById: actorId,
         },
         {
@@ -68,6 +75,7 @@ describeWithDatabase('DocumentAuthorizationService integration', () => {
           type: NodeType.FOLDER,
           name: 'inherited',
           normalizedName: 'inherited',
+          generalAccessRole: GeneralAccessRole.RESTRICTED,
           createdById: actorId,
         },
         {
@@ -76,6 +84,7 @@ describeWithDatabase('DocumentAuthorizationService integration', () => {
           type: NodeType.FILE,
           name: 'inherited-file',
           normalizedName: 'inherited-file',
+          generalAccessRole: GeneralAccessRole.RESTRICTED,
           createdById: actorId,
         },
         {
@@ -85,6 +94,7 @@ describeWithDatabase('DocumentAuthorizationService integration', () => {
           name: 'boundary',
           normalizedName: 'boundary',
           inheritPermissions: false,
+          generalAccessRole: GeneralAccessRole.RESTRICTED,
           createdById: actorId,
         },
         {
@@ -93,6 +103,7 @@ describeWithDatabase('DocumentAuthorizationService integration', () => {
           type: NodeType.FILE,
           name: 'boundary-file',
           normalizedName: 'boundary-file',
+          generalAccessRole: GeneralAccessRole.RESTRICTED,
           createdById: actorId,
         },
       ],

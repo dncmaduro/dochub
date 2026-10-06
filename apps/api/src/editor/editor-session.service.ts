@@ -30,7 +30,10 @@ import {
 } from '@dochub/database';
 import type { StorageService } from '@dochub/storage';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
-import { DocumentCapability } from '../authorization/document-capability.js';
+import {
+  DocumentCapability,
+  generalAccessCapabilities,
+} from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
 import { CollectionsService } from '../collections/collections.service.js';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
@@ -97,9 +100,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
    * later open reuse an entry whose source capability was revoked on close.
    */
   static documentKey(versionId: string, sessionId?: string): string {
-    const scope = sessionId
-      ? `editor-session:${sessionId}`
-      : 'editor-document';
+    const scope = sessionId ? `editor-session:${sessionId}` : 'editor-document';
     return `oo-${createHash('sha256').update(`dochub-file-version:${versionId}:${scope}`).digest('base64url')}`;
   }
 
@@ -116,13 +117,16 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       node.id,
     );
     const effective = new Set(capabilities.capabilities);
-    for (const capability of this.generalAccessCapabilities(node.generalAccessRole))
+    for (const capability of generalAccessCapabilities(node.generalAccessRole))
       effective.add(capability);
     if (!effective.has(DocumentCapability.VIEW))
       throw new NotFoundException('Node not found');
     const canEdit = effective.has(DocumentCapability.EDIT);
     const mode = requestedMode ?? (canEdit ? 'EDIT' : 'VIEW');
-    if ((mode === 'EDIT' && !canEdit) || !effective.has(DocumentCapability.PREVIEW))
+    if (
+      (mode === 'EDIT' && !canEdit) ||
+      !effective.has(DocumentCapability.PREVIEW)
+    )
       throw new ForbiddenException(
         'You do not have the required document capability',
       );
@@ -144,13 +148,18 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     const node = await this.workspaceNode(nodeId);
     if (!node || node.type !== NodeType.FILE)
       throw new NotFoundException('Document not found');
-    const capabilities = this.generalAccessCapabilities(node.generalAccessRole);
+    const capabilities = generalAccessCapabilities(node.generalAccessRole);
     if (!capabilities.has(DocumentCapability.VIEW))
       throw new ForbiddenException('You do not have access to this document');
     const canEdit = capabilities.has(DocumentCapability.EDIT);
     const mode = requestedMode ?? (canEdit ? 'EDIT' : 'VIEW');
-    if ((mode === 'EDIT' && !canEdit) || !capabilities.has(DocumentCapability.PREVIEW))
-      throw new ForbiddenException('You do not have the required document capability');
+    if (
+      (mode === 'EDIT' && !canEdit) ||
+      !capabilities.has(DocumentCapability.PREVIEW)
+    )
+      throw new ForbiddenException(
+        'You do not have the required document capability',
+      );
     return this.createResolvedSession(node, capabilities, {
       actorType: EditorActorType.PUBLIC,
       userId: null,
@@ -180,7 +189,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async createResolvedSession(
-    node: NonNullable<Awaited<ReturnType<EditorSessionService['workspaceNode']>>>,
+    node: NonNullable<
+      Awaited<ReturnType<EditorSessionService['workspaceNode']>>
+    >,
     capabilities: ReadonlySet<DocumentCapability>,
     actor: {
       actorType: EditorActorType;
@@ -190,7 +201,8 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     },
   ) {
     const config = this.requireConfig();
-    if (node.type !== NodeType.FILE) throw new ConflictException('Node is not a file');
+    if (node.type !== NodeType.FILE)
+      throw new ConflictException('Node is not a file');
     if (!node.file?.currentVersionId || !node.file.currentVersion)
       throw new ServiceUnavailableException('File is unavailable');
     const closingSession = await this.database.prisma.editorSession.findFirst({
@@ -206,7 +218,10 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     if (closingSession)
       throw new ConflictException('File is still being saved');
     const version = node.file.currentVersion;
-    const extension = fileExtension(version.originalFilename, version.extension);
+    const extension = fileExtension(
+      version.originalFilename,
+      version.extension,
+    );
     const documentType = officeDocumentType(extension);
     if (!documentType)
       throw new UnsupportedMediaTypeException(
@@ -239,7 +254,11 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         documentKey: true,
       },
     });
-    const fetchToken = await this.signFetchToken(session.id, version.id, config);
+    const fetchToken = await this.signFetchToken(
+      session.id,
+      version.id,
+      config,
+    );
     const documentUrl = new URL(
       `editor-sessions/${session.id}/content`,
       config.internalApiUrl,
@@ -297,9 +316,10 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
             ? AuditActorType.PUBLIC
             : AuditActorType.USER,
         actorId: actor.userId,
-        action: actor.actorType === EditorActorType.PUBLIC
-          ? 'PUBLIC_EDITOR_SESSION_CREATED'
-          : 'EDITOR_SESSION_CREATED',
+        action:
+          actor.actorType === EditorActorType.PUBLIC
+            ? 'PUBLIC_EDITOR_SESSION_CREATED'
+            : 'EDITOR_SESSION_CREATED',
         resourceType: 'NODE',
         resourceId: node.id,
         result: AuditResult.SUCCESS,
@@ -358,7 +378,11 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
 
   async status(actorUserId: string, sessionId: string) {
     const session = await this.database.prisma.editorSession.findFirst({
-      where: { id: sessionId, userId: actorUserId, actorType: EditorActorType.USER },
+      where: {
+        id: sessionId,
+        userId: actorUserId,
+        actorType: EditorActorType.USER,
+      },
       select: { id: true, status: true, mode: true, closedAt: true },
     });
     if (!session) throw new NotFoundException('Editor session not found');
@@ -463,7 +487,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     const expiredArtifacts = await this.database.prisma.editorSession.findMany({
       where: {
         mode: EditorMode.EDIT,
-        status: { in: [EditorSessionStatus.FAILED, EditorSessionStatus.CLOSED] },
+        status: {
+          in: [EditorSessionStatus.FAILED, EditorSessionStatus.CLOSED],
+        },
         finalizedFileVersionId: null,
         stagedArtifactId: { not: null },
         OR: [
@@ -504,17 +530,6 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private generalAccessCapabilities(role: GeneralAccessRole) {
-    const capabilities = new Set<DocumentCapability>();
-    if (role !== GeneralAccessRole.RESTRICTED) {
-      capabilities.add(DocumentCapability.VIEW);
-      capabilities.add(DocumentCapability.PREVIEW);
-    }
-    if (role === GeneralAccessRole.EDITOR)
-      capabilities.add(DocumentCapability.EDIT);
-    return capabilities;
-  }
-
   private async sessionCapabilities(
     actorType: EditorActorType,
     userId: string | null,
@@ -525,14 +540,18 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     if (actorType === EditorActorType.PUBLIC) {
       if (userId || generalAccessRole === GeneralAccessRole.RESTRICTED)
         return null;
-      return this.generalAccessCapabilities(generalAccessRole);
+      return generalAccessCapabilities(generalAccessRole);
     }
     if (!userId) return null;
     const resolved = transaction
-      ? await this.authorization.resolveCapabilities(userId, nodeId, transaction)
+      ? await this.authorization.resolveCapabilities(
+          userId,
+          nodeId,
+          transaction,
+        )
       : await this.authorization.resolveCapabilities(userId, nodeId);
     const capabilities = new Set(resolved.capabilities);
-    for (const capability of this.generalAccessCapabilities(generalAccessRole))
+    for (const capability of generalAccessCapabilities(generalAccessRole))
       capabilities.add(capability);
     return capabilities;
   }
@@ -592,7 +611,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException('Editor resource not found');
     if (
       session.actorType === EditorActorType.USER &&
-      (!session.userId || !session.user || session.user.status !== UserStatus.ACTIVE)
+      (!session.userId ||
+        !session.user ||
+        session.user.status !== UserStatus.ACTIVE)
     )
       throw new NotFoundException('Editor resource not found');
     const capabilities = await this.sessionCapabilities(
@@ -767,7 +788,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       throw new CallbackFailure();
     if (
       session.actorType === EditorActorType.USER &&
-      (!session.userId || !session.user || session.user.status !== UserStatus.ACTIVE)
+      (!session.userId ||
+        !session.user ||
+        session.user.status !== UserStatus.ACTIVE)
     )
       throw new CallbackFailure();
     const capabilities = await this.sessionCapabilities(
@@ -826,7 +849,10 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       // Stream the ONLYOFFICE response directly into an immutable staged
       // storage object. Its writer flushes a sibling temp file and atomically
       // publishes the completed stage, so finalization needs no second copy.
-      await this.objectStorage.putStream(stagedKey, Readable.from(checkedBytes()));
+      await this.objectStorage.putStream(
+        stagedKey,
+        Readable.from(checkedBytes()),
+      );
       const staged = await this.database.prisma.editorSession.updateMany({
         where: {
           id: session.id,
@@ -901,7 +927,10 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       if (!identity) throw new CallbackFailure();
       if (identity.finalizedFileVersionId) return;
       storageKey = `files/${identity.fileId}/versions/${versionId}`;
-      if ((await this.objectStorage.stat(stagedKey)).sizeBytes !== staged.stagedSizeBytes)
+      if (
+        (await this.objectStorage.stat(stagedKey)).sizeBytes !==
+        staged.stagedSizeBytes
+      )
         throw new CallbackFailure();
       await this.objectStorage.promote(stagedKey, storageKey);
 
@@ -932,10 +961,12 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       }
       // A concurrent callback may have committed and removed the staging
       // object before this invocation reached promotion.
-      const winner = await this.database.prisma.editorSession.findUnique({
-        where: { id: sessionId },
-        select: { finalizedFileVersionId: true },
-      }).catch(() => null);
+      const winner = await this.database.prisma.editorSession
+        .findUnique({
+          where: { id: sessionId },
+          select: { finalizedFileVersionId: true },
+        })
+        .catch(() => null);
       if (winner?.finalizedFileVersionId) return;
       throw error instanceof CallbackFailure ? error : new CallbackFailure();
     }
