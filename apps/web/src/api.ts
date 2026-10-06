@@ -130,6 +130,7 @@ interface UploadResponse {
   node: Node;
 }
 export type SystemRole = "ADMIN" | "MEMBER";
+export type OfficeFileKind = "DOCX" | "XLSX" | "PPTX";
 export type UserStatus = "INVITED" | "PENDING_APPROVAL" | "ACTIVE" | "SUSPENDED";
 export interface CurrentUser {
   displayName: string;
@@ -239,6 +240,12 @@ export class ApiClient {
     return this.request<Node>("/folders", {
       method: "POST",
       body: JSON.stringify({ name, parentId }),
+    });
+  }
+  async createOfficeFile(kind: OfficeFileKind, parentId: string | null, locale: "en" | "vi" = "en") {
+    return this.request<UploadResponse>("/files/create", {
+      method: "POST",
+      body: JSON.stringify({ kind, parentId, locale }),
     });
   }
   async getNode(nodeId: string) {

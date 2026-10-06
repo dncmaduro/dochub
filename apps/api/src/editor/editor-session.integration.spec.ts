@@ -135,6 +135,7 @@ withDb('EditorSessionService integration', () => {
         type: NodeType.FILE,
         name: `brief-${suffix}.docx`,
         normalizedName: `brief-${suffix}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: actorId,
       },
     });

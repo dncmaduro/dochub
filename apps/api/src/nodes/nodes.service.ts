@@ -91,7 +91,7 @@ export class NodesService {
     try {
       return await this.database.prisma.$transaction(async (transaction) => {
         if (parentId === null) {
-          await this.requireRootAdministrator(actorUserId, transaction);
+          await this.requireActiveRootCreator(actorUserId, transaction);
         } else {
           const parent = await this.requireVisibleNode(
             actorUserId,
@@ -149,6 +149,9 @@ export class NodesService {
     actorUserId: string,
     query: NodeListQueryDto,
   ): Promise<NodePage> {
+    // Root is a virtual container, not a Node row. Its effective general
+    // access is VIEWER; root listing remains ACL-based, while root creation
+    // is the explicit ACTIVE-user policy enforced by createFolder/files.
     const groupIds = await this.authorization.findUserGroupIds(actorUserId);
     if (groupIds === null) {
       return { items: [], nextCursor: null };
@@ -483,6 +486,19 @@ export class NodesService {
       throw new ForbiddenException(
         'Root placement requires an active administrator',
       );
+    }
+  }
+
+  private async requireActiveRootCreator(
+    actorUserId: string,
+    client: DocumentAuthorizationClient,
+  ): Promise<void> {
+    const user = await client.user.findUnique({
+      where: { id: actorUserId },
+      select: { status: true },
+    });
+    if (user?.status !== UserStatus.ACTIVE) {
+      throw new ForbiddenException('Root placement requires an active user');
     }
   }
 

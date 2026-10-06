@@ -22,7 +22,7 @@ import {
   type GoogleOidcClient,
 } from './google-oidc.client.js';
 
-const MAX_BINDING_ATTEMPTS = 3;
+const MAX_BINDING_ATTEMPTS = 5;
 
 export interface GoogleAuthorizationFlow {
   authorizationUrl: string;
@@ -186,6 +186,7 @@ export class GoogleAuthService {
           attempt + 1 < MAX_BINDING_ATTEMPTS &&
           this.isRetriableBindingError(error)
         ) {
+          await this.waitBeforeBindingRetry(attempt);
           continue;
         }
         throw error;
@@ -330,10 +331,36 @@ export class GoogleAuthService {
   }
 
   private isRetriableBindingError(error: unknown): boolean {
-    if (!error || typeof error !== 'object' || !('code' in error)) {
-      return false;
+    if (!error || typeof error !== 'object') return false;
+    if ('code' in error) {
+      if (error.code === 'P2034' || error.code === 'P2002') return true;
+      if (error.code === '40001') return true;
+      if (
+        error.code === 'P2010' &&
+        'meta' in error &&
+        !!error.meta &&
+        typeof error.meta === 'object' &&
+        'code' in error.meta &&
+        error.meta.code === '40001'
+      ) {
+        return true;
+      }
     }
-    return error.code === 'P2034' || error.code === 'P2002';
+    if ('cause' in error && this.isRetriableBindingError(error.cause)) {
+      return true;
+    }
+    if ('message' in error && typeof error.message === 'string') {
+      return /write conflict|deadlock|serialization failure/i.test(
+        error.message,
+      );
+    }
+    return false;
+  }
+
+  private async waitBeforeBindingRetry(attempt: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, Math.min(50, 10 * (attempt + 1)));
+    });
   }
 
   private authenticationFailed(): UnauthorizedException {

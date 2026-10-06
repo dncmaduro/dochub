@@ -1,5 +1,6 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import {
   BadRequestException,
   ConflictException,
@@ -18,7 +19,6 @@ import {
   isSearchableFileMimeType,
   NodeType,
   Prisma,
-  SystemRole,
   UserStatus,
 } from '@dochub/database';
 import type { StorageService } from '@dochub/storage';
@@ -32,6 +32,14 @@ import { DatabaseService } from '../database/database.service.js';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
 import { FileValidationService } from './file-validation.service.js';
 import type { TempUpload } from './file-upload.types.js';
+import {
+  OfficeFileKind,
+  OfficeLocale,
+  OfficeTemplateService,
+} from './office-template.service.js';
+import { normalizeNodeName } from '../nodes/node-name.js';
+
+const OFFICE_CREATION_RETRIES = 3;
 
 interface VisibleNode {
   id: string;
@@ -93,7 +101,135 @@ export class FilesService {
     private readonly authorization: DocumentAuthorizationService,
     private readonly validation: FileValidationService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    private readonly officeTemplates: OfficeTemplateService = new OfficeTemplateService(),
   ) {}
+
+  async createOffice(
+    actorUserId: string,
+    kind: OfficeFileKind,
+    parentId: string | null,
+    locale = OfficeLocale.EN,
+  ): Promise<UploadResponse> {
+    const { template, bytes } = await this.officeTemplates.read(kind, locale);
+    const sizeBytes = BigInt(bytes.length);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    await this.assertInitialDestination(actorUserId, parentId);
+
+    const nodeId = randomUUID();
+    const fileId = randomUUID();
+    const versionId = randomUUID();
+    const storageKey = this.storageKey(fileId, versionId);
+
+    try {
+      await this.storage.putStream(storageKey, Readable.from(bytes));
+      for (let attempt = 0; attempt < OFFICE_CREATION_RETRIES; attempt += 1) {
+        try {
+          return await this.database.prisma.$transaction(
+            async (transaction) => {
+              await this.assertInitialDestination(
+                actorUserId,
+                parentId,
+                transaction,
+              );
+              const name = await this.availableNodeName(
+                parentId,
+                template.filename,
+                transaction,
+              );
+              const node = await transaction.node.create({
+                data: {
+                  id: nodeId,
+                  parentId,
+                  type: NodeType.FILE,
+                  name: name.name,
+                  normalizedName: name.normalizedName,
+                  createdById: actorUserId,
+                  updatedById: actorUserId,
+                },
+                select: {
+                  id: true,
+                  parentId: true,
+                  type: true,
+                  name: true,
+                  createdAt: true,
+                  updatedAt: true,
+                },
+              });
+              await transaction.file.create({ data: { id: fileId, nodeId } });
+              const version = await transaction.fileVersion.create({
+                data: {
+                  id: versionId,
+                  fileId,
+                  versionNumber: 1,
+                  storageKey,
+                  originalFilename: name.name,
+                  mimeType: template.mimeType,
+                  extension: template.extension,
+                  sizeBytes,
+                  sha256,
+                  source: FileVersionSource.SYSTEM,
+                  createdById: actorUserId,
+                },
+              });
+              await transaction.file.update({
+                where: { id: fileId },
+                data: { versionCounter: 1, currentVersionId: versionId },
+              });
+              await this.createTextExtractionTask(
+                transaction,
+                versionId,
+                template.mimeType,
+              );
+              await transaction.permissionEntry.create({
+                data: {
+                  nodeId,
+                  userId: actorUserId,
+                  role: DocumentRole.OWNER,
+                  createdById: actorUserId,
+                },
+              });
+              await this.writeAudit(transaction, {
+                actorUserId,
+                action: 'FILE_CREATED',
+                resourceType: 'NODE',
+                resourceId: nodeId,
+                metadata: {
+                  fileId,
+                  versionId,
+                  versionNumber: 1,
+                  parentId,
+                  kind,
+                  source: FileVersionSource.SYSTEM,
+                  mimeType: template.mimeType,
+                  sizeBytes: sizeBytes.toString(),
+                },
+              });
+              return this.response(
+                node,
+                { id: fileId, currentVersionId: versionId },
+                version,
+                new Set(Object.values(DocumentCapability)),
+              );
+            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          );
+        } catch (error) {
+          if (
+            this.isCreationRace(error) &&
+            attempt + 1 < OFFICE_CREATION_RETRIES
+          ) {
+            continue;
+          }
+          this.throwDomainConflict(error);
+          throw error;
+        }
+      }
+      throw new ConflictException('A node with this name already exists');
+    } catch (error) {
+      await this.deleteOrphan(storageKey);
+      throw error;
+    }
+  }
 
   async createInitial(
     actorUserId: string,
@@ -452,6 +588,32 @@ export class FilesService {
     }
   }
 
+  private async availableNodeName(
+    parentId: string | null,
+    preferredName: string,
+    client: DocumentAuthorizationClient,
+  ) {
+    const existing = await client.node.findMany({
+      where: { parentId, trashOperationId: null },
+      select: { normalizedName: true },
+    });
+    const names = new Set(existing.map((node) => node.normalizedName));
+    let candidate = normalizeNodeName(preferredName);
+    let suffix = 1;
+    while (names.has(candidate.normalizedName)) {
+      const extensionIndex = preferredName.lastIndexOf('.');
+      const stem =
+        extensionIndex > 0
+          ? preferredName.slice(0, extensionIndex)
+          : preferredName;
+      const extension =
+        extensionIndex > 0 ? preferredName.slice(extensionIndex) : '';
+      candidate = normalizeNodeName(`${stem} (${suffix})${extension}`);
+      suffix += 1;
+    }
+    return candidate;
+  }
+
   private async assertInitialDestination(
     actorUserId: string,
     parentId: string | null,
@@ -460,14 +622,11 @@ export class FilesService {
     if (parentId === null) {
       const user = await client.user.findUnique({
         where: { id: actorUserId },
-        select: { status: true, systemRole: true },
+        select: { status: true },
       });
-      if (
-        user?.status !== UserStatus.ACTIVE ||
-        user.systemRole !== SystemRole.ADMIN
-      ) {
+      if (user?.status !== UserStatus.ACTIVE) {
         throw new ForbiddenException(
-          'Root placement requires an active administrator',
+          'Root placement requires an active user',
         );
       }
       return;
@@ -614,7 +773,11 @@ export class FilesService {
     transaction: Prisma.TransactionClient,
     input: {
       actorUserId: string;
-      action: 'FILE_UPLOADED' | 'FILE_VERSION_CREATED' | 'FILE_VERSION_RESTORED';
+      action:
+        | 'FILE_CREATED'
+        | 'FILE_UPLOADED'
+        | 'FILE_VERSION_CREATED'
+        | 'FILE_VERSION_RESTORED';
       resourceType: 'NODE' | 'FILE_VERSION';
       resourceId: string;
       metadata: Prisma.InputJsonValue;
@@ -651,14 +814,34 @@ export class FilesService {
   }
 
   private throwDomainConflict(error: unknown): void {
-    if (
-      error &&
+    if (this.isUniqueViolation(error)) {
+      throw new ConflictException('A node with this name already exists');
+    }
+  }
+
+  private isUniqueViolation(error: unknown): boolean {
+    return (
+      !!error &&
       typeof error === 'object' &&
       'code' in error &&
       error.code === 'P2002'
-    ) {
-      throw new ConflictException('A node with this name already exists');
+    );
+  }
+
+  private isCreationRace(error: unknown): boolean {
+    if (this.isUniqueViolation(error)) return true;
+    if (!error || typeof error !== 'object' || !('code' in error)) {
+      return false;
     }
+    if (error.code === 'P2034') return true;
+    return (
+      error.code === 'P2010' &&
+      'meta' in error &&
+      !!error.meta &&
+      typeof error.meta === 'object' &&
+      'code' in error.meta &&
+      error.meta.code === '40001'
+    );
   }
 
   private assertUuid(value: string, message: string): void {

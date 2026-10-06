@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DocumentRole,
+  GeneralAccessRole,
   NodeType,
   prisma,
   SystemRole,
@@ -122,10 +123,29 @@ describeWithDatabase('NodesService integration', () => {
     await prisma.$disconnect();
   });
 
-  it('allows only an active administrator to create a root folder and creates owner ACL and audit atomically', async () => {
+  it('allows any active user to create a root folder with viewer general access, owner ACL, and audit atomically', async () => {
+    const memberCreated = await nodes.createFolder(memberId, {
+      name: `Member root ${suffix}`,
+    });
+    nodeIds.add(memberCreated.id);
     await expect(
-      nodes.createFolder(memberId, { name: `Member root ${suffix}` }),
-    ).rejects.toMatchObject({ status: 403 });
+      prisma.node.findUniqueOrThrow({
+        where: { id: memberCreated.id },
+        select: { parentId: true, generalAccessRole: true },
+      }),
+    ).resolves.toEqual({
+      parentId: null,
+      generalAccessRole: GeneralAccessRole.VIEWER,
+    });
+    await expect(
+      prisma.permissionEntry.findFirstOrThrow({
+        where: {
+          nodeId: memberCreated.id,
+          userId: memberId,
+          role: DocumentRole.OWNER,
+        },
+      }),
+    ).resolves.toBeTruthy();
 
     const created = await nodes.createFolder(adminId, {
       name: `Created root ${suffix}`,

@@ -19,6 +19,18 @@ function executionContext(request: AuthenticatedRequest): ExecutionContext {
 }
 
 describe('AccessTokenGuard', () => {
+  it('rejects anonymous requests without a bearer credential', async () => {
+    const guard = new AccessTokenGuard(
+      new JwtService({ secret }),
+      {} as AuthSessionService,
+    );
+    const request = { headers: {} } as AuthenticatedRequest;
+
+    await expect(
+      guard.canActivate(executionContext(request)),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
   it('accepts a valid token with an active session and attaches a minimal principal', async () => {
     const jwt = new JwtService({ secret });
     const sessions = {

@@ -288,4 +288,20 @@ describe('GoogleAuthService account binding', () => {
     );
     expect(transaction.authAccount.create).not.toHaveBeenCalled();
   });
+
+  it('retries PostgreSQL serialization failures wrapped as raw SQL errors', async () => {
+    const transaction = transactionMock();
+    transaction.authAccount.findUnique.mockResolvedValueOnce({
+      user: { id: userId, status: UserStatus.ACTIVE },
+    });
+    const { service, database } = serviceFor(transaction);
+    vi.mocked(database.prisma.$transaction)
+      .mockRejectedValueOnce({ code: 'P2010', meta: { code: '40001' } })
+      .mockImplementationOnce((callback) => callback(transaction));
+
+    await expect(
+      service.completeAuthorization(callbackInput),
+    ).resolves.toMatchObject({ outcome: 'authenticated' });
+    expect(database.prisma.$transaction).toHaveBeenCalledTimes(2);
+  });
 });

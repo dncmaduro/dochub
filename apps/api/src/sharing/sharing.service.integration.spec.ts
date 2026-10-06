@@ -41,6 +41,7 @@ describeWithDatabase('SharingService integration', () => {
         parentId: parent,
         name: `${name}-${suffix}`,
         normalizedName: `${name}-${suffix}`,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
         createdById: ownerId,
       },
     });

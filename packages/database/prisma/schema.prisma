@@ -181,7 +181,7 @@ model Node {
   name                              String
   normalizedName                    String
   inheritPermissions                Boolean           @default(true)
-  generalAccessRole                 GeneralAccessRole @default(RESTRICTED)
+  generalAccessRole                 GeneralAccessRole @default(VIEWER)
   createdById                       String            @db.Uuid
   updatedById                       String?           @db.Uuid
   createdAt                         DateTime          @default(now())

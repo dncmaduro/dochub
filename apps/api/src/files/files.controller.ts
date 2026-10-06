@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   HttpCode,
@@ -18,6 +19,7 @@ import { FilesService } from './files.service.js';
 import { FileReadService } from './file-read.service.js';
 import { UnsatisfiableRangeError } from './byte-range.js';
 import { MultipartUploadService } from './multipart-upload.service.js';
+import { CreateOfficeFileDto } from './dto/create-office-file.dto.js';
 
 @Controller()
 @UseGuards(AccessTokenGuard)
@@ -40,6 +42,20 @@ export class FilesController {
     } finally {
       await this.multipart.cleanup(upload.tempPath);
     }
+  }
+
+  @Post('files/create')
+  @HttpCode(201)
+  createOffice(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Body() dto: CreateOfficeFileDto,
+  ) {
+    return this.files.createOffice(
+      auth.userId,
+      dto.kind,
+      dto.parentId ?? null,
+      dto.locale,
+    );
   }
 
   @Post('nodes/:nodeId/versions')

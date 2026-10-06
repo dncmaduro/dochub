@@ -11,6 +11,7 @@ import { FilesService } from './files.service.js';
 import { MultipartUploadService } from './multipart-upload.service.js';
 import { PreviewController } from './preview.controller.js';
 import { PreviewService } from './preview.service.js';
+import { OfficeTemplateService } from './office-template.service.js';
 
 @Module({
   imports: [AuthModule, AuthorizationModule, DatabaseModule, StorageModule, CollectionsModule],
@@ -21,6 +22,7 @@ import { PreviewService } from './preview.service.js';
     FileValidationService,
     FileReadService,
     PreviewService,
+    OfficeTemplateService,
   ],
   exports: [FileReadService],
 })

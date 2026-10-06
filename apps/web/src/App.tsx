@@ -36,6 +36,7 @@ import {
   type SharingState,
   type SystemRole,
   type TrashItem,
+  type OfficeFileKind,
 } from "./api";
 import { changeLocale, getLocale, translate as t, type Locale } from "./i18n";
 import "./App.css";
@@ -562,7 +563,7 @@ function App() {
       page = <ProfileApp profile={profile} onSignOut={() => void signOut()} />;
       break;
     default:
-      page = <DriveApp systemRole={profile.systemRole} />;
+      page = <DriveApp userStatus={profile.status} />;
   }
   const active: SidebarRoute = location.route === "drive" || location.route === "recent" || location.route === "favorites" || location.route === "trash"
     ? location.route
@@ -986,7 +987,7 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
   </div>;
 }
 
-function DriveApp({ systemRole }: { systemRole: SystemRole }) {
+function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
   const { isFilePending } = useEditorSaveContext();
   const [folderId, setFolderId] = useState(currentFolderId);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -997,6 +998,8 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const [creatingOffice, setCreatingOffice] = useState<OfficeFileKind | null>(null);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
@@ -1051,6 +1054,39 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
     setNodes((items) => [...items, node].sort(compareNodes));
     setNotice({ tone: "success", message: t("files.created", { name: node.name }) });
   }
+  async function createOffice(kind: OfficeFileKind) {
+    // Reserve the tab synchronously from the menu click so popup blockers do
+    // not reject the eventual editor navigation after the API request.
+    const editorTab = window.open("about:blank", "_blank");
+    if (editorTab) {
+      try {
+        editorTab.opener = null;
+      } catch {
+        // Some browsers expose opener as read-only for a temporary tab.
+      }
+    }
+    try {
+      setCreatingOffice(kind);
+      setNewMenuOpen(false);
+      setNotice(null);
+      const result = await api.createOfficeFile(kind, folderId, getLocale());
+      setNodes((items) => [...items, result.node].sort(compareNodes));
+      setNotice({ tone: "success", message: t("files.created", { name: result.node.name }) });
+      const documentPath = `/document/${result.node.id}`;
+      if (editorTab && !editorTab.closed) {
+        editorTab.location.href = documentPath;
+      } else {
+        // If the browser blocked the synchronous popup, keep the created file
+        // usable by opening it in the current tab rather than losing it.
+        window.location.assign(documentPath);
+      }
+    } catch (requestError) {
+      if (editorTab && !editorTab.closed) editorTab.close();
+      setNotice({ tone: "error", message: displayError(requestError) });
+    } finally {
+      setCreatingOffice(null);
+    }
+  }
   async function rename(node: Node, name: string) {
     const updated = await api.renameNode(node.id, name);
     setNodes((items) =>
@@ -1102,8 +1138,11 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
       setNotice({ tone: "error", message: displayError(requestError) });
     }
   }
-  const canPlaceAtRoot = systemRole === "ADMIN";
-  const canCreateHere = folderId !== null || canPlaceAtRoot;
+  // The backend remains authoritative for nested-folder capabilities. The
+  // authenticated Drive view exposes creation controls for active users at
+  // root as well as in folders, while protected nested requests can still be
+  // rejected by the API.
+  const canCreateHere = userStatus === "ACTIVE";
   return (
     <>
         <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />} searchQuery="">
@@ -1117,14 +1156,16 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
             </button>
             {canCreateHere ? (
               <>
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => setCreateOpen(true)}
-                >
-                  <Icon name="plus" />
-                  {t("files.newFolder")}
-                </button>
+                <NewMenu
+                  open={newMenuOpen}
+                  pending={creatingOffice !== null}
+                  onToggle={() => setNewMenuOpen((value) => !value)}
+                  onFolder={() => {
+                    setNewMenuOpen(false);
+                    setCreateOpen(true);
+                  }}
+                  onOffice={(kind) => void createOffice(kind)}
+                />
                 <button
                   type="button"
                   className="button button-primary"
@@ -1140,11 +1181,7 @@ function DriveApp({ systemRole }: { systemRole: SystemRole }) {
                   onChange={upload}
                 />
               </>
-            ) : (
-              <span className="root-permission-note">
-                {t("files.rootAdminOnly")}
-              </span>
-            )}
+            ) : null}
         </PageHeader>
         <Toast notice={notice} onDismiss={() => setNotice(null)} />
         <section className="drive-content" aria-label={t("files.title")}>
@@ -2717,9 +2754,75 @@ function EmptyState({
           </button>
         </div>
       )}
-      {!canCreateHere && <p>{t("files.rootAdminOnly")}</p>}
     </div>
   );
+}
+function NewMenu({
+  open,
+  pending,
+  onToggle,
+  onFolder,
+  onOffice,
+}: {
+  open: boolean;
+  pending: boolean;
+  onToggle: () => void;
+  onFolder: () => void;
+  onOffice: (kind: OfficeFileKind) => void;
+}) {
+  const menu = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent && event.key === "Escape") {
+        onToggle();
+      } else if (
+        event instanceof MouseEvent &&
+        !menu.current?.contains(event.target as globalThis.Node)
+      ) {
+        onToggle();
+      }
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [onToggle, open]);
+  return <div ref={menu} className="new-menu">
+    <button
+      type="button"
+      className="button button-primary"
+      aria-haspopup="menu"
+      aria-expanded={open}
+      disabled={pending}
+      onClick={onToggle}
+    >
+      <Icon name="plus" />
+      {t("files.new")}
+      <Icon name="chevron-down" size={15} />
+    </button>
+    {open && <div className="new-menu-popover" role="menu">
+      <button type="button" role="menuitem" onClick={onFolder}>
+        <Icon name="folder" />
+        {t("files.newFolder")}
+      </button>
+      <div className="new-menu-divider" />
+      <button type="button" role="menuitem" onClick={() => onOffice("DOCX")}>
+        <Icon name="file" />
+        {t("files.wordDocument")}
+      </button>
+      <button type="button" role="menuitem" onClick={() => onOffice("XLSX")}>
+        <Icon name="file" />
+        {t("files.spreadsheet")}
+      </button>
+      <button type="button" role="menuitem" onClick={() => onOffice("PPTX")}>
+        <Icon name="file" />
+        {t("files.presentation")}
+      </button>
+    </div>}
+  </div>;
 }
 function ErrorState({
   message,
