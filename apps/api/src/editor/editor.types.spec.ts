@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { fileExtension, officeDocumentType } from './editor.types.js';
+import {
+  fileExtension,
+  officeDocumentType,
+  onlyOfficeAccessConfig,
+} from './editor.types.js';
 
 describe('ONLYOFFICE document mapping', () => {
   it.each([
@@ -17,5 +21,23 @@ describe('ONLYOFFICE document mapping', () => {
     expect(fileExtension('Report.DOCX', null)).toBe('docx');
     expect(fileExtension('ignored.pdf', '.XLSX')).toBe('xlsx');
     expect(officeDocumentType('pdf')).toBeUndefined();
+  });
+});
+
+describe('ONLYOFFICE access config', () => {
+  it.each([
+    ['VIEWER', 'VIEW', false, 'view'],
+    ['EDITOR', 'EDIT', true, 'edit'],
+    ['OWNER', 'EDIT', true, 'edit'],
+    ['PUBLIC VIEWER', 'VIEW', false, 'view'],
+    ['PUBLIC EDITOR', 'EDIT', true, 'edit'],
+  ] as const)('%s emits the policy permissions', (_role, mode, edit, editorMode) => {
+    expect(onlyOfficeAccessConfig(mode)).toEqual({
+      editorConfigMode: editorMode,
+      documentPermissions: {
+        edit,
+        comment: edit,
+      },
+    });
   });
 });

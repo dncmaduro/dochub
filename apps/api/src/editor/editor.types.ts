@@ -13,3 +13,14 @@ export function fileExtension(filename: string, extension: string | null): strin
   const index = filename.lastIndexOf('.');
   return index === -1 ? '' : filename.slice(index + 1).toLowerCase();
 }
+
+export function onlyOfficeAccessConfig(mode: 'VIEW' | 'EDIT') {
+  const editable = mode === 'EDIT';
+  return {
+    editorConfigMode: editable ? ('edit' as const) : ('view' as const),
+    documentPermissions: {
+      edit: editable,
+      comment: editable,
+    },
+  };
+}

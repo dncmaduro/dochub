@@ -42,7 +42,11 @@ import {
   type StorageConfig,
 } from '../storage/storage.config.js';
 import { EDITOR_CONFIG, type EditorConfig } from './editor.config.js';
-import { fileExtension, officeDocumentType } from './editor.types.js';
+import {
+  fileExtension,
+  officeDocumentType,
+  onlyOfficeAccessConfig,
+} from './editor.types.js';
 
 interface FetchCapability {
   aud: 'onlyoffice-file-fetch';
@@ -265,6 +269,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     );
     documentUrl.searchParams.set('token', fetchToken);
     const editable = actor.mode === 'EDIT';
+    const accessConfig = onlyOfficeAccessConfig(actor.mode);
     const allowDownload =
       actor.actorType === EditorActorType.USER &&
       capabilities.has(DocumentCapability.DOWNLOAD);
@@ -276,8 +281,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         title: version.originalFilename,
         url: documentUrl.toString(),
         permissions: {
-          edit: editable,
-          comment: false,
+          ...accessConfig.documentPermissions,
           review: false,
           fillForms: false,
           modifyFilter: false,
@@ -286,7 +290,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         },
       },
       editorConfig: {
-        mode: editable ? 'edit' : 'view',
+        mode: accessConfig.editorConfigMode,
         user: {
           id: actor.userId ?? `guest-${randomUUID()}`,
           name: actor.userName,

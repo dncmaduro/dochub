@@ -187,7 +187,12 @@ withDb('EditorSessionService integration', () => {
       documentType: 'word',
       document: {
         fileType: 'docx',
-        permissions: { edit: false, download: true, print: true },
+        permissions: {
+          edit: false,
+          comment: false,
+          download: true,
+          print: true,
+        },
       },
       editorConfig: { mode: 'view', user: { id: actorId } },
     });
@@ -232,7 +237,7 @@ withDb('EditorSessionService integration', () => {
     const created = await service.create(actorId, nodeId, 'EDIT');
     expect(created.session).toMatchObject({ mode: 'EDIT', status: 'ACTIVE' });
     expect(created.config).toMatchObject({
-      document: { permissions: { edit: true } },
+      document: { permissions: { edit: true, comment: true } },
       editorConfig: { mode: 'edit' },
     });
     const callback = new URL(
@@ -443,7 +448,14 @@ withDb('EditorSessionService integration', () => {
     const created = await service.createPublic(nodeId);
     expect(created.session).toMatchObject({ mode: 'EDIT', status: 'ACTIVE' });
     expect(created.config).toMatchObject({
-      document: { permissions: { edit: true, download: false, print: false } },
+      document: {
+        permissions: {
+          edit: true,
+          comment: true,
+          download: false,
+          print: false,
+        },
+      },
       editorConfig: { mode: 'edit', user: { name: 'Link guest' } },
     });
     expect(
@@ -530,7 +542,7 @@ withDb('EditorSessionService integration', () => {
       const created = await service.create(actorId, nodeId);
       expect(created.session).toMatchObject({ mode: 'EDIT', status: 'ACTIVE' });
       expect(created.config).toMatchObject({
-        document: { permissions: { edit: true } },
+        document: { permissions: { edit: true, comment: true } },
         editorConfig: { mode: 'edit' },
       });
       await prisma.editorSession.update({
