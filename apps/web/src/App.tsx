@@ -17,6 +17,8 @@ import { useTranslation } from "react-i18next";
 import {
   ApiClient,
   ApiError,
+  type DriveConnection,
+  type DriveFile,
   type Breadcrumb,
   type AdminGroup,
   type AdminUser,
@@ -38,9 +40,10 @@ import {
   type SharingState,
   type SystemRole,
   type TrashItem,
-  type OfficeFileKind,
+  type NativeDocumentKind,
 } from "./api";
 import { changeLocale, getLocale, translate as t, type Locale } from "./i18n";
+import { canAdministerAccounts, canManageDocuments } from "./system-role-policy";
 import "./App.css";
 
 const api = new ApiClient();
@@ -122,6 +125,7 @@ function drivePath(folderId: string | null, sort: DriveSort) {
 function currentRoute() {
   if (/^\/document\/[0-9a-f-]+$/i.test(window.location.pathname)) return "document";
   if (/^\/s\//.test(window.location.pathname)) return "legacyShare";
+  if (window.location.pathname === "/drive/google") return "googleDrive";
   if (window.location.pathname === "/admin") return "admin";
   if (window.location.pathname === "/profile") return "profile";
   if (window.location.pathname === "/trash") return "trash";
@@ -153,6 +157,12 @@ function navigateAdmin(tab: "users" | "groups" = "users") {
 function navigateProfile() {
   if (window.location.pathname !== "/profile") {
     window.history.pushState({}, "", "/profile");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
+function navigateGoogleDrive() {
+  if (window.location.pathname !== "/drive/google") {
+    window.history.pushState({}, "", "/drive/google");
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
@@ -226,6 +236,15 @@ async function openFileActivation(
   isFilePending: (nodeId: string) => boolean = () => false,
 ) {
   try {
+    if (node.backing?.type === "GOOGLE_DRIVE") {
+      if (node.backing.sourceStatus === "UNAVAILABLE" || !node.backing.webViewLink) {
+        onError({ tone: "error", message: t("drive.sourceUnavailable") });
+        return;
+      }
+      void api.recordRecent(node.id).catch(() => undefined);
+      window.open(node.backing.webViewLink, "_blank", "noopener,noreferrer");
+      return;
+    }
     if (isFilePending(node.id)) {
       onError({ tone: "info", message: t("editor.stillSaving") });
       return;
@@ -551,7 +570,7 @@ function App() {
   const [location, setLocation] = useState(currentLocation);
   const [createOpen, setCreateOpen] = useState(false);
   const [folderCreationParentId, setFolderCreationParentId] = useState<string | null>(null);
-  const [creatingOffice, setCreatingOffice] = useState<OfficeFileKind | null>(null);
+  const [creatingNative, setCreatingNative] = useState<NativeDocumentKind | null>(null);
   const [creationNotice, setCreationNotice] = useState<Notice>(null);
   const creationParentId = location.route === "drive" ? currentFolderId() : null;
   const [folderCreateCapability, setFolderCreateCapability] = useState<{ folderId: string; canCreate: boolean } | null>(null);
@@ -568,7 +587,7 @@ function App() {
       (user) => {
         if (!active) return;
         if (
-          !/^(?:\/drive(?:\/[0-9a-f-]+)?|\/trash|\/search|\/recent|\/favorites|\/admin|\/profile|\/document\/[0-9a-f-]+|\/s\/[^/]+)$/i.test(
+          !/^(?:\/drive(?:\/[0-9a-f-]+|\/google)?|\/trash|\/search|\/recent|\/favorites|\/admin|\/profile|\/document\/[0-9a-f-]+|\/s\/[^/]+)$/i.test(
             window.location.pathname,
           )
         ) window.history.replaceState({}, "", "/drive");
@@ -637,8 +656,9 @@ function App() {
     );
   if (!authenticated) return <SignIn />;
   if (!profile) return <div className="auth-state">{t("auth.loadingAccount")}</div>;
-  const isAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
-  const canCreate = profile.status === "ACTIVE" && (
+  const isAdmin = profile.status === "ACTIVE" && canAdministerAccounts(profile.systemRole);
+  const canManage = profile.status === "ACTIVE" && canManageDocuments(profile.systemRole);
+  const canCreate = canManage && (
     location.route !== "drive" ||
     creationParentId === null ||
     (folderCreateCapability?.folderId === creationParentId && folderCreateCapability.canCreate)
@@ -652,9 +672,7 @@ function App() {
     window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: folderCreationParentId } }));
     setCreationNotice({ tone: "success", message: t("files.created", { name: node.name }) });
   }
-  async function createOffice(kind: OfficeFileKind) {
-    // Reserve the tab synchronously from the menu click so popup blockers do
-    // not reject the eventual editor navigation after the API request.
+  async function createNativeDocument(kind: NativeDocumentKind) {
     const editorTab = window.open("about:blank", "_blank");
     if (editorTab) {
       try {
@@ -664,24 +682,30 @@ function App() {
       }
     }
     try {
-      setCreatingOffice(kind);
+      setCreatingNative(kind);
       setCreationNotice(null);
-      const result = await api.createOfficeFile(kind, creationParentId, getLocale());
+      const result = await api.createNativeDocument(
+        kind,
+        creationParentId,
+        getLocale(),
+        crypto.randomUUID(),
+      );
       window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: creationParentId } }));
-      setCreationNotice({ tone: "success", message: t("files.created", { name: result.node.name }) });
-      const documentPath = `/document/${result.node.id}`;
-      if (editorTab && !editorTab.closed) {
-        editorTab.location.href = documentPath;
+      setCreationNotice({ tone: "success", message: t("files.created", { name: result.name }) });
+      if (result.webViewLink) {
+        if (editorTab && !editorTab.closed) editorTab.location.href = result.webViewLink;
+        else window.location.assign(result.webViewLink);
+      } else if (editorTab && !editorTab.closed) {
+        editorTab.close();
+        navigate(creationParentId);
       } else {
-        // If the browser blocked the synchronous popup, keep the created file
-        // usable by opening it in the current tab rather than losing it.
-        window.location.assign(documentPath);
+        navigate(creationParentId);
       }
     } catch (requestError) {
       if (editorTab && !editorTab.closed) editorTab.close();
       setCreationNotice({ tone: "error", message: displayError(requestError) });
     } finally {
-      setCreatingOffice(null);
+      setCreatingNative(null);
     }
   }
   async function signOut() {
@@ -712,8 +736,11 @@ function App() {
     case "profile":
       page = <ProfileApp profile={profile} onSignOut={() => void signOut()} />;
       break;
+    case "googleDrive":
+      page = <GoogleDriveApp canManageDocuments={canManage} />;
+      break;
     default:
-      page = <DriveApp canCreate={canCreate} onCreateFolder={beginCreateFolder} />;
+      page = <DriveApp canCreate={canCreate} canManageDocuments={canManage} onCreateFolder={beginCreateFolder} />;
   }
   const active: SidebarRoute = location.route === "drive" || location.route === "recent" || location.route === "favorites" || location.route === "trash"
     ? location.route
@@ -724,9 +751,10 @@ function App() {
         profile={profile}
         active={active}
         canCreate={canCreate}
-        creatingOffice={creatingOffice !== null}
+        canManageDocuments={canManage}
+        creatingNative={creatingNative !== null}
         onCreateFolder={beginCreateFolder}
-        onCreateOffice={(kind) => void createOffice(kind)}
+        onCreateNativeDocument={(kind) => void createNativeDocument(kind)}
         onSignOut={() => void signOut()}
       >
         {page}
@@ -778,14 +806,14 @@ function AdminUsers() {
     setAddOpen(false);
     setNotice({ tone: "success", message: t("admin.userAdded") });
   }
-  async function action(user: AdminUser, kind: "approve" | "role" | "status") {
+  async function action(user: AdminUser, kind: "approve" | "role" | "status", nextRole?: SystemRole) {
     if (kind === "status" && user.status !== "SUSPENDED" && !window.confirm(t("admin.suspendConfirm", { name: user.displayName }))) return;
     setOpenMenuId(null);
     try {
       const updated = kind === "approve"
         ? await api.approveAdminUser(user.id)
         : kind === "role"
-          ? await api.updateAdminUser(user.id, { systemRole: user.systemRole === "ADMIN" ? "MEMBER" : "ADMIN" })
+          ? await api.updateAdminUser(user.id, { systemRole: nextRole ?? user.systemRole })
           : user.status === "SUSPENDED"
             ? await api.reactivateAdminUser(user.id)
             : await api.suspendAdminUser(user.id);
@@ -798,12 +826,12 @@ function AdminUsers() {
     <Toast notice={notice} onDismiss={() => setNotice(null)} />
     <div className="admin-section-header"><div><h3>{t("admin.users")}</h3><p>{t("admin.usersDescription")}</p></div><button type="button" className="button button-primary" onClick={() => setAddOpen(true)}><Icon name="plus" size={16} />{t("admin.addUser")}</button></div>
     <input className="admin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("admin.searchUsers")} aria-label={t("admin.searchUsers")} />
-    <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>{t("common.name")}</th><th>{t("common.email")}</th><th>{t("common.role")}</th><th>{t("common.status")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{matching.map((user) => <AdminUserRow key={user.id} user={user} menuOpen={openMenuId === user.id} onToggleMenu={() => setOpenMenuId((open) => open === user.id ? null : user.id)} onCloseMenu={() => setOpenMenuId(null)} onAction={(kind) => void action(user, kind)} />)}</tbody></table></div>
+    <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>{t("common.name")}</th><th>{t("common.email")}</th><th>{t("common.role")}</th><th>{t("common.status")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{matching.map((user) => <AdminUserRow key={user.id} user={user} menuOpen={openMenuId === user.id} onToggleMenu={() => setOpenMenuId((open) => open === user.id ? null : user.id)} onCloseMenu={() => setOpenMenuId(null)} onAction={(kind, nextRole) => void action(user, kind, nextRole)} />)}</tbody></table></div>
     {addOpen && <AddUserDialog onClose={() => setAddOpen(false)} onSubmit={create} />}
   </>;
 }
 
-function AdminUserRow({ user, menuOpen, onToggleMenu, onCloseMenu, onAction }: { user: AdminUser; menuOpen: boolean; onToggleMenu: () => void; onCloseMenu: () => void; onAction: (kind: "approve" | "role" | "status") => void }) {
+function AdminUserRow({ user, menuOpen, onToggleMenu, onCloseMenu, onAction }: { user: AdminUser; menuOpen: boolean; onToggleMenu: () => void; onCloseMenu: () => void; onAction: (kind: "approve" | "role" | "status", nextRole?: SystemRole) => void }) {
   const trigger = useRef<HTMLButtonElement>(null);
   return <tr><td>{user.displayName}</td><td>{user.email}</td><td>{systemRoleLabel(user.systemRole)}</td><td>{userStatusLabel(user.status)}</td><td className="row-actions">
     <button ref={trigger} type="button" className="icon-button" aria-label={t("admin.actionsFor", { name: user.displayName })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><Icon name="more" /></button>
@@ -811,7 +839,7 @@ function AdminUserRow({ user, menuOpen, onToggleMenu, onCloseMenu, onAction }: {
       {user.status === "PENDING_APPROVAL" ? (
         <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onAction("approve"); }}>{t("admin.approve")}</button>
       ) : <>
-        <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onAction("role"); }}>{user.systemRole === "ADMIN" ? t("admin.makeMember") : t("admin.makeAdmin")}</button>
+        {(["ADMIN", "DOCUMENT_MANAGER", "VIEWER"] as SystemRole[]).map((role) => <button key={role} type="button" role="menuitem" disabled={role === user.systemRole} onClick={() => { onCloseMenu(); onAction("role", role); }}>{t("admin.setRole", { role: systemRoleLabel(role) })}</button>)}
         <div className="row-menu-divider" />
         <button type="button" role="menuitem" className={user.status === "SUSPENDED" ? "" : "menu-danger"} onClick={() => { onCloseMenu(); onAction("status"); }}>{user.status === "SUSPENDED" ? t("admin.reactivate") : t("admin.suspend")}</button>
       </>}
@@ -828,7 +856,7 @@ function AddUserDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (
     const form = new FormData(event.currentTarget);
     const displayName = String(form.get("displayName") ?? "").trim();
     const email = String(form.get("email") ?? "").trim();
-    const systemRole = String(form.get("systemRole") ?? "MEMBER") as SystemRole;
+    const systemRole = String(form.get("systemRole") ?? "VIEWER") as SystemRole;
     if (!displayName || !email || !systemRole) {
       setError(t("admin.userRequired"));
       return;
@@ -848,7 +876,7 @@ function AddUserDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (
     <form onSubmit={(event) => void submit(event)}>
       <label htmlFor="add-user-name">{t("admin.displayName")}</label><input id="add-user-name" name="displayName" required maxLength={200} data-dialog-initial-focus />
       <label htmlFor="add-user-email">{t("admin.googleEmail")}</label><input id="add-user-email" name="email" type="email" required maxLength={320} />
-      <label htmlFor="add-user-role">{t("common.role")}</label><select id="add-user-role" name="systemRole" defaultValue="MEMBER" required><option value="MEMBER">{t("roles.MEMBER")}</option><option value="ADMIN">{t("roles.ADMIN")}</option></select>
+      <label htmlFor="add-user-role">{t("common.role")}</label><select id="add-user-role" name="systemRole" defaultValue="VIEWER" required><option value="VIEWER">{t("roles.VIEWER")}</option><option value="DOCUMENT_MANAGER">{t("roles.DOCUMENT_MANAGER")}</option><option value="ADMIN">{t("roles.ADMIN")}</option></select>
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>{t("common.cancel")}</button><button type="submit" className="button button-primary" disabled={pending}>{pending ? t("admin.addUser") + "…" : t("admin.addUser")}</button></div>
     </form>
@@ -869,7 +897,59 @@ function AdminGroups() {
 }
 
 function ProfileApp({ profile, onSignOut }: { profile: CurrentUser; onSignOut: () => void }) {
+  const [connection, setConnection] = useState<DriveConnection | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<"connect" | "write" | "sync" | "disconnect" | null>(null);
+  const canManage = profile.status === "ACTIVE" && canManageDocuments(profile.systemRole);
+  const [notice, setNotice] = useState<Notice>(() => new URLSearchParams(window.location.search).get("drive") === "error" ? { tone: "error", message: t("drive.connectionFailed") } : null);
+  useEffect(() => {
+    void api.driveConnection().then(setConnection).catch((error) => {
+      setNotice({ tone: "error", message: displayError(error) });
+    }).finally(() => setLoading(false));
+  }, []);
+  async function connect() {
+    setBusy("connect");
+    try {
+      await api.startDriveConnection();
+    } catch (error) {
+      setBusy(null);
+      setNotice({ tone: "error", message: displayError(error) });
+    }
+  }
+  async function sync() {
+    setBusy("sync");
+    try {
+      setConnection(await api.syncDrive());
+      setNotice({ tone: "success", message: t("drive.syncComplete") });
+    } catch (error) {
+      setNotice({ tone: "error", message: displayError(error) });
+      setConnection(await api.driveConnection().catch(() => connection));
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function enableWrite() {
+    setBusy("write");
+    try {
+      await api.startDriveConnection("WRITE");
+    } catch (error) {
+      setBusy(null);
+      setNotice({ tone: "error", message: displayError(error) });
+    }
+  }
+  async function disconnect() {
+    if (!window.confirm(t("drive.disconnectConfirm"))) return;
+    setBusy("disconnect");
+    try {
+      setConnection(await api.disconnectDrive());
+    } catch (error) {
+      setNotice({ tone: "error", message: displayError(error) });
+    } finally {
+      setBusy(null);
+    }
+  }
   return <>
+    <Toast notice={notice} onDismiss={() => setNotice(null)} />
     <PageHeader title={<h1 className="page-title">{t("profile.title")}</h1>} />
     <section className="profile-content" aria-label={t("profile.title")}>
       <div className="profile-heading"><h2>{t("profile.account")}</h2><p>{t("profile.description")}</p></div>
@@ -880,9 +960,142 @@ function ProfileApp({ profile, onSignOut }: { profile: CurrentUser; onSignOut: (
         <div><dt>{t("common.status")}</dt><dd>{userStatusLabel(profile.status)}</dd></div>
         <div><dt>{t("profile.signInMethod")}</dt><dd>{t("profile.googleStatus", { status: profile.googleConnected ? t("profile.connected") : t("profile.notConnected") })}</dd></div>
       </dl>
+      <section className="integration-section" aria-labelledby="drive-connection-title">
+        <div className="profile-heading"><h2 id="drive-connection-title">{t("drive.title")}</h2><p>{t("drive.description")}</p></div>
+        {loading ? <p className="integration-state">{t("common.loading")}</p> : !connection?.connected ? <div className="integration-state"><p>{t("drive.notConnected")}</p><button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void connect()}>{busy === "connect" ? t("drive.connecting") : t("drive.connect")}</button></div> : <div className="integration-connected">
+          <dl className="profile-details">
+            <div><dt>{t("drive.account")}</dt><dd>{connection.googleEmail ?? connection.googleAccountId ?? t("drive.connected")}</dd></div>
+            <div><dt>{t("drive.access")}</dt><dd>{connection.canWrite ? t("drive.writeEnabled") : t("drive.readOnly")}</dd></div>
+            <div><dt>{t("drive.lastSynced")}</dt><dd>{connection.lastSyncCompletedAt ? formatDate(connection.lastSyncCompletedAt) : t("drive.neverSynced")}</dd></div>
+            {connection.lastSyncError && <div><dt>{t("drive.lastError")}</dt><dd>{connection.lastSyncError}</dd></div>}
+          </dl>
+          <div className="integration-actions"><button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button>{!connection.canWrite && canManage && <button type="button" className="button" disabled={busy !== null} onClick={() => void enableWrite()}>{busy === "write" ? t("drive.enablingWrite") : t("drive.enableWrite")}</button>}<button type="button" className="button" disabled={busy !== null} onClick={navigateGoogleDrive}>{t("drive.browse")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></div>
+        </div>}
+      </section>
       <button type="button" className="button" onClick={onSignOut}>{t("account.signOut")}</button>
     </section>
   </>;
+}
+
+function driveTypeLabel(type: DriveFile["normalizedType"]) {
+  return t(`drive.types.${type}`);
+}
+
+function driveLocationLabel(location: DriveFile["location"]) {
+  return t(`drive.locations.${location}`);
+}
+
+function driveSourceStatusLabel(status: "CONNECTED" | "STALE" | "UNAVAILABLE") {
+  return status === "CONNECTED"
+    ? ""
+    : status === "STALE"
+      ? t("drive.sourceStale")
+      : t("drive.sourceUnavailable");
+}
+
+function GoogleDriveApp({ canManageDocuments: canManage }: { canManageDocuments: boolean }) {
+  const [connection, setConnection] = useState<DriveConnection | null>(null);
+  const [files, setFiles] = useState<DriveFile[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Notice>(null);
+  const [search, setSearch] = useState("");
+  const [pickerFile, setPickerFile] = useState<DriveFile | null>(null);
+  const [addingId, setAddingId] = useState<string | null>(null);
+  const load = useCallback(async (nextCursor?: string) => {
+    setLoading(true);
+    try {
+      const page = await api.listDriveFiles(search, nextCursor);
+      setFiles((current) => nextCursor ? [...current, ...page.items] : page.items);
+      setCursor(page.nextCursor);
+    } catch (requestError) {
+      setError({ tone: "error", message: displayError(requestError) });
+    } finally {
+      setLoading(false);
+    }
+  }, [search]);
+  async function addToDocsHub(file: DriveFile, parentId: string | null) {
+    setAddingId(file.id);
+    try {
+      const result = await api.addDriveFileToDocsHub(file.driveFileId, parentId);
+      setFiles((current) => current.map((item) => item.id === file.id
+        ? { ...item, docsHubNodeId: result.nodeId }
+        : item));
+      setPickerFile(null);
+      setError({ tone: "success", message: t("drive.addedToDocsHub", { name: result.name }) });
+    } catch (requestError) {
+      setError({ tone: "error", message: displayError(requestError) });
+    } finally {
+      setAddingId(null);
+    }
+  }
+  useEffect(() => {
+    void api.driveConnection().then((state) => {
+      setConnection(state);
+      if (state.connected) {
+        void load();
+        return;
+      }
+      setLoading(false);
+    }).catch((requestError) => {
+      setError({ tone: "error", message: displayError(requestError) });
+      setLoading(false);
+    });
+  }, [load]);
+  if (!connection?.connected && !loading) return <>
+    <PageHeader title={<h1 className="page-title">{t("drive.browserTitle")}</h1>} />
+    <section className="integration-empty"><h2>{t("drive.notConnected")}</h2><p>{t("drive.connectFromProfile")}</p><button type="button" className="button" onClick={navigateProfile}>{t("account.profile")}</button></section>
+  </>;
+  return <>
+    <Toast notice={error} onDismiss={() => setError(null)} />
+    <PageHeader title={<h1 className="page-title">{t("drive.browserTitle")}</h1>}>
+      <button type="button" className="button" onClick={() => void load()} disabled={loading}>{t("files.refresh")}</button>
+    </PageHeader>
+    <section className="drive-external-content">
+      <div className="drive-external-toolbar"><p>{t("drive.browserDescription")}</p><input className="drive-external-search" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setSearch(query); setCursor(null); } }} placeholder={t("drive.searchPlaceholder")} aria-label={t("drive.searchPlaceholder")} /></div>
+      {loading && files.length === 0 ? <p className="integration-state">{t("common.loading")}</p> : files.length === 0 ? <p className="integration-empty">{t("drive.noFiles")}</p> : <div className="file-table-wrap"><table className="file-table drive-external-table"><thead><tr><th>{t("common.name")}</th><th>{t("common.type")}</th><th>{t("common.modified")}</th><th>{t("drive.location")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{files.map((file) => <tr key={file.id}><td className="drive-external-name">{file.name}</td><td>{driveTypeLabel(file.normalizedType)}</td><td>{file.driveModifiedTime ? formatDate(file.driveModifiedTime) : "—"}</td><td>{driveLocationLabel(file.location)}</td><td className="drive-external-actions">{file.docsHubNodeId ? <span className="drive-in-docshub">{t("drive.alreadyInDocsHub")}</span> : file.normalizedType === "FOLDER" || !canManage ? "—" : <button type="button" className="button" disabled={addingId !== null} onClick={() => setPickerFile(file)}>{t("drive.addToDocsHub")}</button>} {file.webViewLink && <a className="button" href={file.webViewLink} target="_blank" rel="noreferrer">{t("drive.openInGoogle")}</a>}</td></tr>)}</tbody></table></div>}
+      {cursor && <button type="button" className="button drive-load-more" onClick={() => void load(cursor)} disabled={loading}>{t("search.loadMore")}</button>}
+    </section>
+    {pickerFile && <DocsHubFolderPicker file={pickerFile} onClose={() => setPickerFile(null)} onSelect={(parentId) => void addToDocsHub(pickerFile, parentId)} pending={addingId === pickerFile.id} />}
+  </>;
+}
+
+function DocsHubFolderPicker({
+  file,
+  onClose,
+  onSelect,
+  pending,
+}: {
+  file: DriveFile;
+  onClose: () => void;
+  onSelect: (parentId: string | null) => void;
+  pending: boolean;
+}) {
+  const dialog = useDialogFocus();
+  const [parentId, setParentId] = useState<string | null>(null);
+  const [folders, setFolders] = useState<Node[]>([]);
+  const [trail, setTrail] = useState<Array<{ id: string | null; name: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const load = useCallback(async (nextParentId: string | null) => {
+    setLoading(true);
+    setError("");
+    try {
+      const page = await api.listNodes(nextParentId);
+      setFolders(page.items.filter((node) => node.type === "FOLDER"));
+      setParentId(nextParentId);
+    } catch (requestError) {
+      setError(displayError(requestError));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(null), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+  return <div className="dialog-backdrop" role="presentation"><section ref={dialog} className="dialog confirm-dialog drive-folder-picker" role="dialog" aria-modal="true" aria-labelledby="drive-folder-picker-title"><header className="dialog-header"><div><h2 id="drive-folder-picker-title">{t("drive.chooseDocsHubFolder")}</h2><p>{file.name}</p></div><button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}><Icon name="close" size={16} /></button></header><div className="dialog-body"><div className="drive-folder-picker-trail"><button type="button" className="button" onClick={() => { setTrail([]); void load(null); }}>{t("drive.docsHubRoot")}</button>{trail.map((item, index) => <span key={item.id ?? "root"}> / <button type="button" className="button" onClick={() => { setTrail((current) => current.slice(0, index + 1)); void load(item.id); }}>{item.name}</button></span>)}</div>{loading ? <p className="dialog-loading">{t("common.loading")}</p> : error ? <p className="dialog-error">{error}</p> : folders.length === 0 ? <p>{t("drive.noFolders")}</p> : <div className="drive-folder-picker-list">{folders.map((folder) => <button key={folder.id} type="button" className="button drive-folder-picker-item" onClick={() => { setTrail((current) => [...current, { id: folder.id, name: folder.name }]); void load(folder.id); }}><Icon name="folder" size={17} />{folder.name}</button>)}</div>}</div><footer className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>{t("common.cancel")}</button><button type="button" className="button button-primary" onClick={() => onSelect(parentId)} disabled={pending || loading}>{pending ? t("drive.addingToDocsHub") : t("drive.addHere")}</button></footer></section></div>;
 }
 
 function SignIn() {
@@ -988,18 +1201,20 @@ function AppShell({
   active,
   profile,
   canCreate,
-  creatingOffice,
+  canManageDocuments,
+  creatingNative,
   onCreateFolder,
-  onCreateOffice,
+  onCreateNativeDocument,
   onSignOut,
   children,
 }: {
   active: SidebarRoute;
   profile: CurrentUser;
   canCreate: boolean;
-  creatingOffice: boolean;
+  canManageDocuments: boolean;
+  creatingNative: boolean;
   onCreateFolder: () => void;
-  onCreateOffice: (kind: OfficeFileKind) => void;
+  onCreateNativeDocument: (kind: NativeDocumentKind) => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
@@ -1008,9 +1223,10 @@ function AppShell({
       active={active}
       profile={profile}
       canCreate={canCreate}
-      creatingOffice={creatingOffice}
+      canManageDocuments={canManageDocuments}
+      creatingNative={creatingNative}
       onCreateFolder={onCreateFolder}
-      onCreateOffice={onCreateOffice}
+      onCreateNativeDocument={onCreateNativeDocument}
       onSignOut={onSignOut}
     />
     <main className="drive-main"><div className="page-scroll">{children}</div></main>
@@ -1021,20 +1237,22 @@ function Sidebar({
   active,
   profile,
   canCreate,
-  creatingOffice,
+  canManageDocuments,
+  creatingNative,
   onCreateFolder,
-  onCreateOffice,
+  onCreateNativeDocument,
   onSignOut,
 }: {
   active: SidebarRoute;
   profile: CurrentUser;
   canCreate: boolean;
-  creatingOffice: boolean;
+  canManageDocuments: boolean;
+  creatingNative: boolean;
   onCreateFolder: () => void;
-  onCreateOffice: (kind: OfficeFileKind) => void;
+  onCreateNativeDocument: (kind: NativeDocumentKind) => void;
   onSignOut: () => void;
 }) {
-  const canAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
+  const canAdmin = profile.status === "ACTIVE" && canAdministerAccounts(profile.systemRole);
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   return (
     <aside className="sidebar">
@@ -1042,18 +1260,19 @@ function Sidebar({
         <Icon name="drive" size={22} />
         <span>Docs Hub</span>
       </div>
-      {canCreate && (
+      {canManageDocuments && (
         <NewMenu
           open={newMenuOpen}
-          pending={creatingOffice}
+          pending={creatingNative}
+          folderDisabled={!canCreate}
           onToggle={() => setNewMenuOpen((value) => !value)}
           onFolder={() => {
             setNewMenuOpen(false);
             onCreateFolder();
           }}
-          onOffice={(kind) => {
+          onNativeDocument={(kind) => {
             setNewMenuOpen(false);
-            onCreateOffice(kind);
+            onCreateNativeDocument(kind);
           }}
         />
       )}
@@ -1105,7 +1324,7 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
   const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
-  const canAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
+  const canAdmin = profile.status === "ACTIVE" && canAdministerAccounts(profile.systemRole);
   const initials = profile.displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "U";
   useLayoutEffect(() => {
     if (!open) return;
@@ -1206,9 +1425,11 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
 
 function DriveApp({
   canCreate,
+  canManageDocuments,
   onCreateFolder,
 }: {
   canCreate: boolean;
+  canManageDocuments: boolean;
   onCreateFolder: () => void;
 }) {
   const { isFilePending } = useEditorSaveContext();
@@ -1226,6 +1447,7 @@ function DriveApp({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
+  const [removeDriveNode, setRemoveDriveNode] = useState<Node | null>(null);
   const [versionNode, setVersionNode] = useState<Node | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const uploadInput = useRef<HTMLInputElement>(null);
@@ -1328,6 +1550,16 @@ function DriveApp({
     setNodes((items) => items.filter((item) => item.id !== node.id));
     setNotice({ tone: "success", message: t("files.movedToTrash", { name: node.name }) });
   }
+  async function removeDriveReference(node: Node) {
+    try {
+      await api.removeDriveReference(node.id);
+      setNodes((items) => items.filter((item) => item.id !== node.id));
+      setRemoveDriveNode(null);
+      setNotice({ tone: "success", message: t("drive.removedFromDocsHub", { name: node.name }) });
+    } catch (requestError) {
+      setNotice({ tone: "error", message: displayError(requestError) });
+    }
+  }
   async function toggleFavorite(node: Node) {
     const isFavorite = favoriteIds.has(node.id);
     try {
@@ -1397,6 +1629,7 @@ function DriveApp({
               onRename={setRenameNode}
               onShare={setShareNode}
               onTrash={setTrashNode}
+              onRemoveDrive={canManageDocuments ? setRemoveDriveNode : undefined}
               onVersions={setVersionNode}
               onOpen={openFile}
               onNotice={setNotice}
@@ -1431,6 +1664,16 @@ function DriveApp({
           action={t("files.moveToTrash")}
           onClose={() => setTrashNode(null)}
           onConfirm={() => moveToTrash(trashNode)}
+          onNotice={setNotice}
+        />
+      )}
+      {removeDriveNode && (
+        <ConfirmDialog
+          title={t("drive.removeFromDocsHub")}
+          message={t("drive.removeFromDocsHubConfirm", { name: removeDriveNode.name })}
+          action={t("drive.removeFromDocsHub")}
+          onClose={() => setRemoveDriveNode(null)}
+          onConfirm={() => removeDriveReference(removeDriveNode)}
           onNotice={setNotice}
         />
       )}
@@ -1486,6 +1729,7 @@ function FileList({
   onRename,
   onShare,
   onTrash,
+  onRemoveDrive,
   onVersions,
   onOpen,
   onNotice,
@@ -1496,12 +1740,14 @@ function FileList({
   sort,
   onSortChange,
   sortActivated,
+  canManageDocuments = false,
 }: {
   nodes: Node[];
   onFolder: (id: string) => void;
   onRename: (node: Node) => void;
   onShare: (node: Node) => void;
   onTrash: (node: Node) => void;
+  onRemoveDrive?: (node: Node) => void;
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
   onNotice: (notice: Notice) => void;
@@ -1512,6 +1758,7 @@ function FileList({
   sort?: DriveSort;
   onSortChange?: (sort: DriveSort) => void;
   sortActivated?: boolean;
+  canManageDocuments?: boolean;
 }) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   return (
@@ -1526,6 +1773,7 @@ function FileList({
               onSortChange={showLastModified ? onSortChange : undefined}
               sortActivated={showLastModified ? sortActivated : undefined}
             />
+            <th scope="col">{t("common.type")}</th>
             {showLastModified ? (
               <>
                 <th scope="col">{t("common.modifiedBy")}</th>
@@ -1559,6 +1807,8 @@ function FileList({
               onRename={onRename}
               onShare={onShare}
               onTrash={onTrash}
+              onRemoveDrive={onRemoveDrive}
+              canManageDocuments={canManageDocuments}
               onVersions={onVersions}
               onOpen={onOpen}
               onNotice={onNotice}
@@ -1633,12 +1883,14 @@ function FileRow({
   onRename,
   onShare,
   onTrash,
+  onRemoveDrive,
   onVersions,
   onOpen,
   onNotice,
   isFavorite,
   onFavorite,
   showLastModified,
+  canManageDocuments,
 }: {
   node: Node;
   menuOpen: boolean;
@@ -1648,16 +1900,20 @@ function FileRow({
   onRename: (node: Node) => void;
   onShare: (node: Node) => void;
   onTrash: (node: Node) => void;
+  onRemoveDrive?: (node: Node) => void;
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
   onNotice: (notice: Notice) => void;
   isFavorite: boolean;
   onFavorite: (node: Node) => void;
   showLastModified: boolean;
+  canManageDocuments: boolean;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const isFolder = node.type === "FOLDER";
-  const modifiedBy = driveActorLabel(node.lastModified.actor);
+  const modifiedBy = node.backing?.type === "GOOGLE_DRIVE"
+    ? t("drive.modifiedByUnavailable")
+    : driveActorLabel(node.lastModified.actor);
   const canOpen =
     isFolder ||
     hasCapability(node, "PREVIEW") ||
@@ -1679,9 +1935,10 @@ function FileRow({
           disabled={!canOpen}
         >
           <Icon name={isFolder ? "folder" : "file"} size={19} />
-          <span>{node.name}</span>
+          <span>{node.name}{node.backing?.type === "GOOGLE_DRIVE" && node.backing.sourceStatus !== "CONNECTED" ? <small className="drive-source-status"> ({driveSourceStatusLabel(node.backing.sourceStatus)})</small> : null}</span>
         </button>
       </td>
+      <td>{node.backing?.type === "GOOGLE_DRIVE" ? driveTypeLabel(node.backing.normalizedType) : node.type === "FOLDER" ? driveTypeLabel("FOLDER") : "—"}</td>
       {showLastModified ? (
         <>
           <td className="modified-by" title={modifiedBy}>
@@ -1730,7 +1987,9 @@ function FileRow({
             >
               {isFolder
                 ? t("files.openFolder")
-                : isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")
+                : node.backing?.type === "GOOGLE_DRIVE"
+                  ? t("drive.openInGoogle")
+                  : isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")
                   ? t("files.open")
                   : hasCapability(node, "PREVIEW")
                     ? t("files.preview")
@@ -1762,7 +2021,7 @@ function FileRow({
                 {t("files.rename")}
               </button>
             )}
-            {!isFolder && (
+            {!isFolder && node.backing?.type !== "GOOGLE_DRIVE" && (
               <button
                 type="button"
                 role="menuitem"
@@ -1799,6 +2058,20 @@ function FileRow({
               >
                 <Icon name="trash" size={16} />
                 {t("files.moveToTrash")}
+              </button>
+            )}
+            {node.backing?.type === "GOOGLE_DRIVE" && canManageDocuments && onRemoveDrive && (
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-danger"
+                onClick={() => {
+                  onCloseMenu();
+                  onRemoveDrive(node);
+                }}
+              >
+                <Icon name="trash" size={16} />
+                {t("drive.removeFromDocsHub")}
               </button>
             )}
           </RowMenu>
@@ -3045,15 +3318,17 @@ function EmptyState({
 function NewMenu({
   open,
   pending,
+  folderDisabled,
   onToggle,
   onFolder,
-  onOffice,
+  onNativeDocument,
 }: {
   open: boolean;
   pending: boolean;
+  folderDisabled: boolean;
   onToggle: () => void;
   onFolder: () => void;
-  onOffice: (kind: OfficeFileKind) => void;
+  onNativeDocument: (kind: NativeDocumentKind) => void;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -3136,20 +3411,20 @@ function NewMenu({
           visibility: position ? "visible" : "hidden",
         }}
       >
-        <button type="button" role="menuitem" onClick={onFolder}>
+        <button type="button" role="menuitem" disabled={folderDisabled} onClick={onFolder}>
           <Icon name="folder" />
           {t("files.newFolder")}
         </button>
         <div className="new-menu-divider" />
-        <button type="button" role="menuitem" onClick={() => onOffice("DOCX")}>
+        <button type="button" role="menuitem" onClick={() => onNativeDocument("DOCUMENT")}>
           <Icon name="file" />
-          {t("files.wordDocument")}
+          {getLocale() === "vi" ? "Tài liệu" : t("files.document")}
         </button>
-        <button type="button" role="menuitem" onClick={() => onOffice("XLSX")}>
+        <button type="button" role="menuitem" onClick={() => onNativeDocument("SPREADSHEET")}>
           <Icon name="file" />
           {t("files.spreadsheet")}
         </button>
-        <button type="button" role="menuitem" onClick={() => onOffice("PPTX")}>
+        <button type="button" role="menuitem" onClick={() => onNativeDocument("PRESENTATION")}>
           <Icon name="file" />
           {t("files.presentation")}
         </button>

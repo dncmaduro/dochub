@@ -3,7 +3,11 @@ import { DocumentCapability } from '../authorization/document-capability.js';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { actorResponse } from '../common/file-attribution.js';
-import { FileVersionActorType } from '@dochub/database';
+import {
+  DriveFileType,
+  DriveSourceStatus,
+  FileVersionActorType,
+} from '@dochub/database';
 
 const COLLECTION_LIMIT = 50;
 
@@ -14,6 +18,16 @@ export interface CollectionItem {
   name: string;
   createdAt: string;
   updatedAt: string;
+  backing?:
+    | { type: 'LOCAL' }
+    | {
+        type: 'GOOGLE_DRIVE';
+        driveFileId: string;
+        webViewLink: string | null;
+        normalizedType: DriveFileType;
+        sourceStatus: DriveSourceStatus;
+        driveModifiedTime: Date | null;
+      };
   lastModified: {
     at: string;
     actor: ReturnType<typeof actorResponse>;
@@ -82,6 +96,7 @@ export class CollectionsService {
   }
 
   async recordRecent(actorUserId: string, nodeId: string) {
+    await this.requireVisible(actorUserId, nodeId);
     await this.database.prisma.recentItem.upsert({
       where: { userId_nodeId: { userId: actorUserId, nodeId } },
       create: { userId: actorUserId, nodeId },
@@ -111,6 +126,16 @@ export class CollectionsService {
                 createdBy: { select: { id: true, displayName: true } },
               },
             },
+            backingType: true,
+            driveFile: {
+              select: {
+                driveFileId: true,
+                webViewLink: true,
+                normalizedType: true,
+                sourceStatus: true,
+                driveModifiedTime: true,
+              },
+            },
           },
         },
       },
@@ -129,7 +154,26 @@ export class CollectionsService {
         name: node.name,
         createdAt: node.createdAt.toISOString(),
         updatedAt: node.updatedAt.toISOString(),
-        lastModified: node.file?.currentVersion
+        backing:
+          node.file?.backingType === 'GOOGLE_DRIVE' &&
+          node.file.driveFile
+            ? {
+                type: 'GOOGLE_DRIVE',
+                driveFileId: node.file.driveFile.driveFileId,
+                webViewLink: node.file.driveFile.webViewLink,
+                normalizedType: node.file.driveFile.normalizedType,
+                sourceStatus: node.file.driveFile.sourceStatus,
+                driveModifiedTime: node.file.driveFile.driveModifiedTime,
+              }
+            : node.file
+              ? { type: 'LOCAL' }
+              : undefined,
+        lastModified: node.file?.driveFile?.driveModifiedTime
+          ? {
+              at: node.file.driveFile.driveModifiedTime.toISOString(),
+              actor: actorResponse(FileVersionActorType.SYSTEM, null),
+            }
+          : node.file?.currentVersion
           ? {
               at: node.file.currentVersion.createdAt.toISOString(),
               actor: actorResponse(

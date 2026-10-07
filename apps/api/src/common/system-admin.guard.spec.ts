@@ -23,7 +23,7 @@ describe('SystemAdminGuard', () => {
 
     database.prisma.user.findUnique = vi.fn().mockResolvedValue({
       status: UserStatus.ACTIVE,
-      systemRole: SystemRole.MEMBER,
+      systemRole: SystemRole.DOCUMENT_MANAGER,
     });
     await expect(
       guard.canActivate(contextFor({ userId: 'user-id' })),

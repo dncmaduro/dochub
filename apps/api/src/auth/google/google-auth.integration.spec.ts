@@ -99,7 +99,7 @@ withDatabase('GoogleAuthService self-registration integration', () => {
   async function createUser(
     email: string,
     status: UserStatus,
-    systemRole = SystemRole.MEMBER,
+    systemRole = SystemRole.VIEWER,
   ) {
     return prisma.user.create({
       data: {
@@ -133,7 +133,7 @@ withDatabase('GoogleAuthService self-registration integration', () => {
       normalizedEmail: email,
       displayName: 'Trusted Google Name',
       status: UserStatus.PENDING_APPROVAL,
-      systemRole: SystemRole.MEMBER,
+      systemRole: SystemRole.VIEWER,
       authAccounts: [
         {
           provider: AuthProvider.GOOGLE,
@@ -170,7 +170,7 @@ withDatabase('GoogleAuthService self-registration integration', () => {
     });
     await expect(admin.approveUser(approverId, user.id)).resolves.toMatchObject({
       status: UserStatus.ACTIVE,
-      systemRole: SystemRole.MEMBER,
+      systemRole: SystemRole.VIEWER,
     });
     expect(await prisma.session.count({ where: { userId: user.id } })).toBe(
       sessionsBeforeApproval,

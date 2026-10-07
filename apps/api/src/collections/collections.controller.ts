@@ -19,6 +19,11 @@ export class CollectionsController {
     return this.collections.listFavorites(auth.userId);
   }
 
+  @Post('nodes/:nodeId/recent')
+  recordRecent(@CurrentAuth() auth: AuthPrincipal, @Param('nodeId') nodeId: string) {
+    return this.collections.recordRecent(auth.userId, nodeId);
+  }
+
   @Post('nodes/:nodeId/favorite')
   addFavorite(@CurrentAuth() auth: AuthPrincipal, @Param('nodeId') nodeId: string) {
     return this.collections.addFavorite(auth.userId, nodeId);

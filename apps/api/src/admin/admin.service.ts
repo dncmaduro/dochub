@@ -57,7 +57,7 @@ export class AdminService {
     const email = dto.email.trim();
     const normalizedEmail = normalizeEmail(dto.email);
     const displayName = dto.displayName.trim();
-    const systemRole = dto.systemRole ?? SystemRole.MEMBER;
+    const systemRole = dto.systemRole ?? SystemRole.VIEWER;
 
     try {
       const user = await this.database.prisma.$transaction(

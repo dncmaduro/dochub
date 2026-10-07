@@ -16,6 +16,16 @@ export interface Node {
   createdAt: string;
   updatedAt: string;
   lastModified: LastModified;
+  backing?:
+    | { type: "LOCAL" }
+    | {
+        type: "GOOGLE_DRIVE";
+        driveFileId: string;
+        webViewLink: string | null;
+        normalizedType: DriveFileType;
+        sourceStatus: "CONNECTED" | "STALE" | "UNAVAILABLE";
+        driveModifiedTime: string | null;
+      };
   capabilities: string[];
   processing?: { contentSearch: "READY" | "PROCESSING" | "FAILED" } | null;
 }
@@ -143,8 +153,9 @@ interface NodePage {
 interface UploadResponse {
   node: Node;
 }
-export type SystemRole = "ADMIN" | "MEMBER";
+export type SystemRole = "ADMIN" | "DOCUMENT_MANAGER" | "VIEWER";
 export type OfficeFileKind = "DOCX" | "XLSX" | "PPTX";
+export type NativeDocumentKind = "DOCUMENT" | "SPREADSHEET" | "PRESENTATION";
 export type UserStatus = "INVITED" | "PENDING_APPROVAL" | "ACTIVE" | "SUSPENDED";
 export interface CurrentUser {
   displayName: string;
@@ -152,6 +163,57 @@ export interface CurrentUser {
   systemRole: SystemRole;
   status: UserStatus;
   googleConnected: boolean;
+}
+export type DriveSyncStatus = "NEVER_SYNCED" | "SYNCING" | "SYNCED" | "FAILED";
+export type DriveFileType = "FOLDER" | "GOOGLE_DOC" | "GOOGLE_SHEET" | "GOOGLE_SLIDE" | "PDF" | "IMAGE" | "VIDEO" | "DOCX" | "XLSX" | "PPTX" | "BINARY";
+export type DriveFileLocation = "MY_DRIVE" | "SHARED_WITH_ME" | "SHARED_DRIVE" | "UNKNOWN";
+export interface DriveConnection {
+  connected: boolean;
+  id?: string;
+  googleAccountId?: string | null;
+  googleEmail?: string | null;
+  connectedAt?: string;
+  updatedAt?: string;
+  syncStatus: DriveSyncStatus;
+  lastSyncStartedAt?: string | null;
+  lastSyncCompletedAt?: string | null;
+  lastSyncError?: string | null;
+  revokedAt?: string | null;
+  authorizedScopes: string[];
+  canWrite: boolean;
+}
+export interface NativeDocumentCreation {
+  operationId: string;
+  kind: NativeDocumentKind;
+  nodeId: string;
+  fileId: string;
+  driveFileId: string;
+  parentId: string | null;
+  name: string;
+  webViewLink: string | null;
+  driveModifiedTime: string | null;
+}
+export interface DriveFile {
+  id: string;
+  driveFileId: string;
+  name: string;
+  mimeType: string;
+  normalizedType: DriveFileType;
+  webViewLink: string | null;
+  driveModifiedTime: string | null;
+  driveCreatedTime: string | null;
+  trashed: boolean;
+  driveParents: string[];
+  location: DriveFileLocation;
+  sharedDriveId: string | null;
+  sizeBytes: string | null;
+  syncedAt: string;
+  sourceStatus: "CONNECTED" | "STALE" | "UNAVAILABLE";
+  docsHubNodeId: string | null;
+}
+export interface DriveFilePage {
+  items: DriveFile[];
+  nextCursor: string | null;
 }
 interface RefreshResponse {
   accessToken: string;
@@ -208,6 +270,65 @@ export class ApiClient {
     return this.request<CurrentUser>("/auth/me");
   }
 
+  async driveConnection() {
+    return this.request<DriveConnection>("/drive/connection");
+  }
+
+  async startDriveConnection(mode: "READ" | "WRITE" = "READ") {
+    const result = await this.request<{ authorizationUrl: string }>(
+      "/drive/connection/authorize",
+      {
+        method: "POST",
+        ...(mode === "WRITE"
+          ? { body: JSON.stringify({ mode }) }
+          : {}),
+      },
+    );
+    window.location.assign(result.authorizationUrl);
+  }
+
+  async createNativeDocument(
+    kind: NativeDocumentKind,
+    parentId: string | null,
+    locale: "en" | "vi",
+    idempotencyKey: string,
+  ) {
+    return this.request<NativeDocumentCreation>("/drive/documents", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ kind, parentId, locale }),
+    });
+  }
+
+  async syncDrive() {
+    return this.request<DriveConnection>("/drive/connection/sync", {
+      method: "POST",
+    });
+  }
+
+  async disconnectDrive() {
+    return this.request<DriveConnection>("/drive/connection/disconnect", {
+      method: "POST",
+    });
+  }
+
+  async listDriveFiles(q = "", cursor?: string, limit = 50) {
+    const parameters = new URLSearchParams({ limit: String(limit) });
+    if (q.trim()) parameters.set("q", q.trim());
+    if (cursor) parameters.set("cursor", cursor);
+    return this.request<DriveFilePage>(`/drive/files?${parameters}`);
+  }
+
+  async addDriveFileToDocsHub(driveFileId: string, parentId: string | null) {
+    return this.request<{ nodeId: string; name: string }>(
+      `/drive/files/${encodeURIComponent(driveFileId)}/add-to-docshub`,
+      {
+        method: "POST",
+        body: JSON.stringify({ parentId }),
+      },
+    );
+  }
+
   async logout() {
     try {
       await this.raw("/auth/logout", { method: "POST" });
@@ -241,6 +362,9 @@ export class ApiClient {
   }
   async listRecent() {
     return this.request<{ items: CollectionItem[] }>("/recent");
+  }
+  async recordRecent(nodeId: string) {
+    return this.request<void>(`/nodes/${nodeId}/recent`, { method: "POST" });
   }
   async listFavorites() {
     return this.request<{ items: CollectionItem[] }>("/favorites");
@@ -277,6 +401,18 @@ export class ApiClient {
       method: "PATCH",
       body: JSON.stringify({ name }),
     });
+  }
+  async moveNode(nodeId: string, parentId: string | null) {
+    return this.request<Node>(`/nodes/${nodeId}/move`, {
+      method: "POST",
+      body: JSON.stringify({ parentId }),
+    });
+  }
+  async removeDriveReference(nodeId: string) {
+    return this.request<{ nodeId: string; removed: boolean }>(
+      `/nodes/${nodeId}/drive-reference`,
+      { method: "DELETE" },
+    );
   }
   async createEditorSession(nodeId: string, mode?: "VIEW" | "EDIT") {
     return this.request<EditorSession>(`/nodes/${nodeId}/editor-sessions`, {

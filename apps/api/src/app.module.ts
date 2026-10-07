@@ -12,6 +12,7 @@ import { SharingModule } from './sharing/sharing.module.js';
 import { SearchModule } from './search/search.module.js';
 import { EditorModule } from './editor/editor.module.js';
 import { CollectionsModule } from './collections/collections.module.js';
+import { DriveModule } from './drive/drive.module.js';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { CollectionsModule } from './collections/collections.module.js';
     SearchModule,
     EditorModule,
     CollectionsModule,
+    DriveModule,
   ],
   controllers: [HealthController],
 })

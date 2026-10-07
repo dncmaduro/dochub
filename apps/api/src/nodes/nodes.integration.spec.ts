@@ -69,6 +69,7 @@ describeWithDatabase('NodesService integration', () => {
           normalizedEmail: `nodes-member-${suffix}@example.test`,
           displayName: 'Nodes member',
           status: UserStatus.ACTIVE,
+          systemRole: SystemRole.DOCUMENT_MANAGER,
         },
       ],
     });

@@ -1,4 +1,4 @@
-import { NodeType } from '@dochub/database';
+import { DriveFileType, DriveSourceStatus, NodeType } from '@dochub/database';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import type { ProcessingStatus } from '../common/file-processing-state.js';
 import type { LastModifiedResponse } from '../common/file-attribution.js';
@@ -10,6 +10,16 @@ export interface NodeResponse {
   name: string;
   createdAt: Date;
   updatedAt: Date;
+  backing?:
+    | { type: 'LOCAL' }
+    | {
+        type: 'GOOGLE_DRIVE';
+        driveFileId: string;
+        webViewLink: string | null;
+        normalizedType: DriveFileType;
+        sourceStatus: DriveSourceStatus;
+        driveModifiedTime: Date | null;
+      };
   lastModified: LastModifiedResponse;
   capabilities: DocumentCapability[];
   processing: { contentSearch: ProcessingStatus } | null;

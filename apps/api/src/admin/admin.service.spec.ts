@@ -15,7 +15,7 @@ function user(overrides: Record<string, unknown> = {}) {
     email: 'member@example.test',
     displayName: 'Member',
     status: UserStatus.INVITED,
-    systemRole: SystemRole.MEMBER,
+    systemRole: SystemRole.DOCUMENT_MANAGER,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -101,6 +101,22 @@ describe('AdminService user mutations', () => {
     );
   });
 
+  it('defaults invited users to VIEWER when no role is supplied', async () => {
+    const transaction = transactionMock();
+    const { service } = serviceFor(transaction);
+
+    await service.createUser(actorId, {
+      email: 'viewer@example.test',
+      displayName: 'Viewer',
+    });
+
+    expect(transaction.user.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ systemRole: SystemRole.VIEWER }),
+      }),
+    );
+  });
+
   it('maps normalized-email uniqueness conflicts and protects an admin from self-lockout', async () => {
     const transaction = transactionMock();
     const { service, database } = serviceFor(transaction);
@@ -122,7 +138,7 @@ describe('AdminService user mutations', () => {
       }),
     );
     await expect(
-      service.updateUser(actorId, actorId, { systemRole: SystemRole.MEMBER }),
+      service.updateUser(actorId, actorId, { systemRole: SystemRole.DOCUMENT_MANAGER }),
     ).rejects.toBeInstanceOf(ConflictException);
     await expect(
       service.suspendUser(actorId, actorId),
@@ -169,7 +185,7 @@ describe('AdminService user mutations', () => {
 
     await expect(service.approveUser(actorId, userId)).resolves.toMatchObject({
       status: UserStatus.ACTIVE,
-      systemRole: SystemRole.MEMBER,
+      systemRole: SystemRole.DOCUMENT_MANAGER,
     });
     expect(transaction.user.update).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -227,7 +227,7 @@ export class GoogleAuthService {
           normalizedEmail: identity.normalizedEmail,
           displayName: identity.displayName,
           status: UserStatus.PENDING_APPROVAL,
-          systemRole: SystemRole.MEMBER,
+          systemRole: SystemRole.VIEWER,
         },
         select: { id: true, status: true },
       });

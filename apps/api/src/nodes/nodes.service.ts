@@ -7,6 +7,7 @@ import {
 import {
   AuditActorType,
   AuditResult,
+  FileBackingType,
   FileVersionActorType,
   FileProcessingTaskType,
   NodeType,
@@ -69,6 +70,16 @@ const nodeSelect = {
             where: { type: FileProcessingTaskType.TEXT_EXTRACTION },
             select: { status: true },
           },
+        },
+      },
+      backingType: true,
+      driveFile: {
+        select: {
+          driveFileId: true,
+          webViewLink: true,
+          normalizedType: true,
+          sourceStatus: true,
+          driveModifiedTime: true,
         },
       },
     },
@@ -268,14 +279,15 @@ export class NodesService {
 
     const rows = await this.database.prisma.$queryRaw<OrderedNodeIdRow[]>`
       SELECT n."id"
-      FROM "Node" AS n
-      LEFT JOIN "File" AS file_record ON file_record."nodeId" = n."id"
+        FROM "Node" AS n
+        LEFT JOIN "File" AS file_record ON file_record."nodeId" = n."id"
+      LEFT JOIN "DriveFile" AS drive_record ON drive_record."id" = file_record."driveFileId"
       LEFT JOIN "FileVersion" AS current_version
         ON current_version."id" = file_record."currentVersionId"
       WHERE ${visibility}
         ${cursorPredicate}
       ORDER BY
-        COALESCE(current_version."createdAt", n."updatedAt") ${direction},
+        COALESCE(drive_record."driveModifiedTime", current_version."createdAt", n."updatedAt") ${direction},
         n."id" ASC
       LIMIT ${limit + 1}
     `;
@@ -344,7 +356,7 @@ export class NodesService {
       `;
     }
     const modifiedAt = Prisma.sql`
-      COALESCE(current_version."createdAt", n."updatedAt")
+      COALESCE(drive_record."driveModifiedTime", current_version."createdAt", n."updatedAt")
     `;
     const cursorDate = new Date(cursor.sortValue);
     return Prisma.sql`
@@ -496,13 +508,24 @@ export class NodesService {
               nodeId,
               transaction,
             );
-            this.requireCapability(
-              source.capabilities,
-              DocumentCapability.MOVE,
-            );
+            const isDriveBacked =
+              source.node.file?.backingType === FileBackingType.GOOGLE_DRIVE;
+            if (isDriveBacked) {
+              await this.authorization.assertDocumentManager(
+                actorUserId,
+                transaction,
+              );
+            } else {
+              this.requireCapability(
+                source.capabilities,
+                DocumentCapability.MOVE,
+              );
+            }
 
             if (targetParentId === null) {
-              await this.requireRootAdministrator(actorUserId, transaction);
+              if (!isDriveBacked) {
+                await this.requireRootAdministrator(actorUserId, transaction);
+              }
             } else {
               const destination = await this.requireVisibleNode(
                 actorUserId,
@@ -510,10 +533,12 @@ export class NodesService {
                 transaction,
               );
               this.requireFolder(destination.node);
-              this.requireCapability(
-                destination.capabilities,
-                DocumentCapability.CREATE,
-              );
+              if (!isDriveBacked) {
+                this.requireCapability(
+                  destination.capabilities,
+                  DocumentCapability.CREATE,
+                );
+              }
               await this.assertNotDescendant(
                 nodeId,
                 targetParentId,
@@ -531,7 +556,9 @@ export class NodesService {
             });
             await this.writeAudit(transaction, {
               actorUserId,
-              action: 'NODE_MOVED',
+              action: isDriveBacked
+                ? 'DRIVE_FILE_MOVED_IN_DOCSHUB'
+                : 'NODE_MOVED',
               resourceId: nodeId,
               metadata: {
                 fromParentId: source.node.parentId,
@@ -696,7 +723,26 @@ export class NodesService {
       name: node.name,
       createdAt: node.createdAt,
       updatedAt: node.updatedAt,
-      lastModified: node.file?.currentVersion
+      backing:
+        node.file?.backingType === FileBackingType.GOOGLE_DRIVE &&
+        node.file.driveFile
+          ? {
+              type: FileBackingType.GOOGLE_DRIVE,
+              driveFileId: node.file.driveFile.driveFileId,
+              webViewLink: node.file.driveFile.webViewLink,
+              normalizedType: node.file.driveFile.normalizedType,
+              sourceStatus: node.file.driveFile.sourceStatus,
+              driveModifiedTime: node.file.driveFile.driveModifiedTime,
+            }
+          : node.file
+            ? { type: FileBackingType.LOCAL }
+            : undefined,
+      lastModified: node.file?.driveFile?.driveModifiedTime
+        ? {
+            at: node.file.driveFile.driveModifiedTime,
+            actor: actorResponse(FileVersionActorType.SYSTEM, null),
+          }
+        : node.file?.currentVersion
         ? {
             at: node.file.currentVersion.createdAt,
             actor: actorResponse(
@@ -722,7 +768,11 @@ export class NodesService {
     transaction: Prisma.TransactionClient,
     input: {
       actorUserId: string;
-      action: 'FOLDER_CREATED' | 'NODE_RENAMED' | 'NODE_MOVED';
+      action:
+        | 'FOLDER_CREATED'
+        | 'NODE_RENAMED'
+        | 'NODE_MOVED'
+        | 'DRIVE_FILE_MOVED_IN_DOCSHUB';
       resourceId: string;
       metadata: Prisma.InputJsonValue;
     },

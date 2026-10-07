@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -18,11 +19,15 @@ import {
   RenameNodeDto,
 } from './dto/node.dto.js';
 import { NodesService } from './nodes.service.js';
+import { DriveOrganizationService } from '../drive/drive-organization.service.js';
 
 @Controller('nodes')
 @UseGuards(AccessTokenGuard)
 export class NodesController {
-  constructor(private readonly nodes: NodesService) {}
+  constructor(
+    private readonly nodes: NodesService,
+    private readonly driveOrganization: DriveOrganizationService,
+  ) {}
 
   @Get('root')
   listRoot(
@@ -70,5 +75,13 @@ export class NodesController {
     @Body() dto: MoveNodeDto,
   ) {
     return this.nodes.moveNode(auth.userId, params.nodeId, dto);
+  }
+
+  @Delete(':nodeId/drive-reference')
+  removeDriveReference(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param() params: NodeIdParamDto,
+  ) {
+    return this.driveOrganization.removeFromDocsHub(auth.userId, params.nodeId);
   }
 }

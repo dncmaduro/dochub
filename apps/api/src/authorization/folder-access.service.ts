@@ -16,6 +16,7 @@ import {
   type DocumentAuthorizationClient,
 } from './document-authorization.service.js';
 import { DocumentCapability } from './document-capability.js';
+import { canManageDocuments, canViewDocuments } from '../common/system-role-policy.js';
 
 export type FolderReference =
   | { kind: 'ROOT'; parentId: null }
@@ -46,14 +47,28 @@ export class FolderAccessService {
     if (parentId === null) {
       const user = await client.user.findUnique({
         where: { id: actorUserId },
-        select: { status: true },
+        select: { status: true, systemRole: true },
       });
+      const systemRole = user?.systemRole;
+      const view =
+        user?.status === UserStatus.ACTIVE &&
+        systemRole !== undefined &&
+        canViewDocuments(systemRole);
+      const manage =
+        user?.status === UserStatus.ACTIVE &&
+        systemRole !== undefined &&
+        canManageDocuments(systemRole);
       return {
         reference: { kind: 'ROOT', parentId: null },
         node: null,
         capabilities:
-          user?.status === UserStatus.ACTIVE
-            ? new Set([DocumentCapability.VIEW, DocumentCapability.CREATE])
+          view
+            ? new Set([
+                DocumentCapability.VIEW,
+                ...(manage
+                  ? [DocumentCapability.CREATE]
+                  : []),
+              ])
             : new Set(),
       };
     }
@@ -106,7 +121,7 @@ export class FolderAccessService {
     if (!folder.capabilities.has(DocumentCapability.CREATE)) {
       throw new ForbiddenException(
         folder.reference.kind === 'ROOT'
-          ? 'Root placement requires an active user'
+          ? 'Document-management access is required for root placement'
           : 'You do not have the required document capability',
       );
     }

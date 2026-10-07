@@ -5,9 +5,10 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { SystemRole, UserStatus } from '@dochub/database';
+import { UserStatus } from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
 import type { AuthenticatedRequest } from '../auth/access-token.guard.js';
+import { canAdministerAccounts } from './system-role-policy.js';
 
 @Injectable()
 export class SystemAdminGuard implements CanActivate {
@@ -23,10 +24,7 @@ export class SystemAdminGuard implements CanActivate {
       where: { id: request.auth.userId },
       select: { status: true, systemRole: true },
     });
-    if (
-      user?.status !== UserStatus.ACTIVE ||
-      user.systemRole !== SystemRole.ADMIN
-    ) {
+    if (!user || user.status !== UserStatus.ACTIVE || !canAdministerAccounts(user.systemRole)) {
       throw new ForbiddenException('System administrator access is required');
     }
 

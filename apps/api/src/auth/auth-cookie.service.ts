@@ -29,6 +29,12 @@ export class AuthCookieService {
     return options;
   }
 
+  driveFlowOptions(): CookieOptions {
+    const options = this.baseOptions('/drive/connection/callback', 'lax');
+    options.maxAge = 10 * 60 * 1000;
+    return options;
+  }
+
   previewOptions(sessionId: string): CookieOptions {
     const options = this.baseOptions(`/preview/${sessionId}/content`, 'lax');
     options.maxAge = 5 * 60 * 1000;

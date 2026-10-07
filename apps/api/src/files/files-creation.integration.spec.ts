@@ -66,6 +66,7 @@ withDatabase('root creation access policy integration', () => {
           normalizedEmail: `root-policy-member-${suffix}@example.test`,
           displayName: 'Root policy member',
           status: UserStatus.ACTIVE,
+          systemRole: SystemRole.DOCUMENT_MANAGER,
         },
         {
           id: viewerId,

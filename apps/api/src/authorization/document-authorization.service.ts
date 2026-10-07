@@ -3,6 +3,7 @@ import {
   DocumentRole,
   GeneralAccessRole,
   Prisma,
+  UserStatus,
   type PrismaClient,
 } from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
@@ -11,6 +12,7 @@ import {
   DocumentCapability,
   generalAccessCapabilities,
 } from './document-capability.js';
+import { canManageDocuments } from '../common/system-role-policy.js';
 
 interface NodeChainRow {
   id: string;
@@ -24,6 +26,7 @@ interface NodeChainRow {
 interface UserMembershipRow {
   userId: string;
   groupId: string | null;
+  status?: UserStatus;
 }
 
 export interface ResolvedDocumentCapabilities {
@@ -197,13 +200,22 @@ export class DocumentAuthorizationService {
     client: DocumentAuthorizationClient = this.database.prisma,
   ): Promise<string[] | null> {
     const membershipRows = await client.$queryRaw<UserMembershipRow[]>`
-      SELECT user_record."id" AS "userId", membership."groupId" AS "groupId"
+      SELECT user_record."id" AS "userId", membership."groupId" AS "groupId", user_record."status" AS "status"
       FROM "User" AS user_record
       LEFT JOIN "GroupMember" AS membership
         ON membership."userId" = user_record."id"
       WHERE user_record."id" = ${userId}::uuid
     `;
     if (membershipRows.length === 0) {
+      return null;
+    }
+    if (
+      membershipRows.some(
+        (membership) =>
+          membership.status !== undefined &&
+          membership.status !== UserStatus.ACTIVE,
+      )
+    ) {
       return null;
     }
     return [
@@ -274,6 +286,27 @@ export class DocumentAuthorizationService {
     if (!(await this.hasCapability(userId, nodeId, capability))) {
       throw new ForbiddenException('You do not have access to this document');
     }
+  }
+
+  /** Account-level gate for Docs Hub organization operations. */
+  async assertDocumentManager(
+    userId: string,
+    client: DocumentAuthorizationClient = this.database.prisma,
+  ): Promise<void> {
+    if (!(await this.hasDocumentManager(userId, client))) {
+      throw new ForbiddenException('You do not have document-management access');
+    }
+  }
+
+  async hasDocumentManager(
+    userId: string,
+    client: DocumentAuthorizationClient = this.database.prisma,
+  ): Promise<boolean> {
+    const user = await client.user.findUnique({
+      where: { id: userId },
+      select: { status: true, systemRole: true },
+    });
+    return !!user && user.status === UserStatus.ACTIVE && canManageDocuments(user.systemRole);
   }
 
   private emptyResolution(nodeId: string): ResolvedDocumentCapabilities {

@@ -178,7 +178,7 @@ describe('GoogleAuthService account binding', () => {
         normalizedEmail: 'member@example.test',
         displayName: 'Member',
         status: UserStatus.PENDING_APPROVAL,
-        systemRole: 'MEMBER',
+        systemRole: 'VIEWER',
       },
       select: { id: true, status: true },
     });

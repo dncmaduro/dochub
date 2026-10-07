@@ -3,12 +3,13 @@ import { AuthorizationModule } from '../authorization/authorization.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { CollectionsModule } from '../collections/collections.module.js';
+import { DriveModule } from '../drive/drive.module.js';
 import { FoldersController } from './folders.controller.js';
 import { NodesController } from './nodes.controller.js';
 import { NodesService } from './nodes.service.js';
 
 @Module({
-  imports: [AuthModule, AuthorizationModule, DatabaseModule, CollectionsModule],
+  imports: [AuthModule, AuthorizationModule, DatabaseModule, CollectionsModule, DriveModule],
   controllers: [FoldersController, NodesController],
   providers: [NodesService],
 })

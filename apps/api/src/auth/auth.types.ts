@@ -4,6 +4,8 @@ export interface AccessTokenPayload {
   typ: 'access';
 }
 
+import type { SystemRole } from '@dochub/database';
+
 export interface AuthPrincipal {
   userId: string;
   sessionId: string;
@@ -19,5 +21,5 @@ export interface SessionTokens {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
-  systemRole: 'ADMIN' | 'MEMBER';
+  systemRole: SystemRole;
 }

@@ -9,6 +9,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import type { SystemRole } from '@dochub/database';
 import { CurrentAuth } from './current-auth.decorator.js';
 import { AccessTokenGuard } from './access-token.guard.js';
 import type { AuthPrincipal } from './auth.types.js';
@@ -37,7 +38,7 @@ export class AuthController {
     accessToken: string;
     tokenType: 'Bearer';
     expiresIn: number;
-    systemRole: 'ADMIN' | 'MEMBER';
+    systemRole: SystemRole;
   }> {
     const refreshToken = this.refreshTokenFrom(request);
     if (!refreshToken) {

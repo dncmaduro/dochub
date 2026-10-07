@@ -376,6 +376,117 @@
   color: var(--text);
   font-size: 13px;
 }
+.integration-section {
+  margin: 26px 0 24px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 22px;
+}
+.integration-section .profile-heading {
+  margin-bottom: 12px;
+}
+.integration-state,
+.integration-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+.integration-state p,
+.integration-empty p {
+  margin: 0 0 12px;
+}
+.integration-connected .profile-details {
+  margin-bottom: 14px;
+}
+.integration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.integration-empty,
+.drive-external-content {
+  padding: 24px;
+}
+.integration-empty {
+  max-width: 680px;
+}
+.integration-empty h2 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+}
+.drive-external-content {
+  max-width: 1180px;
+}
+.drive-external-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.drive-external-toolbar p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.drive-external-search {
+  width: min(300px, 100%);
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.drive-external-table td,
+.drive-external-table th {
+  white-space: nowrap;
+}
+.drive-external-name {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drive-external-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.drive-in-docshub,
+.drive-source-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+.drive-folder-picker-trail {
+  margin-bottom: 14px;
+  color: var(--muted);
+}
+.drive-folder-picker-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+.drive-folder-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+}
+.drive-load-more {
+  margin-top: 14px;
+}
+@media (max-width: 700px) {
+  .drive-external-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .drive-external-search {
+    width: 100%;
+  }
+}
 .topbar {
   position: sticky;
   z-index: 4;

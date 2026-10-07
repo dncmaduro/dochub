@@ -50,7 +50,7 @@ withDatabase('Admin approval endpoint integration', () => {
           normalizedEmail: `${emailPrefix}-member@example.test`,
           displayName: 'Member',
           status: UserStatus.ACTIVE,
-          systemRole: SystemRole.MEMBER,
+          systemRole: SystemRole.DOCUMENT_MANAGER,
         },
         {
           id: adminId,
@@ -66,7 +66,7 @@ withDatabase('Admin approval endpoint integration', () => {
           normalizedEmail: `${emailPrefix}-pending@example.test`,
           displayName: 'Pending user',
           status: UserStatus.PENDING_APPROVAL,
-          systemRole: SystemRole.MEMBER,
+          systemRole: SystemRole.VIEWER,
         },
       ],
     });
@@ -115,7 +115,7 @@ withDatabase('Admin approval endpoint integration', () => {
     expect(response.body).toMatchObject({
       id: pendingId,
       status: UserStatus.ACTIVE,
-      systemRole: SystemRole.MEMBER,
+      systemRole: SystemRole.VIEWER,
     });
     expect(await prisma.session.count({ where: { userId: pendingId } })).toBe(0);
     expect(await prisma.permissionEntry.count({ where: { userId: pendingId } })).toBe(0);

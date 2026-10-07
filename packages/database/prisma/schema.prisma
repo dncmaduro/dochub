@@ -16,7 +16,8 @@ enum UserStatus {
 
 enum SystemRole {
   ADMIN
-  MEMBER
+  DOCUMENT_MANAGER
+  VIEWER
 }
 
 enum AuthProvider {
@@ -26,6 +27,11 @@ enum AuthProvider {
 enum NodeType {
   FILE
   FOLDER
+}
+
+enum FileBackingType {
+  LOCAL
+  GOOGLE_DRIVE
 }
 
 enum TrashOperationStatus {
@@ -92,13 +98,59 @@ enum GeneralAccessRole {
   EDITOR
 }
 
+enum DriveSyncStatus {
+  NEVER_SYNCED
+  SYNCING
+  SYNCED
+  FAILED
+}
+
+enum DriveFileType {
+  FOLDER
+  GOOGLE_DOC
+  GOOGLE_SHEET
+  GOOGLE_SLIDE
+  PDF
+  IMAGE
+  VIDEO
+  DOCX
+  XLSX
+  PPTX
+  BINARY
+}
+
+enum DriveFileLocation {
+  MY_DRIVE
+  SHARED_WITH_ME
+  SHARED_DRIVE
+  UNKNOWN
+}
+
+enum DriveSourceStatus {
+  CONNECTED
+  STALE
+  UNAVAILABLE
+}
+
+enum DriveNativeDocumentKind {
+  DOCUMENT
+  SPREADSHEET
+  PRESENTATION
+}
+
+enum DriveCreationOperationStatus {
+  IN_PROGRESS
+  SUCCEEDED
+  FAILED
+}
+
 model User {
   id                       String            @id @default(uuid()) @db.Uuid
   email                    String
   normalizedEmail          String            @unique
   displayName              String
   status                   UserStatus        @default(INVITED)
-  systemRole               SystemRole        @default(MEMBER)
+  systemRole               SystemRole        @default(VIEWER)
   createdAt                DateTime          @default(now())
   updatedAt                DateTime          @updatedAt
   authAccounts             AuthAccount[]
@@ -116,6 +168,8 @@ model User {
   editorSessions           EditorSession[]   @relation("EditorSessionUser")
   favorites                Favorite[]        @relation("FavoriteUser")
   recentItems              RecentItem[]      @relation("RecentItemUser")
+  driveConnection          DriveConnection?
+  driveCreationOperations  DriveCreationOperation[]
 }
 
 model AuthAccount {
@@ -191,7 +245,7 @@ model Node {
   children                          Node[]            @relation("NodeHierarchy")
   createdBy                         User              @relation("NodeCreatedBy", fields: [createdById], references: [id])
   updatedBy                         User?             @relation("NodeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
-  // Node.type = FILE iff a File row exists is an application/domain invariant.
+  // FILE nodes have either local versioned content or a metadata-only external backing.
   file                              File?
   permissionEntries                 PermissionEntry[]
   trashOperationId                  String?           @db.Uuid
@@ -229,11 +283,14 @@ enum DocumentRole {
 model File {
   id               String          @id @default(uuid()) @db.Uuid
   nodeId           String          @unique @db.Uuid
+  backingType      FileBackingType @default(LOCAL)
+  driveFileId      String?         @unique @db.Uuid
   currentVersionId String?         @db.Uuid
   versionCounter   Int             @default(0)
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   node             Node            @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  driveFile        DriveFile?      @relation(fields: [driveFileId], references: [id], onDelete: Restrict)
   versions         FileVersion[]   @relation("FileVersions")
   currentVersion   FileVersion?    @relation("FileCurrentVersion", fields: [id, currentVersionId], references: [fileId, id], onDelete: Restrict)
   searchDocument   SearchDocument? @relation("SearchDocumentFile")
@@ -423,4 +480,72 @@ model RecentItem {
 
   @@id([userId, nodeId])
   @@index([userId, lastAccessedAt])
+}
+
+model DriveConnection {
+  id                    String          @id @default(uuid()) @db.Uuid
+  userId                String          @unique @db.Uuid
+  googleAccountId       String?
+  googleEmail           String?
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  connectedAt           DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  accessTokenExpiresAt  DateTime?
+  syncStatus            DriveSyncStatus @default(NEVER_SYNCED)
+  lastSyncStartedAt     DateTime?
+  lastSyncCompletedAt   DateTime?
+  lastSyncError         String?
+  revokedAt             DateTime?
+  authorizedScopes      String[]        @default([])
+  user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  files                 DriveFile[]
+
+  @@index([revokedAt])
+  @@index([syncStatus])
+}
+
+model DriveCreationOperation {
+  idempotencyKey String                       @id
+  userId         String                       @db.Uuid
+  kind           DriveNativeDocumentKind
+  parentId       String?                      @db.Uuid
+  locale         String
+  name           String
+  status         DriveCreationOperationStatus @default(IN_PROGRESS)
+  driveFileId    String?
+  nodeId         String?                      @db.Uuid
+  errorMessage   String?
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
+  user           User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model DriveFile {
+  id                String            @id @default(uuid()) @db.Uuid
+  driveConnectionId String            @db.Uuid
+  driveFileId       String
+  name              String
+  mimeType          String
+  normalizedType    DriveFileType
+  webViewLink       String?
+  driveModifiedTime DateTime?
+  driveCreatedTime  DateTime?
+  trashed           Boolean           @default(false)
+  driveParents      String[]          @default([])
+  location          DriveFileLocation @default(UNKNOWN)
+  sharedDriveId     String?
+  sizeBytes         BigInt?
+  driveVersion      String?
+  sourceStatus      DriveSourceStatus @default(CONNECTED)
+  syncedAt          DateTime          @default(now())
+  driveConnection   DriveConnection   @relation(fields: [driveConnectionId], references: [id], onDelete: Cascade)
+  docsHubFile       File?
+
+  @@unique([driveConnectionId, driveFileId])
+  @@index([driveConnectionId, driveModifiedTime])
+  @@index([driveConnectionId, normalizedType])
 }
