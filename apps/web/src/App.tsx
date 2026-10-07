@@ -522,6 +522,12 @@ function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [profile, setProfile] = useState<CurrentUser | null>(null);
   const [location, setLocation] = useState(currentLocation);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [folderCreationParentId, setFolderCreationParentId] = useState<string | null>(null);
+  const [creatingOffice, setCreatingOffice] = useState<OfficeFileKind | null>(null);
+  const [creationNotice, setCreationNotice] = useState<Notice>(null);
+  const creationParentId = location.route === "drive" ? currentFolderId() : null;
+  const [folderCreateCapability, setFolderCreateCapability] = useState<{ folderId: string; canCreate: boolean } | null>(null);
   useEffect(() => {
     let active = true;
     if (window.location.pathname === "/auth/pending") {
@@ -554,6 +560,33 @@ function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+  useEffect(() => {
+    let active = true;
+    if (
+      !authenticated ||
+      !profile ||
+      profile.status !== "ACTIVE" ||
+      location.route !== "drive" ||
+      creationParentId === null
+    ) {
+      return () => {
+        active = false;
+      };
+    }
+
+    void api.getNode(creationParentId).then(
+      (node) => {
+        if (active) setFolderCreateCapability({ folderId: creationParentId, canCreate: node.capabilities.includes("CREATE") });
+      },
+      () => {
+        // Keep the UI conservative when the folder capability cannot be read.
+        if (active) setFolderCreateCapability({ folderId: creationParentId, canCreate: false });
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [authenticated, creationParentId, location.route, profile]);
   if (window.location.pathname === "/auth/pending") return <PendingApproval />;
   if (authenticated === null)
     return <div className="auth-state">{t("auth.checkingSession")}</div>;
@@ -578,6 +611,52 @@ function App() {
   if (!authenticated) return <SignIn />;
   if (!profile) return <div className="auth-state">{t("auth.loadingAccount")}</div>;
   const isAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
+  const canCreate = profile.status === "ACTIVE" && (
+    location.route !== "drive" ||
+    creationParentId === null ||
+    (folderCreateCapability?.folderId === creationParentId && folderCreateCapability.canCreate)
+  );
+  function beginCreateFolder() {
+    setFolderCreationParentId(creationParentId);
+    setCreateOpen(true);
+  }
+  async function createFolder(name: string) {
+    const node = await api.createFolder(name, folderCreationParentId);
+    window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: folderCreationParentId } }));
+    setCreationNotice({ tone: "success", message: t("files.created", { name: node.name }) });
+  }
+  async function createOffice(kind: OfficeFileKind) {
+    // Reserve the tab synchronously from the menu click so popup blockers do
+    // not reject the eventual editor navigation after the API request.
+    const editorTab = window.open("about:blank", "_blank");
+    if (editorTab) {
+      try {
+        editorTab.opener = null;
+      } catch {
+        // Some browsers expose opener as read-only for a temporary tab.
+      }
+    }
+    try {
+      setCreatingOffice(kind);
+      setCreationNotice(null);
+      const result = await api.createOfficeFile(kind, creationParentId, getLocale());
+      window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: creationParentId } }));
+      setCreationNotice({ tone: "success", message: t("files.created", { name: result.node.name }) });
+      const documentPath = `/document/${result.node.id}`;
+      if (editorTab && !editorTab.closed) {
+        editorTab.location.href = documentPath;
+      } else {
+        // If the browser blocked the synchronous popup, keep the created file
+        // usable by opening it in the current tab rather than losing it.
+        window.location.assign(documentPath);
+      }
+    } catch (requestError) {
+      if (editorTab && !editorTab.closed) editorTab.close();
+      setCreationNotice({ tone: "error", message: displayError(requestError) });
+    } finally {
+      setCreatingOffice(null);
+    }
+  }
   async function signOut() {
     try {
       await api.logout();
@@ -607,15 +686,34 @@ function App() {
       page = <ProfileApp profile={profile} onSignOut={() => void signOut()} />;
       break;
     default:
-      page = <DriveApp userStatus={profile.status} />;
+      page = <DriveApp canCreate={canCreate} onCreateFolder={beginCreateFolder} />;
   }
   const active: SidebarRoute = location.route === "drive" || location.route === "recent" || location.route === "favorites" || location.route === "trash"
     ? location.route
     : location.route === "admin" && isAdmin ? "admin" : null;
   return (
     <EditorSaveContext.Provider value={editorSaveContext}>
-      <AppShell profile={profile} active={active} onSignOut={() => void signOut()}>{page}</AppShell>
+      <AppShell
+        profile={profile}
+        active={active}
+        canCreate={canCreate}
+        creatingOffice={creatingOffice !== null}
+        onCreateFolder={beginCreateFolder}
+        onCreateOffice={(kind) => void createOffice(kind)}
+        onSignOut={() => void signOut()}
+      >
+        {page}
+      </AppShell>
+      <Toast notice={creationNotice} onDismiss={() => setCreationNotice(null)} />
       <Toast notice={saveNotice} onDismiss={() => setSaveNotice(null)} />
+      {createOpen && (
+        <NameDialog
+          title={t("files.newFolder")}
+          action={t("common.create")}
+          onClose={() => setCreateOpen(false)}
+          onSubmit={createFolder}
+        />
+      )}
     </EditorSaveContext.Provider>
   );
 }
@@ -862,28 +960,76 @@ type SidebarRoute = "drive" | "recent" | "favorites" | "trash" | "admin" | null;
 function AppShell({
   active,
   profile,
+  canCreate,
+  creatingOffice,
+  onCreateFolder,
+  onCreateOffice,
   onSignOut,
   children,
 }: {
   active: SidebarRoute;
   profile: CurrentUser;
+  canCreate: boolean;
+  creatingOffice: boolean;
+  onCreateFolder: () => void;
+  onCreateOffice: (kind: OfficeFileKind) => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
   return <div className="app-shell">
-    <Sidebar active={active} profile={profile} onSignOut={onSignOut} />
+    <Sidebar
+      active={active}
+      profile={profile}
+      canCreate={canCreate}
+      creatingOffice={creatingOffice}
+      onCreateFolder={onCreateFolder}
+      onCreateOffice={onCreateOffice}
+      onSignOut={onSignOut}
+    />
     <main className="drive-main"><div className="page-scroll">{children}</div></main>
   </div>;
 }
 
-function Sidebar({ active, profile, onSignOut }: { active: SidebarRoute; profile: CurrentUser; onSignOut: () => void }) {
+function Sidebar({
+  active,
+  profile,
+  canCreate,
+  creatingOffice,
+  onCreateFolder,
+  onCreateOffice,
+  onSignOut,
+}: {
+  active: SidebarRoute;
+  profile: CurrentUser;
+  canCreate: boolean;
+  creatingOffice: boolean;
+  onCreateFolder: () => void;
+  onCreateOffice: (kind: OfficeFileKind) => void;
+  onSignOut: () => void;
+}) {
   const canAdmin = profile.status === "ACTIVE" && profile.systemRole === "ADMIN";
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
   return (
     <aside className="sidebar">
       <div className="brand">
         <Icon name="drive" size={22} />
         <span>Docs Hub</span>
       </div>
+      {canCreate && (
+        <NewMenu
+          open={newMenuOpen}
+          pending={creatingOffice}
+          onToggle={() => setNewMenuOpen((value) => !value)}
+          onFolder={() => {
+            setNewMenuOpen(false);
+            onCreateFolder();
+          }}
+          onOffice={(kind) => {
+            setNewMenuOpen(false);
+            onCreateOffice(kind);
+          }}
+        />
+      )}
       <nav aria-label={t("nav.main")}>
         <button
           className={`nav-item${active === "drive" ? " is-active" : ""}`}
@@ -1031,7 +1177,13 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
   </div>;
 }
 
-function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
+function DriveApp({
+  canCreate,
+  onCreateFolder,
+}: {
+  canCreate: boolean;
+  onCreateFolder: () => void;
+}) {
   const { isFilePending } = useEditorSaveContext();
   const [folderId, setFolderId] = useState(currentFolderId);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -1041,9 +1193,6 @@ function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
   );
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [newMenuOpen, setNewMenuOpen] = useState(false);
-  const [creatingOffice, setCreatingOffice] = useState<OfficeFileKind | null>(null);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
@@ -1084,6 +1233,14 @@ function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
     return () => window.removeEventListener("editor-session-finalized", refreshAfterEditorClose);
   }, [folderId, load]);
   useEffect(() => {
+    const refreshAfterNodeChange = (event: Event) => {
+      const parentId = (event as CustomEvent<{ parentId?: string | null }>).detail?.parentId;
+      if (parentId === folderId) void load(folderId);
+    };
+    window.addEventListener("nodes-changed", refreshAfterNodeChange);
+    return () => window.removeEventListener("nodes-changed", refreshAfterNodeChange);
+  }, [folderId, load]);
+  useEffect(() => {
     let active = true;
     void api.listFavorites().then(
       (page) => active && setFavoriteIds(new Set(page.items.map((item) => item.id))),
@@ -1093,44 +1250,6 @@ function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
       active = false;
     };
   }, []);
-  async function createFolder(name: string) {
-    const node = await api.createFolder(name, folderId);
-    setNodes((items) => [...items, node].sort(compareNodes));
-    setNotice({ tone: "success", message: t("files.created", { name: node.name }) });
-  }
-  async function createOffice(kind: OfficeFileKind) {
-    // Reserve the tab synchronously from the menu click so popup blockers do
-    // not reject the eventual editor navigation after the API request.
-    const editorTab = window.open("about:blank", "_blank");
-    if (editorTab) {
-      try {
-        editorTab.opener = null;
-      } catch {
-        // Some browsers expose opener as read-only for a temporary tab.
-      }
-    }
-    try {
-      setCreatingOffice(kind);
-      setNewMenuOpen(false);
-      setNotice(null);
-      const result = await api.createOfficeFile(kind, folderId, getLocale());
-      setNodes((items) => [...items, result.node].sort(compareNodes));
-      setNotice({ tone: "success", message: t("files.created", { name: result.node.name }) });
-      const documentPath = `/document/${result.node.id}`;
-      if (editorTab && !editorTab.closed) {
-        editorTab.location.href = documentPath;
-      } else {
-        // If the browser blocked the synchronous popup, keep the created file
-        // usable by opening it in the current tab rather than losing it.
-        window.location.assign(documentPath);
-      }
-    } catch (requestError) {
-      if (editorTab && !editorTab.closed) editorTab.close();
-      setNotice({ tone: "error", message: displayError(requestError) });
-    } finally {
-      setCreatingOffice(null);
-    }
-  }
   async function rename(node: Node, name: string) {
     const updated = await api.renameNode(node.id, name);
     setNodes((items) =>
@@ -1182,11 +1301,7 @@ function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
       setNotice({ tone: "error", message: displayError(requestError) });
     }
   }
-  // The backend remains authoritative for nested-folder capabilities. The
-  // authenticated Drive view exposes creation controls for active users at
-  // root as well as in folders, while protected nested requests can still be
-  // rejected by the API.
-  const canCreateHere = userStatus === "ACTIVE";
+  const canCreateHere = canCreate;
   return (
     <>
         <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />} searchQuery="">
@@ -1200,16 +1315,6 @@ function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
             </button>
             {canCreateHere ? (
               <>
-                <NewMenu
-                  open={newMenuOpen}
-                  pending={creatingOffice !== null}
-                  onToggle={() => setNewMenuOpen((value) => !value)}
-                  onFolder={() => {
-                    setNewMenuOpen(false);
-                    setCreateOpen(true);
-                  }}
-                  onOffice={(kind) => void createOffice(kind)}
-                />
                 <button
                   type="button"
                   className="button button-primary"
@@ -1236,7 +1341,7 @@ function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
           {status === "ready" && nodes.length === 0 && (
             <EmptyState
               canCreateHere={canCreateHere}
-              onFolder={() => setCreateOpen(true)}
+              onFolder={onCreateFolder}
               onUpload={() => uploadInput.current?.click()}
             />
           )}
@@ -1255,14 +1360,6 @@ function DriveApp({ userStatus }: { userStatus: CurrentUser["status"] }) {
             />
           )}
         </section>
-      {createOpen && (
-        <NameDialog
-          title={t("files.newFolder")}
-          action={t("common.create")}
-          onClose={() => setCreateOpen(false)}
-          onSubmit={createFolder}
-        />
-      )}
       {renameNode && (
         <NameDialog
           title={t("files.rename")}
@@ -2840,7 +2937,39 @@ function NewMenu({
   onFolder: () => void;
   onOffice: (kind: OfficeFileKind) => void;
 }) {
+  const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const triggerElement = trigger.current;
+      const menuElement = menu.current;
+      if (!triggerElement || !menuElement) return;
+
+      const triggerRect = triggerElement.getBoundingClientRect();
+      const width = Math.min(220, window.innerWidth - 24);
+      menuElement.style.width = `${width}px`;
+      const menuRect = menuElement.getBoundingClientRect();
+      const gap = 6;
+      const maxLeft = Math.max(12, window.innerWidth - menuRect.width - 12);
+      const left = Math.min(maxLeft, Math.max(12, triggerRect.left));
+      const preferredBelow = triggerRect.bottom + gap;
+      const preferredAbove = triggerRect.top - menuRect.height - gap;
+      const top = preferredBelow + menuRect.height <= window.innerHeight
+        ? preferredBelow
+        : Math.min(Math.max(0, preferredAbove), Math.max(0, window.innerHeight - menuRect.height));
+      setPosition({ top, left, width });
+    };
+
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent | KeyboardEvent) => {
@@ -2848,7 +2977,8 @@ function NewMenu({
         onToggle();
       } else if (
         event instanceof MouseEvent &&
-        !menu.current?.contains(event.target as globalThis.Node)
+        !menu.current?.contains(event.target as globalThis.Node) &&
+        !trigger.current?.contains(event.target as globalThis.Node)
       ) {
         onToggle();
       }
@@ -2860,11 +2990,13 @@ function NewMenu({
       document.removeEventListener("keydown", close);
     };
   }, [onToggle, open]);
-  return <div ref={menu} className="new-menu">
+  return <div className="new-menu">
     <button
+      ref={trigger}
       type="button"
       className="button button-primary"
       aria-haspopup="menu"
+      aria-controls={open ? "new-menu-popover" : undefined}
       aria-expanded={open}
       disabled={pending}
       onClick={onToggle}
@@ -2873,25 +3005,39 @@ function NewMenu({
       {t("files.new")}
       <Icon name="chevron-down" size={15} />
     </button>
-    {open && <div className="new-menu-popover" role="menu">
-      <button type="button" role="menuitem" onClick={onFolder}>
-        <Icon name="folder" />
-        {t("files.newFolder")}
-      </button>
-      <div className="new-menu-divider" />
-      <button type="button" role="menuitem" onClick={() => onOffice("DOCX")}>
-        <Icon name="file" />
-        {t("files.wordDocument")}
-      </button>
-      <button type="button" role="menuitem" onClick={() => onOffice("XLSX")}>
-        <Icon name="file" />
-        {t("files.spreadsheet")}
-      </button>
-      <button type="button" role="menuitem" onClick={() => onOffice("PPTX")}>
-        <Icon name="file" />
-        {t("files.presentation")}
-      </button>
-    </div>}
+    {open && createPortal(
+      <div
+        ref={menu}
+        id="new-menu-popover"
+        className="new-menu-popover"
+        role="menu"
+        style={{
+          top: position?.top ?? 0,
+          left: position?.left ?? 0,
+          width: position?.width,
+          visibility: position ? "visible" : "hidden",
+        }}
+      >
+        <button type="button" role="menuitem" onClick={onFolder}>
+          <Icon name="folder" />
+          {t("files.newFolder")}
+        </button>
+        <div className="new-menu-divider" />
+        <button type="button" role="menuitem" onClick={() => onOffice("DOCX")}>
+          <Icon name="file" />
+          {t("files.wordDocument")}
+        </button>
+        <button type="button" role="menuitem" onClick={() => onOffice("XLSX")}>
+          <Icon name="file" />
+          {t("files.spreadsheet")}
+        </button>
+        <button type="button" role="menuitem" onClick={() => onOffice("PPTX")}>
+          <Icon name="file" />
+          {t("files.presentation")}
+        </button>
+      </div>,
+      document.body,
+    )}
   </div>;
 }
 function ErrorState({
