@@ -272,6 +272,11 @@ function actorLabel(actor: FileVersion["actor"]) {
   if (actor.displayName?.trim()) return actor.displayName;
   return t(`actors.${actor.type}`);
 }
+function driveActorLabel(actor: FileVersion["actor"]) {
+  if (actor.displayName?.trim()) return actor.displayName;
+  if (actor.type === "USER") return t("actors.UNKNOWN");
+  return t(`actors.${actor.type}`);
+}
 function formatBytes(value: string) {
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
@@ -1360,11 +1365,18 @@ function FileList({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   return (
     <div className="file-table-wrap">
-      <table className="file-table">
+      <table className={`file-table${showLastModified ? " with-last-modified" : ""}`}>
         <thead>
           <tr>
             <th scope="col">{t("common.name")}</th>
-            <th scope="col">{dateLabel}</th>
+            {showLastModified ? (
+              <>
+                <th scope="col">{t("common.modifiedBy")}</th>
+                <th scope="col">{t("common.lastModified")}</th>
+              </>
+            ) : (
+              <th scope="col">{dateLabel}</th>
+            )}
             <th scope="col">
               <span className="visually-hidden">{t("files.tableActions")}</span>
             </th>
@@ -1430,6 +1442,7 @@ function FileRow({
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const isFolder = node.type === "FOLDER";
+  const modifiedBy = driveActorLabel(node.lastModified.actor);
   const canOpen =
     isFolder ||
     hasCapability(node, "PREVIEW") ||
@@ -1454,17 +1467,16 @@ function FileRow({
           <span>{node.name}</span>
         </button>
       </td>
-      <td className="modified">
-        {showLastModified ? (
-          <span className="last-modified-value">
-            <span>{actorLabel(node.lastModified.actor)}</span>
-            <span aria-hidden="true"> · </span>
-            <span>{formatLastModified(node.lastModified.at)}</span>
-          </span>
-        ) : (
-          formatDate(node.updatedAt)
-        )}
-      </td>
+      {showLastModified ? (
+        <>
+          <td className="modified-by" title={modifiedBy}>
+            <span className="modified-by-value">{modifiedBy}</span>
+          </td>
+          <td className="modified">{formatLastModified(node.lastModified.at)}</td>
+        </>
+      ) : (
+        <td className="modified">{formatDate(node.updatedAt)}</td>
+      )}
       <td className="row-actions">
         <button
           ref={trigger}

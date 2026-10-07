@@ -2,8 +2,8 @@ import en from "./en";
 
 const vi = {
   ...en,
-  common: { ...en.common, cancel: "Hủy", close: "Đóng", done: "Xong", save: "Lưu", create: "Tạo", add: "Thêm", retry: "Thử lại", remove: "Xóa", enterName: "Nhập tên.", restoring: "Đang khôi phục…", actions: "Thao tác", selected: "Đã chọn", loading: "Đang tải…", search: "Tìm kiếm", copy: "Sao chép", reset: "Đặt lại", download: "Tải xuống", name: "Tên", email: "Email", role: "Vai trò", status: "Trạng thái", type: "Loại", modified: "Đã chỉnh sửa", lastModified: "Chỉnh sửa gần nhất", members: "Thành viên" },
-  actors: { USER: "Người dùng không xác định", PUBLIC: "Khách qua liên kết", SYSTEM: "Hệ thống", COLLABORATIVE: "Nhiều người chỉnh sửa" },
+  common: { ...en.common, cancel: "Hủy", close: "Đóng", done: "Xong", save: "Lưu", create: "Tạo", add: "Thêm", retry: "Thử lại", remove: "Xóa", enterName: "Nhập tên.", restoring: "Đang khôi phục…", actions: "Thao tác", selected: "Đã chọn", loading: "Đang tải…", search: "Tìm kiếm", copy: "Sao chép", reset: "Đặt lại", download: "Tải xuống", name: "Tên", email: "Email", role: "Vai trò", status: "Trạng thái", type: "Loại", modified: "Đã chỉnh sửa", modifiedBy: "Người chỉnh sửa", lastModified: "Chỉnh sửa gần nhất", members: "Thành viên" },
+  actors: { USER: "Người dùng không xác định", UNKNOWN: "Không rõ", PUBLIC: "Khách qua liên kết", SYSTEM: "Hệ thống", COLLABORATIVE: "Nhiều người chỉnh sửa" },
   dates: { yesterdayAt: "Hôm qua, {{time}}" },
   nav: { ...en.nav, drive: "Drive", recent: "Gần đây", favorites: "Yêu thích", trash: "Thùng rác", admin: "Quản trị", main: "Điều hướng chính", breadcrumb: "Đường dẫn" },
   account: { ...en.account, myAccount: "Tài khoản", profile: "Hồ sơ", language: "Ngôn ngữ", administrator: "Quản trị viên", member: "Thành viên", signOut: "Đăng xuất" },

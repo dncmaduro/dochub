@@ -23,11 +23,13 @@ const en = {
     status: "Status",
     type: "Type",
     modified: "Modified",
+    modifiedBy: "Modified by",
     lastModified: "Last modified",
     members: "Members",
   },
   actors: {
     USER: "Unknown user",
+    UNKNOWN: "Unknown",
     PUBLIC: "Link guest",
     SYSTEM: "System",
     COLLABORATIVE: "Multiple editors",

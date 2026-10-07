@@ -573,6 +573,12 @@
 .file-table th:nth-child(2) {
   width: 238px;
 }
+.file-table.with-last-modified th:nth-child(2) {
+  width: 220px;
+}
+.file-table.with-last-modified th:nth-child(3) {
+  width: 190px;
+}
 .file-table th:last-child {
   width: 52px;
 }
@@ -642,11 +648,15 @@
   color: var(--muted);
   white-space: nowrap;
 }
-.last-modified-value {
-  display: inline-flex;
-  max-width: 100%;
+.modified-by {
+  overflow: hidden;
+  color: var(--muted);
+}
+.modified-by-value {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .search-location,
 .search-type {
