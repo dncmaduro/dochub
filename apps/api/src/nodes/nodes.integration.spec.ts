@@ -399,6 +399,9 @@ describeWithDatabase('NodesService integration', () => {
       name: 'Renamed Project',
     });
     expect(renamed.name).toBe('Renamed Project');
+    expect(renamed.lastModified).toMatchObject({
+      actor: { type: 'USER', id: editorId, displayName: 'Nodes editor' },
+    });
     await expect(
       prisma.node.findFirstOrThrow({
         where: {

@@ -571,7 +571,7 @@
   font-weight: 500;
 }
 .file-table th:nth-child(2) {
-  width: 138px;
+  width: 238px;
 }
 .file-table th:last-child {
   width: 52px;
@@ -641,6 +641,12 @@
 .modified {
   color: var(--muted);
   white-space: nowrap;
+}
+.last-modified-value {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .search-location,
 .search-type {
@@ -939,6 +945,12 @@
   gap: 0;
   color: var(--muted);
   font-size: 12px;
+}
+.version-attribution {
+  color: var(--text);
+}
+.version-attribution strong {
+  font-weight: 500;
 }
 .version-metadata span + span::before {
   content: "·";

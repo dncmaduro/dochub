@@ -229,13 +229,13 @@ export class PermissionsService {
       if (node.inheritPermissions === dto.inheritPermissions) {
         return { nodeId, inheritPermissions: node.inheritPermissions };
       }
-      await transaction.node.update({
-        where: { id: nodeId },
-        data: {
-          inheritPermissions: dto.inheritPermissions,
-          updatedById: actorUserId,
-        },
-      });
+      // ACL administration is deliberately excluded from folder last-modified
+      // metadata. Do not invoke Prisma's @updatedAt hook for this mutation.
+      await transaction.$executeRaw`
+        UPDATE "Node"
+        SET "inheritPermissions" = ${dto.inheritPermissions}
+        WHERE "id" = ${nodeId}::uuid
+      `;
       await this.assertPermissionMutationSafe(actorUserId, nodeId, transaction);
       await this.writeAudit(transaction, {
         actorUserId,

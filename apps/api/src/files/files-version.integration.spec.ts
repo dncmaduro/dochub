@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DocumentRole,
+  FileVersionActorType,
   FileProcessingTaskType,
   FileVersionSource,
   GeneralAccessRole,
@@ -17,6 +18,7 @@ import { DocumentAuthorizationService } from '../authorization/document-authoriz
 import { DatabaseService } from '../database/database.service.js';
 import type { FileValidationService } from './file-validation.service.js';
 import { FilesService } from './files.service.js';
+import { NodesService } from '../nodes/nodes.service.js';
 
 const withDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 
@@ -65,7 +67,12 @@ withDatabase('FilesService version history integration', () => {
         sha256: createHash('sha256').update(input.bytes).digest('hex'),
         source: input.source,
         sourceVersionId: input.sourceVersionId,
-        createdById: ownerId,
+        actorType:
+          input.source === FileVersionSource.SYSTEM
+            ? FileVersionActorType.SYSTEM
+            : FileVersionActorType.USER,
+        createdById:
+          input.source === FileVersionSource.SYSTEM ? null : ownerId,
       },
     });
     versionIds.push(id);
@@ -183,6 +190,15 @@ withDatabase('FilesService version history integration', () => {
       orderBy: { versionNumber: 'asc' },
     });
     const listed = await files.listVersions(viewerId, nodeId);
+    const drive = await new NodesService(database, authorization).listRoot(
+      viewerId,
+      { limit: 100 },
+    );
+    expect(drive.items.find((item) => item.id === nodeId)).toMatchObject({
+      lastModified: {
+        actor: { type: FileVersionActorType.SYSTEM, displayName: null },
+      },
+    });
     expect(listed.nodeId).toBe(nodeId);
     expect(listed.items.map((version) => version.id)).toEqual([
       systemVersionId,
@@ -195,17 +211,31 @@ withDatabase('FilesService version history integration', () => {
           id: uploadId,
           source: FileVersionSource.UPLOAD,
           sourceVersionId: null,
+          actor: {
+            type: FileVersionActorType.USER,
+            id: ownerId,
+            displayName: 'Version owner',
+          },
           isCurrent: false,
         }),
         expect.objectContaining({
           id: editorVersionId,
           source: FileVersionSource.EDITOR,
           sourceVersionId: uploadId,
+          actor: {
+            type: FileVersionActorType.USER,
+            id: ownerId,
+            displayName: 'Version owner',
+          },
           isCurrent: false,
         }),
         expect.objectContaining({
           id: systemVersionId,
           source: FileVersionSource.SYSTEM,
+          actor: {
+            type: FileVersionActorType.SYSTEM,
+            displayName: null,
+          },
           isCurrent: true,
         }),
       ]),
@@ -256,6 +286,7 @@ withDatabase('FilesService version history integration', () => {
       versionNumber: 4,
       source: FileVersionSource.RESTORE,
       sourceVersionId: uploadId,
+      actorType: FileVersionActorType.USER,
       createdById: editorId,
     });
     expect(restoredRow.storageKey).not.toBe(source.storageKey);

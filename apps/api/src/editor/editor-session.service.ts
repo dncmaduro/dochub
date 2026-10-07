@@ -26,6 +26,7 @@ import {
   UserStatus,
   AuditActorType,
   AuditResult,
+  FileVersionActorType,
   isSearchableFileMimeType,
 } from '@dochub/database';
 import type { StorageService } from '@dochub/storage';
@@ -44,6 +45,7 @@ import {
 import { EDITOR_CONFIG, type EditorConfig } from './editor.config.js';
 import {
   fileExtension,
+  editorVersionAttribution,
   officeDocumentType,
   onlyOfficeAccessConfig,
 } from './editor.types.js';
@@ -1172,6 +1174,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       !capabilities.has(DocumentCapability.EDIT)
     )
       throw new CallbackFailure();
+    const attribution = editorVersionAttribution(sessions);
     const lockedFiles = await transaction.$queryRaw<
       Array<{
         id: string;
@@ -1197,8 +1200,9 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
         sizeBytes: session.stagedSizeBytes,
         sha256: session.stagedSha256,
         source: FileVersionSource.EDITOR,
+        actorType: attribution.actorType,
         sourceVersionId: session.baseVersionId,
-        createdById: session.userId,
+        createdById: attribution.createdById,
       },
     });
     await transaction.file.update({
@@ -1215,11 +1219,8 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
     }
     await transaction.auditLog.create({
       data: {
-        actorType:
-          session.actorType === EditorActorType.PUBLIC
-            ? AuditActorType.PUBLIC
-            : AuditActorType.USER,
-        actorId: session.userId,
+        actorType: this.auditActorType(attribution.actorType),
+        actorId: attribution.createdById,
         action: 'FILE_VERSION_CREATED',
         resourceType: 'FILE_VERSION',
         resourceId: versionId,
@@ -1233,6 +1234,7 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
           editorSessionId: session.id,
           editorSessionIds: sessions.map((participant) => participant.id),
           editorActorType: session.actorType,
+          versionActorType: attribution.actorType,
           mimeType: session.baseVersion.mimeType,
           sizeBytes: session.stagedSizeBytes.toString(),
         },
@@ -1255,6 +1257,20 @@ export class EditorSessionService implements OnModuleInit, OnModuleDestroy {
       },
     });
     return { created: true };
+  }
+
+  private auditActorType(actorType: FileVersionActorType): AuditActorType {
+    switch (actorType) {
+      case FileVersionActorType.PUBLIC:
+        return AuditActorType.PUBLIC;
+      case FileVersionActorType.COLLABORATIVE:
+        return AuditActorType.COLLABORATIVE;
+      case FileVersionActorType.SYSTEM:
+        return AuditActorType.SYSTEM;
+      case FileVersionActorType.USER:
+      default:
+        return AuditActorType.USER;
+    }
   }
 
   private stagedKey(sessionId: string, artifactId: string): string {

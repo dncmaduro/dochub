@@ -24,3 +24,34 @@ export function onlyOfficeAccessConfig(mode: 'VIEW' | 'EDIT') {
     },
   };
 }
+
+export function editorVersionAttribution(
+  sessions: Array<{
+    actorType: EditorActorType;
+    userId: string | null;
+    mode: 'VIEW' | 'EDIT';
+  }>,
+): { actorType: FileVersionActorType; createdById: string | null } {
+  const editors = sessions.filter((session) => session.mode === 'EDIT');
+  const userIds = [
+    ...new Set(
+      editors
+        .filter(
+          (session) =>
+            session.actorType === EditorActorType.USER && session.userId,
+        )
+        .map((session) => session.userId as string),
+    ),
+  ];
+  const hasPublic = editors.some(
+    (session) => session.actorType === EditorActorType.PUBLIC,
+  );
+  if (userIds.length === 1 && !hasPublic) {
+    return { actorType: FileVersionActorType.USER, createdById: userIds[0] };
+  }
+  if (userIds.length === 0) {
+    return { actorType: FileVersionActorType.PUBLIC, createdById: null };
+  }
+  return { actorType: FileVersionActorType.COLLABORATIVE, createdById: null };
+}
+import { EditorActorType, FileVersionActorType } from '@dochub/database';

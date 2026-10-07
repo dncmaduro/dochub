@@ -89,10 +89,14 @@ export class SharingService {
     return this.withSerializableRetry(async (tx) => {
       const { node } = await this.requireNode(actorId, nodeId, tx, true);
       if (node.generalAccessRole !== dto.generalAccessRole) {
-        await tx.node.update({
-          where: { id: nodeId },
-          data: { generalAccessRole: dto.generalAccessRole },
-        });
+        // Sharing administration is not a content/name modification. Use SQL
+        // here so Prisma's @updatedAt hook does not move a folder's last
+        // modified timestamp or make a file appear recently edited.
+        await tx.$executeRaw`
+          UPDATE "Node"
+          SET "generalAccessRole" = ${dto.generalAccessRole}::"GeneralAccessRole"
+          WHERE "id" = ${nodeId}::uuid
+        `;
         await tx.auditLog.create({
           data: {
             actorType: AuditActorType.USER,

@@ -7,6 +7,7 @@ import {
 import {
   AuditActorType,
   AuditResult,
+  FileVersionActorType,
   FileProcessingTaskType,
   NodeType,
   Prisma,
@@ -22,6 +23,7 @@ import { FolderAccessService } from '../authorization/folder-access.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { CollectionsService } from '../collections/collections.service.js';
 import { contentSearchStatus } from '../common/file-processing-state.js';
+import { actorResponse } from '../common/file-attribution.js';
 import {
   CreateFolderDto,
   MoveNodeDto,
@@ -48,10 +50,14 @@ const nodeSelect = {
   inheritPermissions: true,
   createdAt: true,
   updatedAt: true,
+  updatedBy: { select: { id: true, displayName: true } },
   file: {
     select: {
       currentVersion: {
         select: {
+          createdAt: true,
+          actorType: true,
+          createdBy: { select: { id: true, displayName: true } },
           mimeType: true,
           processingTasks: {
             where: { type: FileProcessingTaskType.TEXT_EXTRACTION },
@@ -533,6 +539,18 @@ export class NodesService {
       name: node.name,
       createdAt: node.createdAt,
       updatedAt: node.updatedAt,
+      lastModified: node.file?.currentVersion
+        ? {
+            at: node.file.currentVersion.createdAt,
+            actor: actorResponse(
+              node.file.currentVersion.actorType,
+              node.file.currentVersion.createdBy,
+            ),
+          }
+        : {
+            at: node.updatedAt,
+            actor: actorResponse(FileVersionActorType.USER, node.updatedBy),
+          },
       capabilities: Object.values(DocumentCapability).filter((capability) =>
         capabilities.has(capability),
       ),

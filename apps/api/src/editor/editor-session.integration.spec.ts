@@ -451,6 +451,10 @@ withDb('EditorSessionService integration', () => {
   });
 
   it('scopes a public Editor session and its finalized version to current General Access', async () => {
+    // Earlier cases intentionally reuse the same base version to exercise
+    // shared-generation behavior. Start this acceptance case with a fresh
+    // generation so its anonymous-only attribution is unambiguous.
+    await prisma.editorSession.deleteMany({ where: { fileId } });
     await prisma.node.update({
       where: { id: nodeId },
       data: { generalAccessRole: GeneralAccessRole.EDITOR },
@@ -512,6 +516,7 @@ withDb('EditorSessionService integration', () => {
     expect(finalized.finalizedFileVersion).toMatchObject({
       source: 'EDITOR',
       sourceVersionId: persisted.baseVersionId,
+      actorType: 'PUBLIC',
       createdById: null,
     });
     expect(

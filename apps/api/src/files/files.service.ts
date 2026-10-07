@@ -14,6 +14,7 @@ import {
   AuditActorType,
   AuditResult,
   DocumentRole,
+  FileVersionActorType,
   FileVersionSource,
   FileProcessingTaskType,
   isSearchableFileMimeType,
@@ -38,6 +39,11 @@ import {
   OfficeTemplateService,
 } from './office-template.service.js';
 import { normalizeNodeName } from '../nodes/node-name.js';
+import {
+  actorResponse,
+  type ActorResponse,
+  type LastModifiedResponse,
+} from '../common/file-attribution.js';
 
 const OFFICE_CREATION_RETRIES = 3;
 
@@ -61,6 +67,7 @@ export interface UploadResponse {
     name: string;
     createdAt: Date;
     updatedAt: Date;
+    lastModified: LastModifiedResponse;
     capabilities: DocumentCapability[];
   };
   file: { id: string; currentVersionId: string };
@@ -88,6 +95,7 @@ export interface FileVersionListResponse {
     extension: string | null;
     sizeBytes: string;
     createdAt: Date;
+    actor: ActorResponse;
     isCurrent: boolean;
   }>;
 }
@@ -118,6 +126,7 @@ export class FilesService {
     const sizeBytes = BigInt(bytes.length);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     await this.assertInitialDestination(actorUserId, parentId);
+    const actor = await this.requireActor(actorUserId);
 
     const nodeId = randomUUID();
     const fileId = randomUUID();
@@ -172,6 +181,7 @@ export class FilesService {
                   sizeBytes,
                   sha256,
                   source: FileVersionSource.SYSTEM,
+                  actorType: FileVersionActorType.USER,
                   createdById: actorUserId,
                 },
               });
@@ -213,6 +223,7 @@ export class FilesService {
                 { id: fileId, currentVersionId: versionId },
                 version,
                 new Set(Object.values(DocumentCapability)),
+                actor,
               );
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -241,6 +252,7 @@ export class FilesService {
   ): Promise<UploadResponse> {
     const metadata = await this.validation.validate(upload);
     await this.assertInitialDestination(actorUserId, upload.parentId);
+    const actor = await this.requireActor(actorUserId);
 
     const nodeId = randomUUID();
     const fileId = randomUUID();
@@ -289,6 +301,7 @@ export class FilesService {
             sizeBytes: metadata.sizeBytes,
             sha256: metadata.sha256,
             source: FileVersionSource.UPLOAD,
+            actorType: FileVersionActorType.USER,
             createdById: actorUserId,
           },
         });
@@ -328,6 +341,7 @@ export class FilesService {
           { id: fileId, currentVersionId: versionId },
           version,
           new Set(Object.values(DocumentCapability)),
+          actor,
         );
       });
     } catch (error) {
@@ -345,6 +359,7 @@ export class FilesService {
     this.assertUuid(nodeId, 'Invalid node ID');
     const metadata = await this.validation.validate(upload);
     const earlyTarget = await this.requireEditableFile(actorUserId, nodeId);
+    const actor = await this.requireActor(actorUserId);
     const versionId = randomUUID();
     const storageKey = this.storageKey(earlyTarget.fileId, versionId);
     await this.storage.putStream(storageKey, createReadStream(upload.tempPath));
@@ -406,6 +421,7 @@ export class FilesService {
             sizeBytes: metadata.sizeBytes,
             sha256: metadata.sha256,
             source: FileVersionSource.UPLOAD,
+            actorType: FileVersionActorType.USER,
             createdById: actorUserId,
           },
         });
@@ -439,6 +455,7 @@ export class FilesService {
           { id: lockedFile.id, currentVersionId: versionId },
           version,
           target.capabilities,
+          actor,
         );
       });
     } catch (error) {
@@ -465,7 +482,9 @@ export class FilesService {
         mimeType: true,
         extension: true,
         sizeBytes: true,
+        actorType: true,
         createdAt: true,
+        createdBy: { select: { id: true, displayName: true } },
       },
       orderBy: [{ versionNumber: 'desc' }, { id: 'desc' }],
     });
@@ -474,6 +493,7 @@ export class FilesService {
       items: versions.map((version) => ({
         ...version,
         sizeBytes: version.sizeBytes.toString(),
+        actor: actorResponse(version.actorType, version.createdBy),
         isCurrent: version.id === target.currentVersionId,
       })),
     };
@@ -487,6 +507,7 @@ export class FilesService {
     this.assertUuid(nodeId, 'Invalid node ID');
     this.assertUuid(sourceVersionId, 'Invalid version ID');
     const earlyTarget = await this.requireVersionedFile(actorUserId, nodeId);
+    const actor = await this.requireActor(actorUserId);
     this.requireCapability(
       earlyTarget.capabilities,
       DocumentCapability.RESTORE_VERSION,
@@ -559,6 +580,7 @@ export class FilesService {
             sizeBytes: lockedSource.sizeBytes,
             sha256: lockedSource.sha256,
             source: FileVersionSource.RESTORE,
+            actorType: FileVersionActorType.USER,
             sourceVersionId,
             createdById: actorUserId,
           },
@@ -591,6 +613,7 @@ export class FilesService {
           { id: lockedFile.id, currentVersionId: versionId },
           version,
           target.capabilities,
+          actor,
         );
       });
     } catch (error) {
@@ -747,6 +770,7 @@ export class FilesService {
       createdAt: Date;
     },
     capabilities: ReadonlySet<DocumentCapability>,
+    actor: { id: string; displayName: string },
   ): UploadResponse {
     return {
       node: {
@@ -756,6 +780,10 @@ export class FilesService {
         name: node.name,
         createdAt: node.createdAt,
         updatedAt: node.updatedAt,
+        lastModified: {
+          at: version.createdAt,
+          actor: actorResponse(FileVersionActorType.USER, actor),
+        },
         capabilities: Object.values(DocumentCapability).filter((capability) =>
           capabilities.has(capability),
         ),
@@ -772,6 +800,15 @@ export class FilesService {
         createdAt: version.createdAt,
       },
     };
+  }
+
+  private async requireActor(actorUserId: string) {
+    const actor = await this.database.prisma.user.findUnique({
+      where: { id: actorUserId },
+      select: { id: true, displayName: true },
+    });
+    if (!actor) throw new NotFoundException('User not found');
+    return actor;
   }
 
   private async writeAudit(

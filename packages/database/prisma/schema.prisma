@@ -39,6 +39,7 @@ enum AuditActorType {
   USER
   PUBLIC
   SYSTEM
+  COLLABORATIVE
 }
 
 enum AuditResult {
@@ -212,6 +213,13 @@ enum FileVersionSource {
   SYSTEM
 }
 
+enum FileVersionActorType {
+  USER
+  PUBLIC
+  SYSTEM
+  COLLABORATIVE
+}
+
 enum DocumentRole {
   VIEWER
   EDITOR
@@ -246,6 +254,7 @@ model FileVersion {
   sizeBytes                       BigInt
   sha256                          String
   source                          FileVersionSource
+  actorType                       FileVersionActorType @default(SYSTEM)
   sourceVersionId                 String?              @db.Uuid
   createdById                     String?              @db.Uuid
   createdAt                       DateTime             @default(now())

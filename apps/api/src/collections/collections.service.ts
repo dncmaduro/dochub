@@ -2,6 +2,8 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DatabaseService } from '../database/database.service.js';
+import { actorResponse } from '../common/file-attribution.js';
+import { FileVersionActorType } from '@dochub/database';
 
 const COLLECTION_LIMIT = 50;
 
@@ -12,6 +14,10 @@ export interface CollectionItem {
   name: string;
   createdAt: string;
   updatedAt: string;
+  lastModified: {
+    at: string;
+    actor: ReturnType<typeof actorResponse>;
+  };
   capabilities: string[];
   favoritedAt?: string;
   lastAccessedAt?: string;
@@ -95,6 +101,18 @@ export class CollectionsService {
         name: true,
         createdAt: true,
         updatedAt: true,
+        updatedBy: { select: { id: true, displayName: true } },
+        file: {
+          select: {
+            currentVersion: {
+              select: {
+                createdAt: true,
+                actorType: true,
+                createdBy: { select: { id: true, displayName: true } },
+              },
+            },
+          },
+        },
       },
     });
     const capabilities = await this.authorization.resolveCapabilitiesForNodes(
@@ -111,6 +129,18 @@ export class CollectionsService {
         name: node.name,
         createdAt: node.createdAt.toISOString(),
         updatedAt: node.updatedAt.toISOString(),
+        lastModified: node.file?.currentVersion
+          ? {
+              at: node.file.currentVersion.createdAt.toISOString(),
+              actor: actorResponse(
+                node.file.currentVersion.actorType,
+                node.file.currentVersion.createdBy,
+              ),
+            }
+          : {
+              at: node.updatedAt.toISOString(),
+              actor: actorResponse(FileVersionActorType.USER, node.updatedBy),
+            },
         capabilities: [...resolved],
       } satisfies CollectionItem];
     });

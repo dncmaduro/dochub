@@ -233,6 +233,45 @@ function formatDate(value: string) {
             },
       ).format(date);
 }
+function formatVersionTimestamp(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "—";
+  return new Intl.DateTimeFormat(
+    getLocale() === "vi" ? "vi-VN" : "en-US",
+    { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" },
+  ).format(date);
+}
+function formatLastModified(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "—";
+  const now = new Date();
+  const minutes = Math.floor((now.getTime() - date.getTime()) / 60_000);
+  const relative = new Intl.RelativeTimeFormat(
+    getLocale() === "vi" ? "vi-VN" : "en-US",
+    { numeric: "always" },
+  );
+  if (minutes >= 0 && minutes < 60) return relative.format(-minutes, "minute");
+  if (minutes >= 60 && minutes < 24 * 60)
+    return relative.format(-Math.floor(minutes / 60), "hour");
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const daysAgo = Math.floor((startOfToday.getTime() - startOfDate.getTime()) / 86_400_000);
+  if (daysAgo === 1) {
+    const time = new Intl.DateTimeFormat(getLocale() === "vi" ? "vi-VN" : "en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+    return t("dates.yesterdayAt", { time });
+  }
+  return new Intl.DateTimeFormat(
+    getLocale() === "vi" ? "vi-VN" : "en-US",
+    { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" },
+  ).format(date);
+}
+function actorLabel(actor: FileVersion["actor"]) {
+  if (actor.displayName?.trim()) return actor.displayName;
+  return t(`actors.${actor.type}`);
+}
 function formatBytes(value: string) {
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
@@ -1302,7 +1341,8 @@ function FileList({
   onNotice,
   favoriteIds,
   onFavorite,
-  dateLabel = t("common.modified"),
+  dateLabel = t("common.lastModified"),
+  showLastModified = true,
 }: {
   nodes: Node[];
   onFolder: (id: string) => void;
@@ -1315,6 +1355,7 @@ function FileList({
   favoriteIds: ReadonlySet<string>;
   onFavorite: (node: Node) => void;
   dateLabel?: string;
+  showLastModified?: boolean;
 }) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   return (
@@ -1348,6 +1389,7 @@ function FileList({
               onNotice={onNotice}
               isFavorite={favoriteIds.has(node.id)}
               onFavorite={onFavorite}
+              showLastModified={showLastModified}
             />
           ))}
         </tbody>
@@ -1369,6 +1411,7 @@ function FileRow({
   onNotice,
   isFavorite,
   onFavorite,
+  showLastModified,
 }: {
   node: Node;
   menuOpen: boolean;
@@ -1383,6 +1426,7 @@ function FileRow({
   onNotice: (notice: Notice) => void;
   isFavorite: boolean;
   onFavorite: (node: Node) => void;
+  showLastModified: boolean;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const isFolder = node.type === "FOLDER";
@@ -1410,7 +1454,17 @@ function FileRow({
           <span>{node.name}</span>
         </button>
       </td>
-      <td className="modified">{formatDate(node.updatedAt)}</td>
+      <td className="modified">
+        {showLastModified ? (
+          <span className="last-modified-value">
+            <span>{actorLabel(node.lastModified.actor)}</span>
+            <span aria-hidden="true"> · </span>
+            <span>{formatLastModified(node.lastModified.at)}</span>
+          </span>
+        ) : (
+          formatDate(node.updatedAt)
+        )}
+      </td>
       <td className="row-actions">
         <button
           ref={trigger}
@@ -2120,7 +2174,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
           {status === "loading" && <LoadingRows label={`${t("common.loading")} ${title.toLowerCase()}`} />}
           {status === "error" && <CollectionError title={title} message={error} onRetry={() => void load()} />}
           {status === "ready" && displayItems.length === 0 && <SearchState title={emptyTitle} />}
-          {status === "ready" && displayItems.length > 0 && <FileList nodes={displayItems} onFolder={(id) => navigate(id)} onRename={setRenameNode} onShare={setShareNode} onTrash={setTrashNode} onVersions={setVersionNode} onOpen={openFile} onNotice={setNotice} favoriteIds={favoriteIds} onFavorite={toggleFavorite} dateLabel={kind === "recent" ? t("files.dateLastOpened") : t("files.dateAdded")} />}
+          {status === "ready" && displayItems.length > 0 && <FileList nodes={displayItems} onFolder={(id) => navigate(id)} onRename={setRenameNode} onShare={setShareNode} onTrash={setTrashNode} onVersions={setVersionNode} onOpen={openFile} onNotice={setNotice} favoriteIds={favoriteIds} onFavorite={toggleFavorite} dateLabel={kind === "recent" ? t("files.dateLastOpened") : t("files.dateAdded")} showLastModified={false} />}
         </section>
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
       {renameNode && <NameDialog title={t("files.rename")} action={t("common.save")} initialValue={renameNode.name} onClose={() => setRenameNode(null)} onSubmit={(name) => rename(renameNode, name)} />}
@@ -2533,7 +2587,11 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
                 {version.isCurrent && <span className="version-current">{t("versions.current")}</span>}
               </div>
               <div className="version-metadata">
-                <span>{formatDate(version.createdAt)}</span>
+                <span className="version-attribution">
+                  <strong>{actorLabel(version.actor)}</strong>
+                  <span aria-hidden="true"> · </span>
+                  <span>{formatVersionTimestamp(version.createdAt)}</span>
+                </span>
                 <span>{formatVersionSource(version.source)}</span>
                 <span>{formatBytes(version.sizeBytes)}</span>
               </div>

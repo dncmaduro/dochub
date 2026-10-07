@@ -23,7 +23,17 @@ const en = {
     status: "Status",
     type: "Type",
     modified: "Modified",
+    lastModified: "Last modified",
     members: "Members",
+  },
+  actors: {
+    USER: "Unknown user",
+    PUBLIC: "Link guest",
+    SYSTEM: "System",
+    COLLABORATIVE: "Multiple editors",
+  },
+  dates: {
+    yesterdayAt: "Yesterday, {{time}}",
   },
   nav: {
     drive: "Drive",

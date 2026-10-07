@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { EditorActorType, FileVersionActorType } from '@dochub/database';
 import {
+  editorVersionAttribution,
   fileExtension,
   officeDocumentType,
   onlyOfficeAccessConfig,
@@ -39,5 +41,37 @@ describe('ONLYOFFICE access config', () => {
         comment: edit,
       },
     });
+  });
+});
+
+describe('ONLYOFFICE version attribution', () => {
+  it('keeps one authenticated editor as the version actor', () => {
+    expect(
+      editorVersionAttribution([
+        { actorType: EditorActorType.USER, userId: 'user-a', mode: 'EDIT' },
+        { actorType: EditorActorType.USER, userId: 'user-a', mode: 'EDIT' },
+      ]),
+    ).toEqual({ actorType: FileVersionActorType.USER, createdById: 'user-a' });
+  });
+
+  it('does not select an arbitrary callback participant for collaboration', () => {
+    expect(
+      editorVersionAttribution([
+        { actorType: EditorActorType.USER, userId: 'user-a', mode: 'EDIT' },
+        { actorType: EditorActorType.USER, userId: 'user-b', mode: 'EDIT' },
+      ]),
+    ).toEqual({
+      actorType: FileVersionActorType.COLLABORATIVE,
+      createdById: null,
+    });
+  });
+
+  it('keeps anonymous-only generations as public', () => {
+    expect(
+      editorVersionAttribution([
+        { actorType: EditorActorType.PUBLIC, userId: null, mode: 'EDIT' },
+        { actorType: EditorActorType.PUBLIC, userId: null, mode: 'EDIT' },
+      ]),
+    ).toEqual({ actorType: FileVersionActorType.PUBLIC, createdById: null });
   });
 });

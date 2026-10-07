@@ -1,3 +1,13 @@
+export type FileVersionActorType = "USER" | "PUBLIC" | "SYSTEM" | "COLLABORATIVE";
+export interface Actor {
+  type: FileVersionActorType;
+  id?: string;
+  displayName: string | null;
+}
+export interface LastModified {
+  at: string;
+  actor: Actor;
+}
 export interface Node {
   id: string;
   parentId: string | null;
@@ -5,6 +15,7 @@ export interface Node {
   name: string;
   createdAt: string;
   updatedAt: string;
+  lastModified: LastModified;
   capabilities: string[];
   processing?: { contentSearch: "READY" | "PROCESSING" | "FAILED" } | null;
 }
@@ -119,6 +130,7 @@ export interface FileVersion {
   extension: string | null;
   sizeBytes: string;
   createdAt: string;
+  actor: Actor;
   isCurrent: boolean;
 }
 
