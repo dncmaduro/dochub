@@ -32,6 +32,12 @@ import {
 } from './dto/node.dto.js';
 import { decodeNodeCursor, encodeNodeCursor } from './node-cursor.js';
 import { normalizeNodeName } from './node-name.js';
+import {
+  DEFAULT_NODE_SORT_BY,
+  DEFAULT_NODE_SORT_DIRECTION,
+  NodeSortBy,
+  NodeSortDirection,
+} from './node-sort.js';
 import type {
   BreadcrumbResponse,
   NodePage,
@@ -70,6 +76,10 @@ const nodeSelect = {
 } satisfies Prisma.NodeSelect;
 
 type SelectedNode = Prisma.NodeGetPayload<{ select: typeof nodeSelect }>;
+
+interface OrderedNodeIdRow {
+  id: string;
+}
 
 interface BreadcrumbNodeRow {
   id: string;
@@ -173,15 +183,37 @@ export class NodesService {
       throw new NotFoundException('Node not found');
     }
     const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
-    const cursor = decodeNodeCursor(query.cursor);
-    const nodes = await this.database.prisma.node.findMany({
-      where: {
-        ...this.folders.childVisibilityWhere(folder, actorUserId, groupIds),
-        ...(cursor ? { AND: [{ OR: this.afterCursor(cursor) }] } : {}),
-      },
-      select: nodeSelect,
-      orderBy: [{ normalizedName: 'asc' }, { id: 'asc' }],
-      take: limit + 1,
+    const sortBy = query.sortBy ?? DEFAULT_NODE_SORT_BY;
+    const sortDirection =
+      query.sortDirection ??
+      (sortBy === NodeSortBy.LAST_MODIFIED
+        ? NodeSortDirection.DESC
+        : DEFAULT_NODE_SORT_DIRECTION);
+    const cursor = decodeNodeCursor(
+      query.cursor,
+      sortBy,
+      sortDirection,
+    );
+    const orderedIds = await this.findOrderedNodeIds(
+      actorUserId,
+      folder,
+      groupIds,
+      limit,
+      sortBy,
+      sortDirection,
+      cursor,
+    );
+    const selectedNodes =
+      orderedIds.length === 0
+        ? []
+        : await this.database.prisma.node.findMany({
+            where: { id: { in: orderedIds } },
+            select: nodeSelect,
+          });
+    const nodesById = new Map(selectedNodes.map((node) => [node.id, node]));
+    const nodes = orderedIds.flatMap((id) => {
+      const node = nodesById.get(id);
+      return node ? [node] : [];
     });
     const capabilitiesByNode =
       await this.authorization.resolveCapabilitiesForNodes(
@@ -197,7 +229,133 @@ export class NodesService {
           resolution.capabilities,
         ]),
       ),
+      sortBy,
+      sortDirection,
     );
+  }
+
+  private async findOrderedNodeIds(
+    actorUserId: string,
+    folder: Awaited<ReturnType<FolderAccessService['requireBrowse']>>,
+    groupIds: readonly string[],
+    limit: number,
+    sortBy: NodeSortBy,
+    sortDirection: NodeSortDirection,
+    cursor: ReturnType<typeof decodeNodeCursor>,
+  ): Promise<string[]> {
+    const visibility = this.childVisibilitySql(folder, actorUserId, groupIds);
+    const cursorPredicate = this.cursorPredicateSql(
+      cursor,
+      sortBy,
+      sortDirection,
+    );
+    const direction =
+      sortDirection === NodeSortDirection.ASC
+        ? Prisma.sql`ASC`
+        : Prisma.sql`DESC`;
+
+    if (sortBy === NodeSortBy.NAME) {
+      const rows = await this.database.prisma.$queryRaw<OrderedNodeIdRow[]>`
+        SELECT n."id"
+        FROM "Node" AS n
+        WHERE ${visibility}
+          ${cursorPredicate}
+        ORDER BY n."normalizedName" ${direction}, n."id" ASC
+        LIMIT ${limit + 1}
+      `;
+      return rows.map((row) => row.id);
+    }
+
+    const rows = await this.database.prisma.$queryRaw<OrderedNodeIdRow[]>`
+      SELECT n."id"
+      FROM "Node" AS n
+      LEFT JOIN "File" AS file_record ON file_record."nodeId" = n."id"
+      LEFT JOIN "FileVersion" AS current_version
+        ON current_version."id" = file_record."currentVersionId"
+      WHERE ${visibility}
+        ${cursorPredicate}
+      ORDER BY
+        COALESCE(current_version."createdAt", n."updatedAt") ${direction},
+        n."id" ASC
+      LIMIT ${limit + 1}
+    `;
+    return rows.map((row) => row.id);
+  }
+
+  private childVisibilitySql(
+    folder: Awaited<ReturnType<FolderAccessService['requireBrowse']>>,
+    actorUserId: string,
+    groupIds: readonly string[],
+  ): Prisma.Sql {
+    const groupVisibility =
+      groupIds.length > 0
+        ? Prisma.sql`OR permission_entry."groupId" IN (${Prisma.join(
+            groupIds.map((groupId) => Prisma.sql`${groupId}::uuid`),
+          )})`
+        : Prisma.empty;
+    const directVisibility = Prisma.sql`
+      (
+        n."generalAccessRole" IN ('VIEWER', 'EDITOR')
+        OR EXISTS (
+          SELECT 1
+          FROM "PermissionEntry" AS permission_entry
+          WHERE permission_entry."nodeId" = n."id"
+            AND (
+              permission_entry."userId" = ${actorUserId}::uuid
+              ${groupVisibility}
+            )
+        )
+      )
+    `;
+    const parentPredicate =
+      folder.reference.kind === 'ROOT'
+        ? Prisma.sql`n."parentId" IS NULL`
+        : Prisma.sql`n."parentId" = ${folder.reference.nodeId}::uuid`;
+    const visibility =
+      folder.reference.kind === 'ROOT'
+        ? directVisibility
+        : Prisma.sql`(n."inheritPermissions" = TRUE OR ${directVisibility})`;
+    return Prisma.sql`
+      ${parentPredicate}
+      AND n."trashOperationId" IS NULL
+      AND ${visibility}
+    `;
+  }
+
+  private cursorPredicateSql(
+    cursor: ReturnType<typeof decodeNodeCursor>,
+    sortBy: NodeSortBy,
+    sortDirection: NodeSortDirection,
+  ): Prisma.Sql {
+    if (!cursor) return Prisma.empty;
+    const comparison =
+      sortDirection === NodeSortDirection.ASC
+        ? Prisma.sql`>`
+        : Prisma.sql`<`;
+    if (sortBy === NodeSortBy.NAME) {
+      return Prisma.sql`
+        AND (
+          n."normalizedName" ${comparison} ${cursor.sortValue}
+          OR (
+            n."normalizedName" = ${cursor.sortValue}
+            AND n."id" > ${cursor.id}::uuid
+          )
+        )
+      `;
+    }
+    const modifiedAt = Prisma.sql`
+      COALESCE(current_version."createdAt", n."updatedAt")
+    `;
+    const cursorDate = new Date(cursor.sortValue);
+    return Prisma.sql`
+      AND (
+        ${modifiedAt} ${comparison} ${cursorDate}
+        OR (
+          ${modifiedAt} = ${cursorDate}
+          AND n."id" > ${cursor.id}::uuid
+        )
+      )
+    `;
   }
 
   async breadcrumb(
@@ -497,31 +655,30 @@ export class NodesService {
     }
   }
 
-  private afterCursor(cursor: {
-    normalizedName: string;
-    id: string;
-  }): Prisma.NodeWhereInput[] {
-    return [
-      { normalizedName: { gt: cursor.normalizedName } },
-      { normalizedName: cursor.normalizedName, id: { gt: cursor.id } },
-    ];
-  }
-
   private nodePage(
     records: SelectedNode[],
     limit: number,
     capabilitiesByNode: ReadonlyMap<string, ReadonlySet<DocumentCapability>>,
+    sortBy: NodeSortBy,
+    sortDirection: NodeSortDirection,
   ): NodePage {
     const page = records.slice(0, limit);
     const finalNode = page.at(-1);
+    const items = page.map((node) =>
+      this.nodeResponse(node, capabilitiesByNode.get(node.id) ?? new Set()),
+    );
+    const finalItem = items.at(-1);
     return {
-      items: page.map((node) =>
-        this.nodeResponse(node, capabilitiesByNode.get(node.id) ?? new Set()),
-      ),
+      items,
       nextCursor:
-        records.length > limit && finalNode
+        records.length > limit && finalNode && finalItem
           ? encodeNodeCursor({
-              normalizedName: finalNode.normalizedName,
+              sortBy,
+              sortDirection,
+              sortValue:
+                sortBy === NodeSortBy.NAME
+                  ? finalNode.normalizedName
+                  : finalItem.lastModified.at.toISOString(),
               id: finalNode.id,
             })
           : null,

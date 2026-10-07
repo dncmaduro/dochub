@@ -19,6 +19,8 @@ export interface Node {
   capabilities: string[];
   processing?: { contentSearch: "READY" | "PROCESSING" | "FAILED" } | null;
 }
+export type NodeSortBy = "name" | "lastModified";
+export type NodeSortDirection = "asc" | "desc";
 export interface Breadcrumb {
   id: string;
   name: string;
@@ -214,13 +216,20 @@ export class ApiClient {
     }
   }
 
-  async listNodes(folderId: string | null) {
-    return this.request<NodePage>(
-      folderId ? `/nodes/${folderId}/children` : "/nodes/root",
-    );
+  async listNodes(
+    folderId: string | null,
+    sortBy: NodeSortBy = "name",
+    sortDirection: NodeSortDirection = "asc",
+    signal?: AbortSignal,
+  ) {
+    const parameters = new URLSearchParams({ sortBy, sortDirection });
+    const path = folderId
+      ? `/nodes/${folderId}/children?${parameters}`
+      : `/nodes/root?${parameters}`;
+    return this.request<NodePage>(path, { signal });
   }
-  async breadcrumb(nodeId: string) {
-    return (await this.breadcrumbPage(nodeId)).items;
+  async breadcrumb(nodeId: string, signal?: AbortSignal) {
+    return (await this.breadcrumbPage(nodeId, signal)).items;
   }
   async breadcrumbPage(nodeId: string, signal?: AbortSignal) {
     return this.request<BreadcrumbPage>(`/nodes/${nodeId}/breadcrumb`, { signal });

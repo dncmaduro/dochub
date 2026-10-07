@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsInt,
+  IsEnum,
   IsOptional,
   IsString,
   IsUUID,
@@ -8,6 +9,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { NodeSortBy, NodeSortDirection } from '../node-sort.js';
 
 export class NodeIdParamDto {
   @IsUUID()
@@ -48,4 +50,12 @@ export class NodeListQueryDto {
   @IsString()
   @MaxLength(512)
   cursor?: string;
+
+  @IsOptional()
+  @IsEnum(NodeSortBy)
+  sortBy?: NodeSortBy;
+
+  @IsOptional()
+  @IsEnum(NodeSortDirection)
+  sortDirection?: NodeSortDirection;
 }

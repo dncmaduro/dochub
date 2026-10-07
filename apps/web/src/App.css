@@ -577,6 +577,26 @@
   font-size: 12px;
   font-weight: 500;
 }
+.sort-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.sort-header:hover {
+  color: var(--text);
+}
+.sort-direction {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+}
 .file-table th:nth-child(2) {
   width: 238px;
 }

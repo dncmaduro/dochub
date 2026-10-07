@@ -27,6 +27,8 @@ import {
   type EditorSession,
   type FileVersion,
   type Node,
+  type NodeSortBy,
+  type NodeSortDirection,
   type PermissionEntry,
   type PreviewSession,
   type PermissionsState,
@@ -84,6 +86,39 @@ function currentFolderId() {
     window.location.pathname.match(/^\/drive\/([0-9a-f-]+)$/i)?.[1] ?? null
   );
 }
+type DriveSort = { by: NodeSortBy; direction: NodeSortDirection };
+const defaultDriveSort: DriveSort = { by: "name", direction: "asc" };
+
+function hasDriveSortQuery() {
+  const parameters = new URLSearchParams(window.location.search);
+  return parameters.has("sortBy") || parameters.has("sortDirection");
+}
+
+function currentDriveSort(): DriveSort {
+  const parameters = new URLSearchParams(window.location.search);
+  const by = parameters.get("sortBy");
+  const direction = parameters.get("sortDirection");
+  if (by !== "name" && by !== "lastModified") return defaultDriveSort;
+  if (direction !== "asc" && direction !== "desc") {
+    return by === "lastModified"
+      ? { by, direction: "desc" }
+      : defaultDriveSort;
+  }
+  return { by, direction };
+}
+
+function drivePath(folderId: string | null, sort: DriveSort) {
+  const parameters = new URLSearchParams();
+  if (
+    sort.by !== defaultDriveSort.by ||
+    sort.direction !== defaultDriveSort.direction
+  ) {
+    parameters.set("sortBy", sort.by);
+    parameters.set("sortDirection", sort.direction);
+  }
+  const pathname = folderId ? `/drive/${folderId}` : "/drive";
+  return parameters.size ? `${pathname}?${parameters}` : pathname;
+}
 function currentRoute() {
   if (/^\/document\/[0-9a-f-]+$/i.test(window.location.pathname)) return "document";
   if (/^\/s\//.test(window.location.pathname)) return "legacyShare";
@@ -125,8 +160,8 @@ function currentSearchQuery() {
   return new URLSearchParams(window.location.search).get("q") ?? "";
 }
 function navigate(folderId: string | null) {
-  const path = folderId ? `/drive/${folderId}` : "/drive";
-  if (window.location.pathname !== path) {
+  const path = drivePath(folderId, currentDriveSort());
+  if (`${window.location.pathname}${window.location.search}` !== path) {
     window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
@@ -295,14 +330,6 @@ function systemRoleLabel(role: SystemRole) {
 function userStatusLabel(status: string) {
   return t(`statuses.${status}`, { defaultValue: status });
 }
-function compareNodes(left: Node, right: Node) {
-  return left.type === right.type
-    ? left.name.localeCompare(right.name)
-    : left.type === "FOLDER"
-      ? -1
-      : 1;
-}
-
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
     folder: (
@@ -1186,6 +1213,8 @@ function DriveApp({
 }) {
   const { isFilePending } = useEditorSaveContext();
   const [folderId, setFolderId] = useState(currentFolderId);
+  const [sort, setSort] = useState<DriveSort>(currentDriveSort);
+  const [sortActivated, setSortActivated] = useState(hasDriveSortQuery);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">(
@@ -1200,24 +1229,35 @@ function DriveApp({
   const [versionNode, setVersionNode] = useState<Node | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const uploadInput = useRef<HTMLInputElement>(null);
+  const loadController = useRef<AbortController | null>(null);
   const load = useCallback(async (id: string | null) => {
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
     setStatus("loading");
     setError("");
     try {
       const [page, trail] = await Promise.all([
-        api.listNodes(id),
-        id ? api.breadcrumb(id) : Promise.resolve([]),
+        api.listNodes(id, sort.by, sort.direction, controller.signal),
+        id ? api.breadcrumb(id, controller.signal) : Promise.resolve([]),
       ]);
+      if (controller.signal.aborted) return;
       setNodes(page.items);
       setBreadcrumbs(trail);
       setStatus("ready");
     } catch (requestError) {
+      if (controller.signal.aborted) return;
       setStatus("error");
       setError(displayError(requestError));
     }
-  }, []);
+  }, [sort]);
+  useEffect(() => () => loadController.current?.abort(), []);
   useEffect(() => {
-    const onPopState = () => setFolderId(currentFolderId());
+    const onPopState = () => {
+      setFolderId(currentFolderId());
+      setSort(currentDriveSort());
+      setSortActivated(hasDriveSortQuery());
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
@@ -1251,12 +1291,8 @@ function DriveApp({
     };
   }, []);
   async function rename(node: Node, name: string) {
-    const updated = await api.renameNode(node.id, name);
-    setNodes((items) =>
-      items
-        .map((item) => (item.id === node.id ? updated : item))
-        .sort(compareNodes),
-    );
+    await api.renameNode(node.id, name);
+    await load(folderId);
     setNotice({ tone: "success", message: t("files.renamed") });
   }
   async function upload(event: ChangeEvent<HTMLInputElement>) {
@@ -1266,13 +1302,22 @@ function DriveApp({
     try {
       setNotice(null);
       const result = await api.upload(file, folderId);
-      setNodes((items) => [...items, result.node].sort(compareNodes));
+      await load(folderId);
       setNotice({
         tone: "success",
         message: t("files.uploaded", { name: result.node.name }),
       });
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
+    }
+  }
+  function changeSort(next: DriveSort) {
+    setSort(next);
+    setSortActivated(true);
+    const path = drivePath(folderId, next);
+    if (`${window.location.pathname}${window.location.search}` !== path) {
+      window.history.pushState({}, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
     }
   }
   async function openFile(node: Node) {
@@ -1357,6 +1402,9 @@ function DriveApp({
               onNotice={setNotice}
               favoriteIds={favoriteIds}
               onFavorite={toggleFavorite}
+              sort={sort}
+              onSortChange={changeSort}
+              sortActivated={sortActivated}
             />
           )}
         </section>
@@ -1445,6 +1493,9 @@ function FileList({
   onFavorite,
   dateLabel = t("common.lastModified"),
   showLastModified = true,
+  sort,
+  onSortChange,
+  sortActivated,
 }: {
   nodes: Node[];
   onFolder: (id: string) => void;
@@ -1458,6 +1509,9 @@ function FileList({
   onFavorite: (node: Node) => void;
   dateLabel?: string;
   showLastModified?: boolean;
+  sort?: DriveSort;
+  onSortChange?: (sort: DriveSort) => void;
+  sortActivated?: boolean;
 }) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   return (
@@ -1465,11 +1519,23 @@ function FileList({
       <table className={`file-table${showLastModified ? " with-last-modified" : ""}`}>
         <thead>
           <tr>
-            <th scope="col">{t("common.name")}</th>
+            <SortableHeader
+              label={t("common.name")}
+              sortBy="name"
+              sort={showLastModified ? sort : undefined}
+              onSortChange={showLastModified ? onSortChange : undefined}
+              sortActivated={showLastModified ? sortActivated : undefined}
+            />
             {showLastModified ? (
               <>
                 <th scope="col">{t("common.modifiedBy")}</th>
-                <th scope="col">{t("common.lastModified")}</th>
+                <SortableHeader
+                  label={t("common.lastModified")}
+                  sortBy="lastModified"
+                  sort={sort}
+                  onSortChange={onSortChange}
+                  sortActivated={sortActivated}
+                />
               </>
             ) : (
               <th scope="col">{dateLabel}</th>
@@ -1504,6 +1570,58 @@ function FileList({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function SortableHeader({
+  label,
+  sortBy,
+  sort,
+  onSortChange,
+  sortActivated = true,
+}: {
+  label: string;
+  sortBy: NodeSortBy;
+  sort?: DriveSort;
+  onSortChange?: (sort: DriveSort) => void;
+  sortActivated?: boolean;
+}) {
+  const active = sort?.by === sortBy;
+  const nextDirection: NodeSortDirection =
+    !sortActivated && sortBy === "name" && active && sort.direction === "asc"
+      ? "asc"
+      : active
+    ? sort.direction === "asc"
+      ? "desc"
+      : "asc"
+    : sortBy === "lastModified"
+      ? "desc"
+      : "asc";
+  const ariaSort = active
+    ? sort.direction === "asc"
+      ? "ascending"
+      : "descending"
+    : "none";
+  return (
+    <th scope="col" aria-sort={ariaSort}>
+      {sort && onSortChange ? (
+        <button
+          type="button"
+          className="sort-header"
+          aria-label={`${label}, ${t(nextDirection === "asc" ? "common.sortAscending" : "common.sortDescending")}`}
+          onClick={() => onSortChange({ by: sortBy, direction: nextDirection })}
+        >
+          <span>{label}</span>
+          {active && (
+            <span className="sort-direction" aria-hidden="true">
+              {sort.direction === "asc" ? "↑" : "↓"}
+            </span>
+          )}
+        </button>
+      ) : (
+        label
+      )}
+    </th>
   );
 }
 function FileRow({

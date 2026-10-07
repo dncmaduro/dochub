@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DocumentRole,
+  FileVersionActorType,
+  FileVersionSource,
   GeneralAccessRole,
   NodeType,
   prisma,
@@ -11,6 +13,7 @@ import {
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
+import { NodeSortBy, NodeSortDirection } from './node-sort.js';
 import { NodesService } from './nodes.service.js';
 
 const describeWithDatabase = process.env.DATABASE_URL
@@ -24,6 +27,8 @@ describeWithDatabase('NodesService integration', () => {
   const viewerId = randomUUID();
   const memberId = randomUUID();
   const nodeIds = new Set<string>();
+  const fileIds = new Set<string>();
+  const fileVersionIds = new Set<string>();
   const trashOperationIds = new Set<string>();
   const database = { prisma } as unknown as DatabaseService;
   const authorization = new DocumentAuthorizationService(database);
@@ -97,6 +102,14 @@ describeWithDatabase('NodesService integration', () => {
 
   afterAll(async () => {
     const ids = [...nodeIds];
+    await prisma.file.updateMany({
+      where: { id: { in: [...fileIds] } },
+      data: { currentVersionId: null },
+    });
+    await prisma.fileVersion.deleteMany({
+      where: { id: { in: [...fileVersionIds] } },
+    });
+    await prisma.file.deleteMany({ where: { id: { in: [...fileIds] } } });
     await prisma.auditLog.deleteMany({ where: { resourceId: { in: ids } } });
     await prisma.permissionEntry.deleteMany({ where: { nodeId: { in: ids } } });
     const hierarchy = await prisma.node.findMany({
@@ -267,6 +280,187 @@ describeWithDatabase('NodesService integration', () => {
     ).rejects.toMatchObject({
       status: 400,
     });
+  });
+
+  it('sorts names, mixed file/folder modified timestamps, and equal-value cursors', async () => {
+    const nameContainer = await nodes.createFolder(adminId, {
+      name: `sort-names-${suffix}`,
+      parentId: rootId,
+    });
+    nodeIds.add(nameContainer.id);
+    const nameNodes = await Promise.all(
+      ['alpha.docx', 'Beta.docx', 'gamma.docx'].map((name) =>
+        nodes.createFolder(adminId, { name, parentId: nameContainer.id }),
+      ),
+    );
+    for (const node of nameNodes) nodeIds.add(node.id);
+    const nameAscending = await nodes.listChildren(
+      adminId,
+      nameContainer.id,
+      {
+        sortBy: NodeSortBy.NAME,
+        sortDirection: NodeSortDirection.ASC,
+        limit: 100,
+      },
+    );
+    expect(nameAscending.items.map((node) => node.name)).toEqual([
+      'alpha.docx',
+      'Beta.docx',
+      'gamma.docx',
+    ]);
+    const nameDescending = await nodes.listChildren(
+      adminId,
+      nameContainer.id,
+      {
+        sortBy: NodeSortBy.NAME,
+        sortDirection: NodeSortDirection.DESC,
+        limit: 100,
+      },
+    );
+    expect(nameDescending.items.map((node) => node.name)).toEqual([
+      'gamma.docx',
+      'Beta.docx',
+      'alpha.docx',
+    ]);
+
+    const modifiedContainer = await nodes.createFolder(adminId, {
+      name: `sort-modified-${suffix}`,
+      parentId: rootId,
+    });
+    nodeIds.add(modifiedContainer.id);
+    const oldAt = new Date('2025-01-01T00:00:00.000Z');
+    const fileAt = new Date('2025-01-02T00:00:00.000Z');
+    const newAt = new Date('2025-01-03T00:00:00.000Z');
+    const oldFolder = await nodes.createFolder(adminId, {
+      name: 'folder-old',
+      parentId: modifiedContainer.id,
+    });
+    const newFolder = await nodes.createFolder(adminId, {
+      name: 'folder-new',
+      parentId: modifiedContainer.id,
+    });
+    nodeIds.add(oldFolder.id);
+    nodeIds.add(newFolder.id);
+    await prisma.node.update({
+      where: { id: oldFolder.id },
+      data: { updatedAt: oldAt },
+    });
+    await prisma.node.update({
+      where: { id: newFolder.id },
+      data: { updatedAt: newAt },
+    });
+    const fileNode = await prisma.node.create({
+      data: {
+        parentId: modifiedContainer.id,
+        type: NodeType.FILE,
+        name: 'file-middle.docx',
+        normalizedName: 'file-middle.docx',
+        createdById: adminId,
+      },
+    });
+    nodeIds.add(fileNode.id);
+    const fileId = randomUUID();
+    const versionId = randomUUID();
+    fileIds.add(fileId);
+    fileVersionIds.add(versionId);
+    await prisma.file.create({ data: { id: fileId, nodeId: fileNode.id } });
+    await prisma.fileVersion.create({
+      data: {
+        id: versionId,
+        fileId,
+        versionNumber: 1,
+        storageKey: `sort-${versionId}`,
+        originalFilename: fileNode.name,
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        extension: 'docx',
+        sizeBytes: 1n,
+        sha256: versionId.replaceAll('-', ''),
+        source: FileVersionSource.UPLOAD,
+        actorType: FileVersionActorType.USER,
+        createdById: adminId,
+        createdAt: fileAt,
+      },
+    });
+    await prisma.file.update({
+      where: { id: fileId },
+      data: { currentVersionId: versionId, versionCounter: 1 },
+    });
+    const modifiedDescending = await nodes.listChildren(
+      adminId,
+      modifiedContainer.id,
+      {
+        sortBy: NodeSortBy.LAST_MODIFIED,
+        sortDirection: NodeSortDirection.DESC,
+        limit: 100,
+      },
+    );
+    expect(modifiedDescending.items.map((node) => node.id)).toEqual([
+      newFolder.id,
+      fileNode.id,
+      oldFolder.id,
+    ]);
+    expect(modifiedDescending.items[1].lastModified.at).toEqual(fileAt);
+    const modifiedAscending = await nodes.listChildren(
+      adminId,
+      modifiedContainer.id,
+      {
+        sortBy: NodeSortBy.LAST_MODIFIED,
+        sortDirection: NodeSortDirection.ASC,
+        limit: 100,
+      },
+    );
+    expect(modifiedAscending.items.map((node) => node.id)).toEqual([
+      oldFolder.id,
+      fileNode.id,
+      newFolder.id,
+    ]);
+
+    const tieContainer = await nodes.createFolder(adminId, {
+      name: `sort-ties-${suffix}`,
+      parentId: rootId,
+    });
+    nodeIds.add(tieContainer.id);
+    const tieAt = new Date('2025-02-01T00:00:00.000Z');
+    const tied = await Promise.all(
+      ['tie-one', 'tie-two'].map((name) =>
+        nodes.createFolder(adminId, { name, parentId: tieContainer.id }),
+      ),
+    );
+    for (const node of tied) {
+      nodeIds.add(node.id);
+      await prisma.node.update({
+        where: { id: node.id },
+        data: { updatedAt: tieAt },
+      });
+    }
+    const firstTiePage = await nodes.listChildren(
+      adminId,
+      tieContainer.id,
+      {
+        sortBy: NodeSortBy.LAST_MODIFIED,
+        sortDirection: NodeSortDirection.DESC,
+        limit: 1,
+      },
+    );
+    const secondTiePage = await nodes.listChildren(
+      adminId,
+      tieContainer.id,
+      {
+        sortBy: NodeSortBy.LAST_MODIFIED,
+        sortDirection: NodeSortDirection.DESC,
+        limit: 1,
+        cursor: firstTiePage.nextCursor ?? undefined,
+      },
+    );
+    expect(firstTiePage.items).toHaveLength(1);
+    expect(secondTiePage.items).toHaveLength(1);
+    expect(secondTiePage.items[0].id).not.toBe(firstTiePage.items[0].id);
+    expect(
+      new Set([
+        firstTiePage.items[0].id,
+        secondTiePage.items[0].id,
+      ]),
+    ).toEqual(new Set(tied.map((node) => node.id)));
   });
 
   it('treats the virtual root as a browsable folder without requiring root ACL', async () => {

@@ -25,6 +25,8 @@ const en = {
     modified: "Modified",
     modifiedBy: "Modified by",
     lastModified: "Last modified",
+    sortAscending: "sort ascending",
+    sortDescending: "sort descending",
     members: "Members",
   },
   actors: {
