@@ -40,6 +40,7 @@ import {
 import { DriveCreationTargetService } from './drive-creation-target.service.js';
 import type { Readable } from 'node:stream';
 import { canManageDocuments } from '../common/system-role-policy.js';
+import { canAdministerAccounts } from '../common/system-role-policy.js';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import {
   CreateNativeDocumentDto,
@@ -91,12 +92,12 @@ type CreationOperation = {
   errorMessage: string | null;
 };
 
-export interface DriveConnectionView {
+export interface DriveIntegrationView {
   connected: boolean;
   id?: string;
   googleAccountId?: string | null;
   googleEmail?: string | null;
-  connectedAt?: Date;
+  connectedAt?: Date | null;
   updatedAt?: Date;
   syncStatus: DriveSyncStatus;
   lastSyncStartedAt?: Date | null;
@@ -105,11 +106,16 @@ export interface DriveConnectionView {
   revokedAt?: Date | null;
   authorizedScopes: string[];
   canWrite: boolean;
+  sharedDriveId?: string | null;
+  sharedDriveName?: string | null;
+  storageFolderId?: string | null;
+  storageFolderName?: string | null;
+  configured?: boolean;
 }
 
 export interface WritableDriveContext {
   accessToken: string;
-  connectionId: string;
+  integrationId: string;
   target: DriveCreationTarget;
 }
 
@@ -175,7 +181,7 @@ export class DriveService {
   ): Promise<DriveAuthorizationStart> {
     this.assertEnabled();
     await this.assertActiveUser(userId);
-    if (mode === 'WRITE') await this.assertWriteManager(userId);
+    await this.assertAdmin(userId);
     const state = this.oauthState.create(userId);
     const codeChallenge = await this.oauthState.codeChallenge(
       state.codeVerifier,
@@ -200,13 +206,15 @@ export class DriveService {
   }): Promise<void> {
     this.assertEnabled();
     const state = this.oauthState.read(input.cookieValue, input.state);
+    await this.assertActiveUser(state.userId);
+    await this.assertAdmin(state.userId);
     const exchanged = await this.provider.exchangeCode({
       code: input.code,
       codeVerifier: state.codeVerifier,
     });
     const account = await this.provider.getAccount(exchanged.accessToken);
-    const current = await this.database.prisma.driveConnection.findUnique({
-      where: { userId: state.userId },
+    const current = await this.database.prisma.googleDriveIntegration.findUnique({
+      where: { singletonKey: 'company' },
       select: {
         id: true,
         refreshTokenEncrypted: true,
@@ -239,36 +247,32 @@ export class DriveService {
           ? current.authorizedScopes
           : [GOOGLE_DRIVE_METADATA_READONLY_SCOPE],
     };
-    const connection = current
-      ? await this.database.prisma.driveConnection.update({
-          where: { id: current.id },
-          data,
-          select: { id: true },
-        })
-      : await this.database.prisma.driveConnection.create({
-          data: { userId: state.userId, ...data },
-          select: { id: true },
-        });
+    const connection = await this.database.prisma.googleDriveIntegration.upsert({
+      where: { singletonKey: 'company' },
+      create: { singletonKey: 'company', connectedAt: new Date(), ...data },
+      update: { ...data, connectedAt: current?.connectedAt ?? new Date() },
+      select: { id: true },
+    });
     await this.database.prisma.driveFile.updateMany({
-      where: { driveConnectionId: connection.id, trashed: false },
+      where: { driveIntegrationId: connection.id, trashed: false },
       data: { sourceStatus: DriveSourceStatus.STALE },
     });
     await this.database.prisma.driveFile.updateMany({
-      where: { driveConnectionId: connection.id, trashed: true },
+      where: { driveIntegrationId: connection.id, trashed: true },
       data: { sourceStatus: DriveSourceStatus.UNAVAILABLE },
     });
     await this.audit(
       state.userId,
-      'DRIVE_CONNECTED',
+      'DRIVE_INTEGRATION_CONNECTED',
       connection.id,
       AuditResult.SUCCESS,
       { scopes: data.authorizedScopes },
     );
   }
 
-  async getConnection(userId: string): Promise<DriveConnectionView> {
-    const connection = await this.database.prisma.driveConnection.findUnique({
-      where: { userId },
+  async getIntegration(_userId: string): Promise<DriveIntegrationView> {
+    const connection = await this.database.prisma.googleDriveIntegration.findUnique({
+      where: { singletonKey: 'company' },
       select: {
         id: true,
         googleAccountId: true,
@@ -281,6 +285,11 @@ export class DriveService {
         lastSyncError: true,
         revokedAt: true,
         authorizedScopes: true,
+        refreshTokenEncrypted: true,
+        sharedDriveId: true,
+        sharedDriveName: true,
+        storageFolderId: true,
+        storageFolderName: true,
       },
     });
     if (!connection) {
@@ -289,25 +298,109 @@ export class DriveService {
         syncStatus: DriveSyncStatus.NEVER_SYNCED,
         authorizedScopes: [],
         canWrite: false,
+        configured: false,
       };
     }
     return {
-      ...connection,
-      connected: connection.revokedAt === null,
+      id: connection.id,
+      googleAccountId: connection.googleAccountId,
+      googleEmail: connection.googleEmail,
+      connectedAt: connection.connectedAt,
+      updatedAt: connection.updatedAt,
+      syncStatus: connection.syncStatus,
+      lastSyncStartedAt: connection.lastSyncStartedAt,
+      lastSyncCompletedAt: connection.lastSyncCompletedAt,
+      lastSyncError: connection.lastSyncError,
+      revokedAt: connection.revokedAt,
+      authorizedScopes: connection.authorizedScopes,
+      sharedDriveId: connection.sharedDriveId,
+      sharedDriveName: connection.sharedDriveName,
+      storageFolderId: connection.storageFolderId,
+      storageFolderName: connection.storageFolderName,
+      connected:
+        connection.revokedAt === null && Boolean(connection.refreshTokenEncrypted),
       canWrite:
         connection.revokedAt === null &&
+        Boolean(connection.refreshTokenEncrypted) &&
         connection.authorizedScopes.includes(GOOGLE_DRIVE_FILE_SCOPE),
+      configured: Boolean(connection.sharedDriveId),
     };
   }
 
-  async disconnect(userId: string): Promise<DriveConnectionView> {
-    const connection = await this.database.prisma.driveConnection.findUnique({
-      where: { userId },
+  async configureSharedDrive(
+    adminUserId: string,
+    sharedDriveId: string,
+    storageFolderId?: string,
+  ): Promise<DriveIntegrationView> {
+    this.assertEnabled();
+    await this.assertAdmin(adminUserId);
+    const integration = await this.requireConnected(adminUserId, {
+      requireSharedDrive: false,
+    });
+    const sharedDrives = await this.withAccessToken(integration, (accessToken) =>
+      this.listAllSharedDrives(accessToken),
+    );
+    const sharedDrive = sharedDrives.find((item) => item.id === sharedDriveId);
+    if (!sharedDrive) {
+      throw new NotFoundException('The selected Shared Drive is not available.');
+    }
+
+    let storageFolderName: string | null = null;
+    if (storageFolderId) {
+      const folder = await this.withAccessToken(integration, (accessToken) =>
+        this.provider.getFile(accessToken, storageFolderId),
+      );
+      if (
+        folder.driveId !== sharedDriveId ||
+        folder.mimeType !== 'application/vnd.google-apps.folder'
+      ) {
+        throw new ConflictException(
+          'The configured storage folder must belong to the selected Shared Drive.',
+        );
+      }
+      storageFolderName = folder.name?.trim() || null;
+    }
+
+    await this.database.prisma.googleDriveIntegration.update({
+      where: { id: integration.id },
+      data: {
+        sharedDriveId,
+        sharedDriveName: sharedDrive.name ?? null,
+        storageFolderId: storageFolderId ?? null,
+        storageFolderName,
+        lastSyncError: null,
+      },
+    });
+    await this.audit(
+      adminUserId,
+      'DRIVE_SHARED_DRIVE_CONFIGURED',
+      integration.id,
+      AuditResult.SUCCESS,
+      { sharedDriveId, storageFolderId: storageFolderId ?? null },
+    );
+    return this.getIntegration(adminUserId);
+  }
+
+  async listSharedDrives(adminUserId: string) {
+    this.assertEnabled();
+    await this.assertAdmin(adminUserId);
+    const integration = await this.requireConnected(adminUserId, {
+      requireSharedDrive: false,
+    });
+    return this.withAccessToken(integration, (accessToken) =>
+      this.listAllSharedDrives(accessToken),
+    );
+  }
+
+  async disconnect(userId: string): Promise<DriveIntegrationView> {
+    await this.assertAdmin(userId);
+    const connection = await this.database.prisma.googleDriveIntegration.findUnique({
+      where: { singletonKey: 'company' },
       select: { id: true },
     });
-    if (!connection) return this.getConnection(userId);
+    if (!connection) return this.getIntegration(userId);
 
-    const updated = await this.database.prisma.driveConnection.update({
+    const updated = await this.database.prisma.googleDriveIntegration.update({
       where: { id: connection.id },
       data: {
         accessTokenEncrypted: null,
@@ -321,29 +414,29 @@ export class DriveService {
     });
     await this.database.prisma.driveFile.updateMany({
       where: {
-        driveConnectionId: updated.id,
+        driveIntegrationId: updated.id,
         sourceStatus: { not: DriveSourceStatus.UNAVAILABLE },
       },
       data: { sourceStatus: DriveSourceStatus.STALE },
     });
     await this.audit(
       userId,
-      'DRIVE_DISCONNECTED',
+      'DRIVE_INTEGRATION_DISCONNECTED',
       updated.id,
       AuditResult.SUCCESS,
       {},
     );
-    return this.getConnection(userId);
+    return this.getIntegration(userId);
   }
 
-  async sync(userId: string): Promise<DriveConnectionView> {
+  async sync(userId: string): Promise<DriveIntegrationView> {
     this.assertEnabled();
+    await this.assertAdmin(userId);
     const connection = await this.requireConnected(userId);
     const now = new Date();
-    const claimed = await this.database.prisma.driveConnection.updateMany({
+    const claimed = await this.database.prisma.googleDriveIntegration.updateMany({
       where: {
         id: connection.id,
-        userId,
         revokedAt: null,
         syncStatus: { not: DriveSyncStatus.SYNCING },
       },
@@ -367,7 +460,7 @@ export class DriveService {
     let synchronizedFiles = 0;
     try {
       const latest =
-        await this.database.prisma.driveConnection.findUniqueOrThrow({
+        await this.database.prisma.googleDriveIntegration.findUniqueOrThrow({
           where: { id: connection.id },
           select: {
             id: true,
@@ -379,10 +472,11 @@ export class DriveService {
       await this.withAccessToken(latest, async (accessToken) => {
         synchronizedFiles = await this.syncProviderFiles(
           connection.id,
+          connection.sharedDriveId!,
           accessToken,
         );
       });
-      await this.database.prisma.driveConnection.update({
+      await this.database.prisma.googleDriveIntegration.update({
         where: { id: connection.id },
         data: {
           syncStatus: DriveSyncStatus.SYNCED,
@@ -401,7 +495,7 @@ export class DriveService {
       const message = this.safeDriveError(error);
       const authorizationRevoked =
         error instanceof DriveProviderError && error.kind === 'unauthorized';
-      await this.database.prisma.driveConnection.update({
+      await this.database.prisma.googleDriveIntegration.update({
         where: { id: connection.id },
         data: {
           syncStatus: DriveSyncStatus.FAILED,
@@ -412,7 +506,7 @@ export class DriveService {
       if (authorizationRevoked) {
         await this.database.prisma.driveFile.updateMany({
           where: {
-            driveConnectionId: connection.id,
+            driveIntegrationId: connection.id,
             sourceStatus: { not: DriveSourceStatus.UNAVAILABLE },
           },
           data: { sourceStatus: DriveSourceStatus.STALE },
@@ -426,11 +520,11 @@ export class DriveService {
         { error: message },
       );
       this.logger.warn(
-        `Drive metadata sync failed for connection ${connection.id}: ${message}`,
+        `Drive metadata sync failed for company integration ${connection.id}: ${message}`,
       );
       throw new ConflictException(message);
     }
-    return this.getConnection(userId);
+    return this.getIntegration(userId);
   }
 
   async listFiles(
@@ -443,7 +537,7 @@ export class DriveService {
     const query = options.q?.trim();
     const files = await this.database.prisma.driveFile.findMany({
       where: {
-        driveConnectionId: connection.id,
+        driveIntegrationId: connection.id,
         trashed: false,
         sourceStatus: { not: DriveSourceStatus.UNAVAILABLE },
         ...(query ? { name: { contains: query, mode: 'insensitive' } } : {}),
@@ -489,10 +583,10 @@ export class DriveService {
   async createNativeFile(
     userId: string,
     request: { name: string; mimeType: string },
-  ): Promise<{ connectionId: string; file: DriveApiFile }> {
+  ): Promise<{ integrationId: string; file: DriveApiFile }> {
     this.assertEnabled();
     const connection = await this.requireWritableConnected(userId);
-    const target = this.creationTarget.resolve();
+    const target = this.creationTarget.resolve(connection);
     const file = await this.withAccessToken(connection, (accessToken) =>
       this.provider.createNativeFile(accessToken, {
         name: request.name,
@@ -500,7 +594,7 @@ export class DriveService {
         parentFolderId: target.parentFolderId,
       }),
     );
-    return { connectionId: connection.id, file };
+    return { integrationId: connection.id, file };
   }
 
   async createNativeDocument(
@@ -554,7 +648,7 @@ export class DriveService {
       );
     }
 
-    let created: { connectionId: string; file: DriveApiFile } | undefined;
+    let created: { integrationId: string; file: DriveApiFile } | undefined;
     try {
       created = await this.createNativeFile(actorUserId, {
         name: operation.name,
@@ -563,7 +657,7 @@ export class DriveService {
       return await this.registerNativeDocument(
         actorUserId,
         operation,
-        created.connectionId,
+        created.integrationId,
         created.file,
         kind,
         parentId,
@@ -637,8 +731,22 @@ export class DriveService {
     const accessToken = await this.accessToken(connection);
     return operation({
       accessToken,
-      connectionId: connection.id,
-      target: this.creationTarget.resolve(),
+      integrationId: connection.id,
+      target: this.creationTarget.resolve(connection),
+    });
+  }
+
+  /** Uses the company integration for system-owned Phase 4A work. */
+  async withConfiguredWritableDrive<T>(
+    operation: (context: WritableDriveContext) => Promise<T>,
+  ): Promise<T> {
+    this.assertEnabled();
+    const connection = await this.requireWritableConnected('system');
+    const accessToken = await this.accessToken(connection);
+    return operation({
+      accessToken,
+      integrationId: connection.id,
+      target: this.creationTarget.resolve(connection),
     });
   }
 
@@ -727,7 +835,7 @@ export class DriveService {
   private async registerNativeDocument(
     actorUserId: string,
     operation: CreationOperation,
-    connectionId: string,
+    integrationId: string,
     remoteFile: DriveApiFile,
     kind: NativeDocumentKind,
     parentId: string | null,
@@ -752,14 +860,9 @@ export class DriveService {
           throw new ConflictException('A node with this name already exists');
         }
         const storedDriveFile = await transaction.driveFile.upsert({
-          where: {
-            driveConnectionId_driveFileId: {
-              driveConnectionId: connectionId,
-              driveFileId: normalizedRemoteFile.id,
-            },
-          },
-          create: this.fileData(connectionId, normalizedRemoteFile),
-          update: this.fileData(connectionId, normalizedRemoteFile),
+          where: { driveFileId: normalizedRemoteFile.id },
+          create: this.fileData(integrationId, normalizedRemoteFile),
+          update: this.fileData(integrationId, normalizedRemoteFile),
           select: { id: true },
         });
         const logicalName = normalizeNodeName(operation.name);
@@ -934,7 +1037,8 @@ export class DriveService {
   }
 
   private async syncProviderFiles(
-    connectionId: string,
+    integrationId: string,
+    sharedDriveId: string,
     accessToken: string,
   ): Promise<number> {
     let count = 0;
@@ -945,35 +1049,14 @@ export class DriveService {
         pageToken,
         pageSize: DRIVE_PAGE_SIZE,
         includeTrashed: true,
+        driveId: sharedDriveId,
       });
-      count += await this.upsertPage(connectionId, page, seenDriveFileIds);
+      count += await this.upsertPage(integrationId, page, seenDriveFileIds);
       pageToken = page.nextPageToken;
     } while (pageToken);
-
-    let sharedDrivePageToken: string | undefined;
-    do {
-      const drives = await this.provider.listSharedDrives(
-        accessToken,
-        sharedDrivePageToken,
-      );
-      for (const drive of drives.drives) {
-        let drivePageToken: string | undefined;
-        do {
-          const page = await this.provider.listFiles(accessToken, {
-            pageToken: drivePageToken,
-            pageSize: DRIVE_PAGE_SIZE,
-            includeTrashed: true,
-            driveId: drive.id,
-          });
-          count += await this.upsertPage(connectionId, page, seenDriveFileIds);
-          drivePageToken = page.nextPageToken;
-        } while (drivePageToken);
-      }
-      sharedDrivePageToken = drives.nextPageToken;
-    } while (sharedDrivePageToken);
     await this.database.prisma.driveFile.updateMany({
       where: {
-        driveConnectionId: connectionId,
+        driveIntegrationId: integrationId,
         ...(seenDriveFileIds.size > 0
           ? { driveFileId: { notIn: [...seenDriveFileIds] } }
           : {}),
@@ -984,7 +1067,7 @@ export class DriveService {
   }
 
   private async upsertPage(
-    connectionId: string,
+    integrationId: string,
     page: DriveFilePage,
     seenDriveFileIds: Set<string>,
   ): Promise<number> {
@@ -993,14 +1076,9 @@ export class DriveService {
       if (!file.id) continue;
       seenDriveFileIds.add(file.id);
       const stored = await this.database.prisma.driveFile.upsert({
-        where: {
-          driveConnectionId_driveFileId: {
-            driveConnectionId: connectionId,
-            driveFileId: file.id,
-          },
-        },
-        create: this.fileData(connectionId, file),
-        update: this.fileData(connectionId, file),
+        where: { driveFileId: file.id },
+        create: this.fileData(integrationId, file),
+        update: this.fileData(integrationId, file),
       });
       await this.mirrorLinkedNodeName(
         stored.id,
@@ -1040,9 +1118,9 @@ export class DriveService {
     });
   }
 
-  private fileData(connectionId: string, file: DriveApiFile) {
+  private fileData(integrationId: string, file: DriveApiFile) {
     return {
-      driveConnectionId: connectionId,
+      driveIntegrationId: integrationId,
       driveFileId: file.id,
       name: file.name?.trim() || '(unnamed Drive file)',
       mimeType: file.mimeType ?? 'application/octet-stream',
@@ -1164,7 +1242,7 @@ export class DriveService {
       }
       throw error;
     }
-    await this.database.prisma.driveConnection.update({
+    await this.database.prisma.googleDriveIntegration.update({
       where: { id: connection.id },
       data: {
         accessTokenEncrypted: this.crypto.encrypt(tokens.accessToken),
@@ -1177,9 +1255,12 @@ export class DriveService {
     return { accessToken: tokens.accessToken };
   }
 
-  private async requireConnected(userId: string) {
-    const connection = await this.database.prisma.driveConnection.findUnique({
-      where: { userId },
+  private async requireConnected(
+    _userId: string,
+    options: { requireSharedDrive?: boolean } = {},
+  ) {
+    const connection = await this.database.prisma.googleDriveIntegration.findUnique({
+      where: { singletonKey: 'company' },
       select: {
         id: true,
         revokedAt: true,
@@ -1187,6 +1268,8 @@ export class DriveService {
         accessTokenExpiresAt: true,
         refreshTokenEncrypted: true,
         authorizedScopes: true,
+        sharedDriveId: true,
+        storageFolderId: true,
       },
     });
     if (
@@ -1195,6 +1278,11 @@ export class DriveService {
       !connection.refreshTokenEncrypted
     ) {
       throw new NotFoundException('Google Drive is not connected.');
+    }
+    if (options.requireSharedDrive !== false && !connection.sharedDriveId) {
+      throw new ConflictException(
+        'The company Shared Drive must be configured before using Google Drive.',
+      );
     }
     return connection;
   }
@@ -1226,6 +1314,20 @@ export class DriveService {
       !canManageDocuments(user.systemRole)
     ) {
       throw new ForbiddenException('Document-management access is required');
+    }
+  }
+
+  private async assertAdmin(userId: string): Promise<void> {
+    const user = await this.database.prisma.user.findUnique({
+      where: { id: userId },
+      select: { status: true, systemRole: true },
+    });
+    if (
+      !user ||
+      user.status !== UserStatus.ACTIVE ||
+      !canAdministerAccounts(user.systemRole)
+    ) {
+      throw new ForbiddenException('System administrator access is required');
     }
   }
 
@@ -1280,6 +1382,17 @@ export class DriveService {
       return 'Google Drive returned an unexpected error. Try again later.';
     }
     return 'Google Drive metadata sync failed. Previously synchronized metadata was preserved.';
+  }
+
+  private async listAllSharedDrives(accessToken: string) {
+    const drives: Array<{ id: string; name?: string }> = [];
+    let pageToken: string | undefined;
+    do {
+      const page = await this.provider.listSharedDrives(accessToken, pageToken);
+      drives.push(...page.drives);
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return drives;
   }
 
   private normalizeType(mimeType: string | undefined): DriveFileType {

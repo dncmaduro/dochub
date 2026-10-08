@@ -41,7 +41,7 @@ export interface DriveApiFile {
   createdTime?: string;
   trashed?: boolean;
   parents?: string[];
-  driveId?: string;
+  driveId: string;
   sharedWithMeTime?: string;
   ownedByMe?: boolean;
   size?: string;
@@ -71,11 +71,12 @@ export interface DriveListOptions {
   pageSize: number;
   nameQuery?: string;
   includeTrashed: boolean;
-  driveId?: string;
+  driveId: string;
 }
 
 export interface DriveSharedDrive {
   id: string;
+  name?: string;
 }
 
 export interface DriveSharedDrivePage {
@@ -227,12 +228,8 @@ export class GoogleDriveApiProvider implements DriveProvider {
       supportsAllDrives: 'true',
     };
     if (options.pageToken) parameters.pageToken = options.pageToken;
-    if (options.driveId) {
-      parameters.corpora = 'drive';
-      parameters.driveId = options.driveId;
-    } else {
-      parameters.corpora = 'user';
-    }
+    parameters.corpora = 'drive';
+    parameters.driveId = options.driveId;
     const clauses = [
       options.includeTrashed ? '' : 'trashed = false',
       options.nameQuery?.trim()
@@ -250,7 +247,7 @@ export class GoogleDriveApiProvider implements DriveProvider {
   ): Promise<DriveSharedDrivePage> {
     const parameters: Record<string, string> = {
       pageSize: '100',
-      fields: 'nextPageToken,drives(id)',
+      fields: 'nextPageToken,drives(id,name)',
     };
     if (pageToken) parameters.pageToken = pageToken;
     return this.driveRequest<DriveSharedDrivePage>(

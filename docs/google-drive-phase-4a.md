@@ -1,18 +1,22 @@
 # Google Drive Phase 4A: legacy local-file migration
 
+> Phase 4A uses the company `GoogleDriveIntegration` and configured Shared
+> Drive. No production local file migration is part of this architecture
+> refactor.
+
 Phase 4A migrates the current authoritative `FileVersion` for one existing
 `File(backingType=LOCAL)` at a time. It does not delete local bytes, remove
 `FileVersion` rows, remove ONLYOFFICE, or remove `StorageService`.
 
 ## Ownership and safety
 
-Migration uses the explicit `DRIVE_MIGRATION_OWNER_USER_ID` connection. The
-configured user must be an `ACTIVE ADMIN` with the `drive.file` scope. This is
-the current organization ownership strategy. Production should point that
-connection at the configured Shared Drive target; a `MY_DRIVE` target is
-accepted only when the operator consciously chooses that ownership model.
+Migration resolves the singleton `GoogleDriveIntegration`, which must be
+connected with the `drive.file` scope and configured with a Shared Drive
+target. It does not use `DRIVE_MIGRATION_OWNER_USER_ID`; credentials and
+physical storage ownership belong to the company integration. An audit record
+uses the operator when supplied or `SYSTEM` for unattended work.
 
-The command refuses to start a batch when the owner, Drive write grant,
+The command refuses to start a batch when the company integration, Drive write grant,
 configured target, database, or local storage is unavailable. Migration is
 never started by application boot or a Prisma migration.
 

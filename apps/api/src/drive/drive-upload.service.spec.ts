@@ -140,7 +140,7 @@ function harness(
     },
     driveFile: {
       upsert: vi.fn(async ({ where, create, update }: any) => {
-        const key = `${where.driveConnectionId_driveFileId.driveConnectionId}:${where.driveConnectionId_driveFileId.driveFileId}`;
+        const key = where.driveFileId;
         const row = driveFiles.get(key) ?? { id: randomUUID() };
         Object.assign(row, driveFiles.has(key) ? update : create);
         driveFiles.set(key, row);
@@ -167,8 +167,8 @@ function harness(
 
   const context = {
     accessToken: 'server-only-access-token',
-    connectionId,
-    target: { type: 'MY_DRIVE', parentFolderId: PHYSICAL_PARENT },
+    integrationId: connectionId,
+    target: { type: 'SHARED_DRIVE', driveId: 'company-drive', parentFolderId: PHYSICAL_PARENT },
   };
   const drive = {
     assertDriveUploadManager: vi.fn(async () => {

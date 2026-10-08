@@ -1,5 +1,8 @@
 # Google Drive pivot — Phase 2
 
+> The source corpus is the one company Shared Drive, not a per-user Drive
+> connection. See [Google Drive architecture](google-drive-architecture.md).
+
 Phase 2 adds metadata-only Google Drive references to the existing Docs Hub
 logical tree. Drive bytes remain in Google Drive; local uploads and ONLYOFFICE
 continue using the existing `FileVersion` and storage flow.
@@ -52,9 +55,9 @@ Drive-backed references are metadata-only `Node`/`File` links. They do not
 create `PermissionEntry` rows and do not expose the legacy Share/permissions
 UI or APIs. Their visibility is the Docs Hub logical visibility (currently
 general viewer access), while the source file's Google Drive permissions stay
-authoritative in Google Drive. Active accounts can connect and browse their
-own Drive connection; only `ADMIN` and `DOCUMENT_MANAGER` can add, move, or
-remove a Drive reference in Docs Hub.
+authoritative in Google Drive. Active accounts browse the common synchronized
+company corpus; only `ADMIN` and `DOCUMENT_MANAGER` can add, move, or remove a
+Drive reference in Docs Hub.
 
 ## UI behavior
 

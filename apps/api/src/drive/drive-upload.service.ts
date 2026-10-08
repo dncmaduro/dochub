@@ -442,8 +442,13 @@ export class DriveUploadService {
     const name = operation.name;
     const normalizedName = name.trim().normalize('NFC').toLowerCase();
     const storedDriveFileData = this.driveFileData(
-      context.connectionId,
-      { ...remoteFile, name: remoteName, mimeType: operation.mimeType },
+      context.integrationId,
+      {
+        ...remoteFile,
+        name: remoteName,
+        mimeType: operation.mimeType,
+        driveId: remoteFile.driveId ?? context.target.driveId,
+      },
       sizeBytes,
     );
     const result = await this.database.prisma.$transaction(
@@ -474,12 +479,7 @@ export class DriveUploadService {
           throw new ConflictException('A node with this name already exists');
         }
         const storedDriveFile = await transaction.driveFile.upsert({
-          where: {
-            driveConnectionId_driveFileId: {
-              driveConnectionId: context.connectionId,
-              driveFileId: remoteFile.id,
-            },
-          },
+          where: { driveFileId: remoteFile.id },
           create: storedDriveFileData,
           update: storedDriveFileData,
           select: { id: true },
@@ -679,13 +679,13 @@ export class DriveUploadService {
   }
 
   private driveFileData(
-    connectionId: string,
+    integrationId: string,
     file: DriveApiFile,
     sizeBytes: bigint,
   ): Prisma.DriveFileUncheckedCreateInput {
     const mimeType = file.mimeType ?? 'application/octet-stream';
     return {
-      driveConnectionId: connectionId,
+      driveIntegrationId: integrationId,
       driveFileId: file.id,
       name: file.name?.trim() || '(unnamed Drive file)',
       mimeType,

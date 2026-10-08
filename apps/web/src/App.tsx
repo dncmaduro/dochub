@@ -17,7 +17,8 @@ import { useTranslation } from "react-i18next";
 import {
   ApiClient,
   ApiError,
-  type DriveConnection,
+  type DriveIntegration,
+  type SharedDriveOption,
   type DriveFile,
   type Breadcrumb,
   type AdminGroup,
@@ -142,13 +143,12 @@ function currentLocation() {
     documentId: window.location.pathname.match(/^\/document\/([0-9a-f-]+)$/i)?.[1] ?? null,
   };
 }
-function currentAdminTab(): "users" | "groups" {
-  return new URLSearchParams(window.location.search).get("tab") === "groups"
-    ? "groups"
-    : "users";
+function currentAdminTab(): "users" | "groups" | "drive" {
+  const tab = new URLSearchParams(window.location.search).get("tab");
+  return tab === "groups" || tab === "drive" ? tab : "users";
 }
-function navigateAdmin(tab: "users" | "groups" = "users") {
-  const path = `/admin${tab === "users" ? "" : "?tab=groups"}`;
+function navigateAdmin(tab: "users" | "groups" | "drive" = "users") {
+  const path = `/admin${tab === "users" ? "" : `?tab=${tab}`}`;
   if (`${window.location.pathname}${window.location.search}` !== path) {
     window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
@@ -157,12 +157,6 @@ function navigateAdmin(tab: "users" | "groups" = "users") {
 function navigateProfile() {
   if (window.location.pathname !== "/profile") {
     window.history.pushState({}, "", "/profile");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  }
-}
-function navigateGoogleDrive() {
-  if (window.location.pathname !== "/drive/google") {
-    window.history.pushState({}, "", "/drive/google");
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
@@ -781,15 +775,82 @@ function AccessDenied() {
   return <div className="content-state"><h1>{t("admin.accessDenied")}</h1><p>{t("admin.askAdministrator")}</p></div>;
 }
 
-function AdminApp({ tab }: { tab: "users" | "groups" }) {
+function AdminApp({ tab }: { tab: "users" | "groups" | "drive" }) {
   return <><PageHeader title={<h1 className="page-title">{t("admin.title")}</h1>} /><section className="admin-content" aria-label={t("admin.title")}>
     <div className="admin-intro"><h2>{t("admin.title")}</h2><p>{t("admin.description")}</p></div>
     <div className="admin-tabs" role="tablist" aria-label={t("admin.sections")}>
       <button type="button" role="tab" aria-selected={tab === "users"} className={tab === "users" ? "is-active" : ""} onClick={() => navigateAdmin("users")}>{t("admin.users")}</button>
       <button type="button" role="tab" aria-selected={tab === "groups"} className={tab === "groups" ? "is-active" : ""} onClick={() => navigateAdmin("groups")}>{t("admin.groups")}</button>
+      <button type="button" role="tab" aria-selected={tab === "drive"} className={tab === "drive" ? "is-active" : ""} onClick={() => navigateAdmin("drive")}>{t("admin.drive")}</button>
     </div>
-    <div className="admin-tab-content">{tab === "users" ? <AdminUsers /> : <AdminGroups />}</div>
+    <div className="admin-tab-content">{tab === "users" ? <AdminUsers /> : tab === "groups" ? <AdminGroups /> : <AdminDriveIntegration />}</div>
   </section></>;
+}
+
+function AdminDriveIntegration() {
+  const [connection, setConnection] = useState<DriveIntegration | null>(null);
+  const [sharedDrives, setSharedDrives] = useState<SharedDriveOption[]>([]);
+  const [selectedDriveId, setSelectedDriveId] = useState("");
+  const [storageFolderId, setStorageFolderId] = useState("");
+  const [busy, setBusy] = useState<"load" | "connect" | "save" | "sync" | "disconnect" | null>("load");
+  const [notice, setNotice] = useState<Notice>(null);
+  const load = useCallback(async () => {
+    try {
+      const state = await api.driveIntegration();
+      setConnection(state);
+      setSelectedDriveId(state.sharedDriveId ?? "");
+      setStorageFolderId(state.storageFolderId ?? "");
+    } catch (error) {
+      setNotice({ tone: "error", message: displayError(error) });
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+  async function connect() {
+    setBusy("connect");
+    try { await api.startDriveIntegration("WRITE"); } catch (error) { setBusy(null); setNotice({ tone: "error", message: displayError(error) }); }
+  }
+  async function loadSharedDrives() {
+    setBusy("load");
+    try { setSharedDrives(await api.listCompanySharedDrives()); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
+  }
+  async function save() {
+    if (!selectedDriveId) return;
+    setBusy("save");
+    try { setConnection(await api.configureCompanySharedDrive(selectedDriveId, storageFolderId)); setNotice({ tone: "success", message: t("admin.driveSaved") }); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
+  }
+  async function sync() {
+    setBusy("sync");
+    try { setConnection(await api.syncDrive()); setNotice({ tone: "success", message: t("drive.syncComplete") }); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
+  }
+  async function disconnect() {
+    if (!window.confirm(t("drive.disconnectConfirm"))) return;
+    setBusy("disconnect");
+    try { setConnection(await api.disconnectDrive()); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
+  }
+  return <>
+    <Toast notice={notice} onDismiss={() => setNotice(null)} />
+    <div className="admin-section-header"><div><h3>{t("admin.drive")}</h3><p>{t("admin.driveDescription")}</p></div></div>
+    <section className="integration-section" aria-label={t("admin.drive")}>
+      {busy === "load" && !connection ? <p className="integration-state">{t("common.loading")}</p> : <>
+        <dl className="profile-details">
+          <div><dt>{t("drive.status")}</dt><dd>{connection?.connected ? t("drive.connected") : t("drive.notConnected")}</dd></div>
+          <div><dt>{t("drive.sharedDrive")}</dt><dd>{connection?.sharedDriveName ?? connection?.sharedDriveId ?? t("drive.notConfigured")}</dd></div>
+          <div><dt>{t("drive.storageFolder")}</dt><dd>{connection?.storageFolderName ?? connection?.storageFolderId ?? t("drive.sharedDriveRoot")}</dd></div>
+          <div><dt>{t("drive.lastSynced")}</dt><dd>{connection?.lastSyncCompletedAt ? formatDate(connection.lastSyncCompletedAt) : t("drive.neverSynced")}</dd></div>
+        </dl>
+        <div className="integration-actions">
+          {!connection?.connected && <button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void connect()}>{busy === "connect" ? t("drive.connecting") : t("drive.connectCompany")}</button>}
+          {connection?.connected && <><button type="button" className="button" disabled={busy !== null} onClick={() => void loadSharedDrives()}>{t("drive.chooseSharedDrive")}</button><button type="button" className="button button-primary" disabled={busy !== null || !connection.configured} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></>}
+        </div>
+        {sharedDrives.length > 0 && <div className="admin-inline-form"><select value={selectedDriveId} onChange={(event) => setSelectedDriveId(event.target.value)} aria-label={t("drive.chooseSharedDrive")}><option value="">{t("drive.chooseSharedDrive")}</option>{sharedDrives.map((drive) => <option key={drive.id} value={drive.id}>{drive.name ?? drive.id}</option>)}</select><input value={storageFolderId} onChange={(event) => setStorageFolderId(event.target.value)} placeholder={t("drive.storageFolderId")} aria-label={t("drive.storageFolderId")} /><button type="button" className="button button-primary" disabled={busy !== null || !selectedDriveId} onClick={() => void save()}>{busy === "save" ? t("common.saving") : t("common.save")}</button></div>}
+      </>}
+    </section>
+  </>;
 }
 
 function AdminUsers() {
@@ -897,59 +958,7 @@ function AdminGroups() {
 }
 
 function ProfileApp({ profile, onSignOut }: { profile: CurrentUser; onSignOut: () => void }) {
-  const [connection, setConnection] = useState<DriveConnection | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<"connect" | "write" | "sync" | "disconnect" | null>(null);
-  const canManage = profile.status === "ACTIVE" && canManageDocuments(profile.systemRole);
-  const [notice, setNotice] = useState<Notice>(() => new URLSearchParams(window.location.search).get("drive") === "error" ? { tone: "error", message: t("drive.connectionFailed") } : null);
-  useEffect(() => {
-    void api.driveConnection().then(setConnection).catch((error) => {
-      setNotice({ tone: "error", message: displayError(error) });
-    }).finally(() => setLoading(false));
-  }, []);
-  async function connect() {
-    setBusy("connect");
-    try {
-      await api.startDriveConnection();
-    } catch (error) {
-      setBusy(null);
-      setNotice({ tone: "error", message: displayError(error) });
-    }
-  }
-  async function sync() {
-    setBusy("sync");
-    try {
-      setConnection(await api.syncDrive());
-      setNotice({ tone: "success", message: t("drive.syncComplete") });
-    } catch (error) {
-      setNotice({ tone: "error", message: displayError(error) });
-      setConnection(await api.driveConnection().catch(() => connection));
-    } finally {
-      setBusy(null);
-    }
-  }
-  async function enableWrite() {
-    setBusy("write");
-    try {
-      await api.startDriveConnection("WRITE");
-    } catch (error) {
-      setBusy(null);
-      setNotice({ tone: "error", message: displayError(error) });
-    }
-  }
-  async function disconnect() {
-    if (!window.confirm(t("drive.disconnectConfirm"))) return;
-    setBusy("disconnect");
-    try {
-      setConnection(await api.disconnectDrive());
-    } catch (error) {
-      setNotice({ tone: "error", message: displayError(error) });
-    } finally {
-      setBusy(null);
-    }
-  }
   return <>
-    <Toast notice={notice} onDismiss={() => setNotice(null)} />
     <PageHeader title={<h1 className="page-title">{t("profile.title")}</h1>} />
     <section className="profile-content" aria-label={t("profile.title")}>
       <div className="profile-heading"><h2>{t("profile.account")}</h2><p>{t("profile.description")}</p></div>
@@ -960,18 +969,6 @@ function ProfileApp({ profile, onSignOut }: { profile: CurrentUser; onSignOut: (
         <div><dt>{t("common.status")}</dt><dd>{userStatusLabel(profile.status)}</dd></div>
         <div><dt>{t("profile.signInMethod")}</dt><dd>{t("profile.googleStatus", { status: profile.googleConnected ? t("profile.connected") : t("profile.notConnected") })}</dd></div>
       </dl>
-      <section className="integration-section" aria-labelledby="drive-connection-title">
-        <div className="profile-heading"><h2 id="drive-connection-title">{t("drive.title")}</h2><p>{t("drive.description")}</p></div>
-        {loading ? <p className="integration-state">{t("common.loading")}</p> : !connection?.connected ? <div className="integration-state"><p>{t("drive.notConnected")}</p><button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void connect()}>{busy === "connect" ? t("drive.connecting") : t("drive.connect")}</button></div> : <div className="integration-connected">
-          <dl className="profile-details">
-            <div><dt>{t("drive.account")}</dt><dd>{connection.googleEmail ?? connection.googleAccountId ?? t("drive.connected")}</dd></div>
-            <div><dt>{t("drive.access")}</dt><dd>{connection.canWrite ? t("drive.writeEnabled") : t("drive.readOnly")}</dd></div>
-            <div><dt>{t("drive.lastSynced")}</dt><dd>{connection.lastSyncCompletedAt ? formatDate(connection.lastSyncCompletedAt) : t("drive.neverSynced")}</dd></div>
-            {connection.lastSyncError && <div><dt>{t("drive.lastError")}</dt><dd>{connection.lastSyncError}</dd></div>}
-          </dl>
-          <div className="integration-actions"><button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button>{!connection.canWrite && canManage && <button type="button" className="button" disabled={busy !== null} onClick={() => void enableWrite()}>{busy === "write" ? t("drive.enablingWrite") : t("drive.enableWrite")}</button>}<button type="button" className="button" disabled={busy !== null} onClick={navigateGoogleDrive}>{t("drive.browse")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></div>
-        </div>}
-      </section>
       <button type="button" className="button" onClick={onSignOut}>{t("account.signOut")}</button>
     </section>
   </>;
@@ -994,7 +991,7 @@ function driveSourceStatusLabel(status: "CONNECTED" | "STALE" | "UNAVAILABLE") {
 }
 
 function GoogleDriveApp({ canManageDocuments: canManage }: { canManageDocuments: boolean }) {
-  const [connection, setConnection] = useState<DriveConnection | null>(null);
+  const [connection, setConnection] = useState<DriveIntegration | null>(null);
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -1031,9 +1028,9 @@ function GoogleDriveApp({ canManageDocuments: canManage }: { canManageDocuments:
     }
   }
   useEffect(() => {
-    void api.driveConnection().then((state) => {
+    void api.driveIntegration().then((state) => {
       setConnection(state);
-      if (state.connected) {
+      if (state.connected && state.configured) {
         void load();
         return;
       }
@@ -1043,9 +1040,9 @@ function GoogleDriveApp({ canManageDocuments: canManage }: { canManageDocuments:
       setLoading(false);
     });
   }, [load]);
-  if (!connection?.connected && !loading) return <>
+  if ((!connection?.connected || !connection.configured) && !loading) return <>
     <PageHeader title={<h1 className="page-title">{t("drive.browserTitle")}</h1>} />
-    <section className="integration-empty"><h2>{t("drive.notConnected")}</h2><p>{t("drive.connectFromProfile")}</p><button type="button" className="button" onClick={navigateProfile}>{t("account.profile")}</button></section>
+    <section className="integration-empty"><h2>{t("drive.notConnected")}</h2><p>{t("drive.adminConfigures")}</p></section>
   </>;
   return <>
     <Toast notice={error} onDismiss={() => setError(null)} />
@@ -1450,10 +1447,9 @@ function DriveApp({
   const [removeDriveNode, setRemoveDriveNode] = useState<Node | null>(null);
   const [versionNode, setVersionNode] = useState<Node | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
-  const [driveConnection, setDriveConnection] = useState<DriveConnection | null>(null);
-  const [driveConnectionLoading, setDriveConnectionLoading] = useState(true);
+  const [driveIntegration, setDriveIntegration] = useState<DriveIntegration | null>(null);
+  const [driveIntegrationLoading, setDriveIntegrationLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [driveWriteAuthorizationRequired, setDriveWriteAuthorizationRequired] = useState(false);
   const uploadInput = useRef<HTMLInputElement>(null);
   const loadController = useRef<AbortController | null>(null);
   const load = useCallback(async (id: string | null) => {
@@ -1489,10 +1485,10 @@ function DriveApp({
   }, []);
   useEffect(() => {
     let active = true;
-    void api.driveConnection().then(
-      (connection) => active && setDriveConnection(connection),
-      () => active && setDriveConnection(null),
-    ).finally(() => active && setDriveConnectionLoading(false));
+    void api.driveIntegration().then(
+      (integration) => active && setDriveIntegration(integration),
+      () => active && setDriveIntegration(null),
+    ).finally(() => active && setDriveIntegrationLoading(false));
     return () => { active = false; };
   }, []);
   useEffect(() => {
@@ -1539,28 +1535,14 @@ function DriveApp({
       setNotice({ tone: "info", message: t("files.uploadingFile", { name: file.name }) });
       const result = await api.upload(file, folderId, crypto.randomUUID());
       await load(folderId);
-      setDriveWriteAuthorizationRequired(false);
       setNotice({
         tone: "success",
         message: t("files.uploaded", { name: result.node.name }),
       });
     } catch (requestError) {
-      if (
-        requestError instanceof ApiError &&
-        requestError.code === "GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED"
-      ) {
-        setDriveWriteAuthorizationRequired(true);
-      }
       setNotice({ tone: "error", message: displayError(requestError) });
     } finally {
       setUploading(false);
-    }
-  }
-  async function enableDriveUploads() {
-    try {
-      await api.startDriveConnection("WRITE");
-    } catch (requestError) {
-      setNotice({ tone: "error", message: displayError(requestError) });
     }
   }
   function changeSort(next: DriveSort) {
@@ -1622,21 +1604,11 @@ function DriveApp({
             </button>
             {canManageDocuments ? (
               <>
-                {!driveConnectionLoading &&
-                  (!driveConnection?.canWrite || driveWriteAuthorizationRequired) && (
-                    <button
-                      type="button"
-                      className="button"
-                      onClick={() => void enableDriveUploads()}
-                    >
-                      {t("drive.enableWrite")}
-                    </button>
-                  )}
                 <button
                   type="button"
                   className="button button-primary"
                   onClick={() => uploadInput.current?.click()}
-                  disabled={uploading || driveConnectionLoading}
+                  disabled={uploading || driveIntegrationLoading || !driveIntegration?.connected || !driveIntegration.configured || !driveIntegration.canWrite}
                 >
                   <Icon name="upload" />
                   {uploading ? t("files.uploading") : t("files.upload")}
@@ -1661,7 +1633,7 @@ function DriveApp({
             <EmptyState
               canCreateHere={canCreateHere}
               canUpload={canManageDocuments}
-              uploadDisabled={uploading || driveConnectionLoading}
+              uploadDisabled={uploading || driveIntegrationLoading || !driveIntegration?.connected || !driveIntegration.configured || !driveIntegration.canWrite}
               onFolder={onCreateFolder}
               onUpload={() => uploadInput.current?.click()}
             />

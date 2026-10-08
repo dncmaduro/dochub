@@ -4,10 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DriveFileMigrationStatus,
   FileBackingType,
-  SystemRole,
-  UserStatus,
 } from '@dochub/database';
-import { ConflictException } from '@nestjs/common';
 import { DriveFileMigrationService } from './drive-file-migration.service.js';
 
 const bytes = Buffer.from('%PDF-1.7 legacy content\n');
@@ -26,7 +23,6 @@ function harness(
   const versionId = randomUUID();
   const connectionId = randomUUID();
   const driveRecordId = randomUUID();
-  const ownerId = randomUUID();
   const files = new Map<string, any>();
   const migrations = new Map<string, any>();
   const audits: any[] = [];
@@ -49,12 +45,6 @@ function harness(
     },
   };
   files.set(fileId, source);
-  const connection = {
-    id: connectionId,
-    revokedAt: null,
-    refreshTokenEncrypted: 'encrypted-refresh-token',
-    authorizedScopes: ['https://www.googleapis.com/auth/drive.file'],
-  };
   const prisma: any = {
     file: {
       findUnique: vi.fn(async ({ where }: any) => files.get(where.id) ?? null),
@@ -107,7 +97,7 @@ function harness(
           ...data,
           status: DriveFileMigrationStatus.PENDING,
           attempts: 0,
-          driveConnectionId: null,
+          driveIntegrationId: null,
           driveFileRecordId: null,
           remoteDriveFileId: null,
           leaseToken: null,
@@ -171,13 +161,6 @@ function harness(
       })),
     },
     auditLog: { create: vi.fn(async ({ data }: any) => audits.push(data)) },
-    user: {
-      findUnique: vi.fn(async () => ({
-        status: UserStatus.ACTIVE,
-        systemRole: SystemRole.ADMIN,
-        driveConnection: connection,
-      })),
-    },
   };
   prisma.$transaction = vi.fn(async (callback: (tx: any) => Promise<unknown>) =>
     callback(prisma),
@@ -220,16 +203,17 @@ function harness(
     mimeType: 'application/pdf',
     size: String(bytes.length),
     md5Checksum: sourceMd5,
+    driveId: 'company-drive',
     webViewLink: 'https://drive.google.com/file/d/remote-file-1/view',
     parents: ['physical-target'],
   };
   const drive = {
-    withWritableDrive: vi.fn(
-      async (_owner: string, callback: (context: any) => Promise<unknown>) =>
+    withConfiguredWritableDrive: vi.fn(
+      async (callback: (context: any) => Promise<unknown>) =>
         callback({
           accessToken: 'server',
-          connectionId,
-          target: { type: 'MY_DRIVE', parentFolderId: 'physical-target' },
+          integrationId: connectionId,
+          target: { type: 'SHARED_DRIVE', driveId: 'company-drive', parentFolderId: 'physical-target' },
         }),
     ),
     uploadBinaryWithContext: vi.fn(
@@ -252,11 +236,6 @@ function harness(
     { prisma } as any,
     drive as any,
     storage as any,
-    {
-      enabled: true,
-      migrationOwnerUserId: ownerId,
-      creationTarget: { type: 'MY_DRIVE', parentFolderId: 'physical-target' },
-    } as any,
   );
   return {
     service,
@@ -268,7 +247,6 @@ function harness(
     audits,
     fileId,
     versionId,
-    ownerId,
     driveRecordId,
   };
 }
@@ -303,9 +281,9 @@ describe('DriveFileMigrationService', () => {
 
   it('uploads, verifies, and cuts over the same File without creating a Node', async () => {
     const h = harness();
-    const status = await h.service.migrateFile(h.fileId, h.ownerId);
+    const status = await h.service.migrateFile(h.fileId);
     expect(status).toBe(DriveFileMigrationStatus.COMPLETED);
-    expect(await h.service.migrateFile(h.fileId, h.ownerId)).toBe(
+    expect(await h.service.migrateFile(h.fileId)).toBe(
       DriveFileMigrationStatus.COMPLETED,
     );
     expect(h.drive.uploadBinaryWithContext).toHaveBeenCalledTimes(1);
@@ -320,7 +298,7 @@ describe('DriveFileMigrationService', () => {
     expect(h.files.get(h.fileId).node.parentId).toBeNull();
     expect(h.drive.uploadBinaryWithContext).toHaveBeenCalledWith(
       expect.objectContaining({
-        target: { type: 'MY_DRIVE', parentFolderId: 'physical-target' },
+        target: { type: 'SHARED_DRIVE', driveId: 'company-drive', parentFolderId: 'physical-target' },
       }),
       'legacy.pdf',
       'application/pdf',
@@ -341,14 +319,14 @@ describe('DriveFileMigrationService', () => {
       sourceSizeBytes: BigInt(bytes.length),
       status: DriveFileMigrationStatus.UPLOADED,
       attempts: 1,
-      driveConnectionId: null,
+      driveIntegrationId: null,
       driveFileRecordId: null,
       remoteDriveFileId: 'remote-file-1',
       leaseToken: null,
       leaseExpiresAt: null,
     };
     h.migrations.set(`${h.fileId}:${h.versionId}`, migration);
-    expect(await h.service.migrateFile(h.fileId, h.ownerId)).toBe(
+    expect(await h.service.migrateFile(h.fileId)).toBe(
       DriveFileMigrationStatus.COMPLETED,
     );
     expect(h.drive.uploadBinaryWithContext).not.toHaveBeenCalled();
@@ -357,7 +335,7 @@ describe('DriveFileMigrationService', () => {
 
   it('refuses cutover when the local current version changes during upload', async () => {
     const h = harness({ stale: true });
-    expect(await h.service.migrateFile(h.fileId, h.ownerId)).toBe(
+    expect(await h.service.migrateFile(h.fileId)).toBe(
       DriveFileMigrationStatus.STALE,
     );
     expect(h.files.get(h.fileId).backingType).toBe(FileBackingType.LOCAL);
@@ -366,12 +344,12 @@ describe('DriveFileMigrationService', () => {
   it('blocks active ONLYOFFICE editing and missing source bytes', async () => {
     const active = harness({ activeEditor: true });
     expect(
-      await active.service.migrateFile(active.fileId, active.ownerId),
+      await active.service.migrateFile(active.fileId),
     ).toBe(DriveFileMigrationStatus.BLOCKED);
     expect(active.drive.uploadBinaryWithContext).not.toHaveBeenCalled();
     const missing = harness({ missingBytes: true });
     expect(
-      await missing.service.migrateFile(missing.fileId, missing.ownerId),
+      await missing.service.migrateFile(missing.fileId),
     ).toBe(DriveFileMigrationStatus.BLOCKED);
     expect(missing.drive.uploadBinaryWithContext).not.toHaveBeenCalled();
   });
@@ -379,7 +357,7 @@ describe('DriveFileMigrationService', () => {
   it('blocks a file with no authoritative current version', async () => {
     const h = harness();
     h.files.get(h.fileId).currentVersionId = null;
-    expect(await h.service.migrateFile(h.fileId, h.ownerId)).toBe(
+    expect(await h.service.migrateFile(h.fileId)).toBe(
       DriveFileMigrationStatus.BLOCKED,
     );
     expect(h.drive.uploadBinaryWithContext).not.toHaveBeenCalled();
@@ -389,7 +367,7 @@ describe('DriveFileMigrationService', () => {
     const h = harness();
     h.files.get(h.fileId).backingType = FileBackingType.GOOGLE_DRIVE;
     h.files.get(h.fileId).driveFileId = h.driveRecordId;
-    expect(await h.service.migrateFile(h.fileId, h.ownerId)).toBe(
+    expect(await h.service.migrateFile(h.fileId)).toBe(
       DriveFileMigrationStatus.COMPLETED,
     );
     expect(h.drive.uploadBinaryWithContext).not.toHaveBeenCalled();
@@ -397,7 +375,7 @@ describe('DriveFileMigrationService', () => {
 
   it('rolls back to LOCAL after verifying the preserved current bytes', async () => {
     const h = harness();
-    await h.service.migrateFile(h.fileId, h.ownerId);
+    await h.service.migrateFile(h.fileId);
     expect(await h.service.rollback(h.fileId)).toBe(
       DriveFileMigrationStatus.ROLLED_BACK,
     );
@@ -408,15 +386,9 @@ describe('DriveFileMigrationService', () => {
     expect(h.drive.deleteBinaryWithContext).not.toHaveBeenCalled();
   });
 
-  it('requires the configured migration owner to be an active admin with write scope', async () => {
+  it('uses the company integration without a migration owner user id', async () => {
     const h = harness();
-    h.prisma.user.findUnique.mockResolvedValueOnce({
-      status: UserStatus.ACTIVE,
-      systemRole: SystemRole.VIEWER,
-      driveConnection: null,
-    });
-    await expect(h.service.migrateFile(h.fileId)).rejects.toThrow(
-      ConflictException,
-    );
+    await h.service.migrateFile(h.fileId);
+    expect(h.drive.withConfiguredWritableDrive).toHaveBeenCalled();
   });
 });

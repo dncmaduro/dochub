@@ -12,10 +12,10 @@ function harness() {
   const operations = new Map<string, any>();
   const nodes = new Map<string, any>();
   const auditLog: any[] = [];
-  const user = { id: userId, status: UserStatus.ACTIVE, systemRole: 'DOCUMENT_MANAGER' };
+  const user = { id: userId, status: UserStatus.ACTIVE, systemRole: 'ADMIN' };
   const connection = {
     id: connectionId,
-    userId,
+    singletonKey: 'company',
     googleAccountId: 'google-account',
     googleEmail: 'drive@example.test',
     accessTokenEncrypted: 'enc:access',
@@ -29,14 +29,18 @@ function harness() {
     lastSyncError: null,
     revokedAt: null,
     authorizedScopes: [GOOGLE_DRIVE_FILE_SCOPE],
+    sharedDriveId: 'company-drive',
+    sharedDriveName: 'Company Shared Drive',
+    storageFolderId: null,
+    storageFolderName: null,
   };
-  connections.set(userId, connection);
+  connections.set('company', connection);
 
   const prisma = {
     user: { findUnique: vi.fn(async () => user) },
-    driveConnection: {
+    googleDriveIntegration: {
       findUnique: vi.fn(async (args: any) => {
-        const row = args.where.userId ? connections.get(args.where.userId) : [...connections.values()].find((item) => item.id === args.where.id);
+        const row = args.where.singletonKey ? connections.get('company') : [...connections.values()].find((item) => item.id === args.where.id);
         if (!row || !args.select) return row ?? null;
         return Object.fromEntries(Object.keys(args.select).filter((key) => args.select[key]).map((key) => [key, row[key]]));
       }),
@@ -57,15 +61,16 @@ function harness() {
         Object.assign(row, args.data, { updatedAt: new Date() });
         return args.select?.id ? { id: row.id } : row;
       }),
-      create: vi.fn(async (args: any) => {
-        const row = { id: connectionId, ...args.data, updatedAt: new Date() };
-        connections.set(row.userId, row);
+      upsert: vi.fn(async (args: any) => {
+        const row = connections.get('company') ?? { id: connectionId };
+        Object.assign(row, connections.has('company') ? args.update : args.create, { updatedAt: new Date() });
+        connections.set('company', row);
         return { id: row.id };
       }),
     },
     driveFile: {
       upsert: vi.fn(async (args: any) => {
-        const key = `${args.where.driveConnectionId_driveFileId.driveConnectionId}:${args.where.driveConnectionId_driveFileId.driveFileId}`;
+        const key = args.where.driveFileId;
         const row = files.get(key) ?? { id: randomUUID() };
         Object.assign(row, files.has(key) ? args.update : args.create);
         files.set(key, row);
@@ -74,7 +79,7 @@ function harness() {
       updateMany: vi.fn(async (args: any) => {
         let count = 0;
         for (const row of files.values()) {
-          if (row.driveConnectionId !== args.where.driveConnectionId) continue;
+          if (row.driveIntegrationId !== args.where.driveIntegrationId) continue;
           if (args.where.trashed !== undefined && row.trashed !== args.where.trashed) continue;
           if (args.where.driveFileId?.notIn?.includes(row.driveFileId)) continue;
           Object.assign(row, args.data);
@@ -171,30 +176,36 @@ function harness() {
     encrypt: vi.fn((value: string) => `enc:${value}`),
     decrypt: vi.fn((value: string) => value.replace(/^enc:/, '')),
   };
-  const target = { resolve: vi.fn(() => ({ type: 'MY_DRIVE' })) };
+  const target = {
+    resolve: vi.fn(() => ({
+      type: 'SHARED_DRIVE',
+      driveId: 'company-drive',
+      parentFolderId: 'company-drive',
+    })),
+  };
   const authorization = { assertDocumentManager: vi.fn(async () => undefined) };
   const service = new DriveService(
     { prisma } as any,
     crypto as any,
     state as any,
     provider,
-    { enabled: true, creationTarget: { type: 'MY_DRIVE' } } as any,
+    { enabled: true } as any,
     target as any,
     authorization as any,
   );
-  return { service, userId, connection, connections, files, operations, nodes, auditLog, provider, state, crypto, prisma, target, authorization };
+  return { service, userId, user, connection, connections, files, operations, nodes, auditLog, provider, state, crypto, prisma, target, authorization };
 }
 
 describe('DriveService', () => {
   it('binds a completed Drive OAuth connection to the authenticated user and omits tokens from its view', async () => {
     const h = harness();
-    h.connections.delete(h.userId);
+    h.connections.delete('company');
     await h.service.completeAuthorization({ cookieValue: 'cookie', state: 'state', code: 'code' });
-    const view = await h.service.getConnection(h.userId);
+    const view = await h.service.getIntegration(h.userId);
     expect(view).toMatchObject({ connected: true, googleEmail: 'drive@example.test' });
     expect(view).not.toHaveProperty('accessTokenEncrypted');
     expect(view).not.toHaveProperty('refreshTokenEncrypted');
-    expect(h.auditLog.some((entry) => entry.action === 'DRIVE_CONNECTED' && entry.actorId === h.userId)).toBe(true);
+    expect(h.auditLog.some((entry) => entry.action === 'DRIVE_INTEGRATION_CONNECTED' && entry.actorId === h.userId)).toBe(true);
   });
 
   it('syncs paginated metadata idempotently, keeps same-name files distinct, and maps Workspace MIME types', async () => {
@@ -212,6 +223,9 @@ describe('DriveService', () => {
     vi.mocked(h.provider.listFiles).mockImplementation(async () => pages.shift() ?? { files: [] });
     await h.service.sync(h.userId);
     expect(h.files.size).toBe(4);
+    expect(vi.mocked(h.provider.listFiles).mock.calls[0]?.[1]).toMatchObject({
+      driveId: 'company-drive',
+    });
     const first = [...h.files.values()].find((file) => file.driveFileId === 'doc-1');
     expect(first.normalizedType).toBe(DriveFileType.GOOGLE_DOC);
     expect([...h.files.values()].filter((file) => file.name === 'Plan')).toHaveLength(2);
@@ -249,6 +263,14 @@ describe('DriveService', () => {
     ]);
   });
 
+  it('allows only an active administrator to start the company integration flow', async () => {
+    const h = harness();
+    h.user.systemRole = 'VIEWER';
+    await expect(h.service.beginAuthorization(h.userId, 'WRITE')).rejects.toThrow(
+      /administrator/i,
+    );
+  });
+
   it('creates a native document with localized naming, Drive metadata, a logical node, and an audit event', async () => {
     const h = harness();
     const result = await h.service.createNativeDocument(
@@ -264,7 +286,7 @@ describe('DriveService', () => {
     expect(h.provider.createNativeFile).toHaveBeenCalledWith('access', {
       name: 'Tài liệu chưa đặt tên',
       mimeType: 'application/vnd.google-apps.document',
-      parentFolderId: undefined,
+      parentFolderId: 'company-drive',
     });
     expect(h.operations.get('create-document-1')).toMatchObject({
       status: DriveCreationOperationStatus.SUCCEEDED,
@@ -288,7 +310,7 @@ describe('DriveService', () => {
   it('keeps the logical parent separate from the configured physical Drive parent', async () => {
     const h = harness();
     const logicalParentId = randomUUID();
-    h.target.resolve.mockReturnValue({ type: 'MY_DRIVE', parentFolderId: 'physical-target' });
+    h.target.resolve.mockReturnValue({ type: 'SHARED_DRIVE', driveId: 'company-drive', parentFolderId: 'physical-target' });
     h.prisma.node.findFirst.mockImplementation(async (args: any) =>
       args.where.type === 'FOLDER' ? { id: logicalParentId } : null,
     );

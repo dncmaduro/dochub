@@ -18,17 +18,13 @@ import {
   EditorMode,
   EditorSessionStatus,
   Prisma,
-  SystemRole,
-  UserStatus,
 } from '@dochub/database';
 import type { StorageService } from '@dochub/storage';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
 import { DatabaseService } from '../database/database.service.js';
-import { DRIVE_CONFIG, type DriveConfig } from './drive.config.js';
 import { DriveService, type WritableDriveContext } from './drive.service.js';
 import {
   DriveProviderError,
-  GOOGLE_DRIVE_FILE_SCOPE,
   type DriveApiFile,
 } from './google-drive.provider.js';
 
@@ -107,7 +103,7 @@ interface ClaimedMigration {
   sourceSha256: string;
   sourceSizeBytes: bigint;
   status: DriveFileMigrationStatus;
-  driveConnectionId: string | null;
+  driveIntegrationId: string | null;
   driveFileRecordId: string | null;
   remoteDriveFileId: string | null;
   leaseToken: string;
@@ -125,7 +121,6 @@ export class DriveFileMigrationService {
     private readonly database: DatabaseService,
     private readonly drive: DriveService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
-    @Inject(DRIVE_CONFIG) private readonly config: DriveConfig,
   ) {}
 
   async inventory(
@@ -306,20 +301,17 @@ export class DriveFileMigrationService {
   async migrate(
     filters: DriveMigrationFilters = {},
   ): Promise<MigrationStatusSummary> {
-    const ownerUserId = await this.requireMigrationOwner();
     const inventory = await this.inventory(filters);
     for (const item of inventory.items) {
       if (item.eligibility !== 'ELIGIBLE') continue;
-      await this.migrateFile(item.fileId, ownerUserId);
+      await this.migrateFile(item.fileId);
     }
     return this.status();
   }
 
   async migrateFile(
     fileId: string,
-    ownerUserId?: string,
   ): Promise<DriveFileMigrationStatus> {
-    const owner = ownerUserId ?? (await this.requireMigrationOwner());
     const source = await this.loadSource(fileId);
     if (source.backingType !== FileBackingType.LOCAL) {
       return DriveFileMigrationStatus.COMPLETED;
@@ -382,13 +374,13 @@ export class DriveFileMigrationService {
     let freshRemoteId: string | null = null;
     let localMd5: string | null = null;
     try {
-      return await this.drive.withWritableDrive(owner, async (context) => {
+      return await this.drive.withConfiguredWritableDrive(async (context) => {
         if (
-          claim.driveConnectionId &&
-          claim.driveConnectionId !== context.connectionId
+          claim.driveIntegrationId &&
+          claim.driveIntegrationId !== context.integrationId
         ) {
           throw new ConflictException(
-            'Migration is bound to a different Drive connection',
+            'Migration is bound to a different company Drive integration',
           );
         }
         let remote: DriveApiFile;
@@ -434,7 +426,7 @@ export class DriveFileMigrationService {
             where: { id: claim.id },
             data: {
               status: DriveFileMigrationStatus.UPLOADED,
-              driveConnectionId: context.connectionId,
+              driveIntegrationId: context.integrationId,
               remoteDriveFileId: remote.id,
               uploadedAt: new Date(),
               leaseToken: claim.leaseToken,
@@ -454,7 +446,7 @@ export class DriveFileMigrationService {
           where: { id: claim.id },
           data: {
             status: DriveFileMigrationStatus.VERIFYING,
-            driveConnectionId: context.connectionId,
+            driveIntegrationId: context.integrationId,
             remoteDriveFileId: remote.id,
             remoteName: remote.name ?? null,
             remoteMimeType: remote.mimeType ?? null,
@@ -474,7 +466,7 @@ export class DriveFileMigrationService {
     } catch (error) {
       if (freshRemoteId) {
         try {
-          await this.drive.withWritableDrive(owner, (context) =>
+          await this.drive.withConfiguredWritableDrive((context) =>
             this.drive.deleteBinaryWithContext(context, freshRemoteId!),
           );
         } catch (compensationError) {
@@ -511,7 +503,6 @@ export class DriveFileMigrationService {
   }
 
   async rollback(fileId: string): Promise<DriveFileMigrationStatus> {
-    await this.requireMigrationOwner();
     const source = await this.loadSource(fileId);
     const migration = await this.database.prisma.driveFileMigration.findFirst({
       where: { fileId, status: DriveFileMigrationStatus.COMPLETED },
@@ -600,49 +591,6 @@ export class DriveFileMigrationService {
 
   private isMissingRemote(error: unknown): boolean {
     return error instanceof DriveProviderError && error.status === 404;
-  }
-
-  private async requireMigrationOwner(): Promise<string> {
-    if (!this.config.enabled)
-      throw new ConflictException('Google Drive migration is not enabled');
-    const owner = this.config.migrationOwnerUserId;
-    if (!owner)
-      throw new ConflictException('DRIVE_MIGRATION_OWNER_USER_ID is required');
-    const user = await this.database.prisma.user.findUnique({
-      where: { id: owner },
-      select: {
-        status: true,
-        systemRole: true,
-        driveConnection: {
-          select: {
-            id: true,
-            revokedAt: true,
-            authorizedScopes: true,
-            refreshTokenEncrypted: true,
-          },
-        },
-      },
-    });
-    if (
-      !user ||
-      user.status !== UserStatus.ACTIVE ||
-      user.systemRole !== SystemRole.ADMIN
-    ) {
-      throw new ConflictException(
-        'The migration owner must be an ACTIVE ADMIN',
-      );
-    }
-    if (
-      !user.driveConnection ||
-      user.driveConnection.revokedAt ||
-      !user.driveConnection.refreshTokenEncrypted ||
-      !user.driveConnection.authorizedScopes.includes(GOOGLE_DRIVE_FILE_SCOPE)
-    ) {
-      throw new ConflictException(
-        'The migration owner needs an active Drive write connection',
-      );
-    }
-    return owner;
   }
 
   private async loadSource(fileId: string): Promise<SourceSnapshot> {
@@ -785,7 +733,7 @@ export class DriveFileMigrationService {
           sourceSha256: updated.sourceSha256,
           sourceSizeBytes: updated.sourceSizeBytes,
           status: updated.status,
-          driveConnectionId: updated.driveConnectionId,
+          driveIntegrationId: updated.driveIntegrationId,
           driveFileRecordId: updated.driveFileRecordId,
           remoteDriveFileId: updated.remoteDriveFileId,
           leaseToken,
@@ -808,14 +756,15 @@ export class DriveFileMigrationService {
   ): Promise<void> {
     await this.database.prisma.$transaction(async (tx) => {
       const stored = await tx.driveFile.upsert({
-        where: {
-          driveConnectionId_driveFileId: {
-            driveConnectionId: context.connectionId,
-            driveFileId: remote.id,
-          },
-        },
-        create: this.driveFileData(context.connectionId, remote),
-        update: this.driveFileData(context.connectionId, remote),
+        where: { driveFileId: remote.id },
+        create: this.driveFileData(context.integrationId, {
+          ...remote,
+          driveId: remote.driveId ?? context.target.driveId,
+        }),
+        update: this.driveFileData(context.integrationId, {
+          ...remote,
+          driveId: remote.driveId ?? context.target.driveId,
+        }),
       });
       const linked = await tx.file.findFirst({
         where: { driveFileId: stored.id, id: { not: claim.fileId } },
@@ -829,7 +778,7 @@ export class DriveFileMigrationService {
         where: { id: claim.id },
         data: {
           status: DriveFileMigrationStatus.VERIFIED,
-          driveConnectionId: context.connectionId,
+          driveIntegrationId: context.integrationId,
           driveFileRecordId: stored.id,
           remoteDriveFileId: remote.id,
           remoteName: remote.name ?? null,
@@ -1071,11 +1020,11 @@ export class DriveFileMigrationService {
   }
 
   private driveFileData(
-    connectionId: string,
+    integrationId: string,
     remote: DriveApiFile,
   ): Prisma.DriveFileUncheckedCreateInput {
     return {
-      driveConnectionId: connectionId,
+      driveIntegrationId: integrationId,
       driveFileId: remote.id,
       name: remote.name ?? '(unnamed Drive file)',
       mimeType: remote.mimeType ?? 'application/octet-stream',

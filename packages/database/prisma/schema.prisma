@@ -192,6 +192,36 @@ model User {
   driveUploadOperations    DriveUploadOperation[]
 }
 
+// Docs Hub has one company-wide Google Shared Drive integration. The
+// singletonKey makes that invariant explicit without introducing tenancy into
+// the rest of the schema.
+model GoogleDriveIntegration {
+  id                    String               @id @default(uuid()) @db.Uuid
+  singletonKey          String               @unique @default("company")
+  sharedDriveId         String?
+  sharedDriveName       String?
+  storageFolderId       String?
+  storageFolderName     String?
+  googleAccountId       String?
+  googleEmail           String?
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  connectedAt           DateTime?
+  updatedAt             DateTime             @updatedAt
+  accessTokenExpiresAt  DateTime?
+  syncStatus            DriveSyncStatus      @default(NEVER_SYNCED)
+  lastSyncStartedAt     DateTime?
+  lastSyncCompletedAt   DateTime?
+  lastSyncError         String?
+  revokedAt             DateTime?
+  authorizedScopes      String[]             @default([])
+  files                 DriveFile[]
+  migrations            DriveFileMigration[]
+
+  @@index([revokedAt])
+  @@index([syncStatus])
+}
+
 model AuthAccount {
   id                String       @id @default(uuid()) @db.Uuid
   userId            String       @db.Uuid
@@ -521,8 +551,6 @@ model DriveConnection {
   revokedAt             DateTime?
   authorizedScopes      String[]             @default([])
   user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  files                 DriveFile[]
-  migrations            DriveFileMigration[]
 
   @@index([revokedAt])
   @@index([syncStatus])
@@ -574,7 +602,7 @@ model DriveFileMigration {
   sourceVersionId   String                   @db.Uuid
   status            DriveFileMigrationStatus @default(PENDING)
   attempts          Int                      @default(0)
-  driveConnectionId String?                  @db.Uuid
+  driveIntegrationId String?                 @db.Uuid
   driveFileRecordId String?                  @db.Uuid
   remoteDriveFileId String?
   sourceSha256      String
@@ -596,7 +624,7 @@ model DriveFileMigration {
   updatedAt         DateTime                 @updatedAt
   file              File                     @relation(fields: [fileId], references: [id], onDelete: Restrict)
   sourceVersion     FileVersion              @relation("DriveFileMigrationSourceVersion", fields: [sourceVersionId], references: [id], onDelete: Restrict)
-  driveConnection   DriveConnection?         @relation(fields: [driveConnectionId], references: [id], onDelete: SetNull)
+  driveIntegration  GoogleDriveIntegration?  @relation(fields: [driveIntegrationId], references: [id], onDelete: SetNull)
   driveFile         DriveFile?               @relation("DriveFileMigrationTarget", fields: [driveFileRecordId], references: [id], onDelete: SetNull)
 
   @@unique([fileId, sourceVersionId])
@@ -607,7 +635,7 @@ model DriveFileMigration {
 
 model DriveFile {
   id                String               @id @default(uuid()) @db.Uuid
-  driveConnectionId String               @db.Uuid
+  driveIntegrationId String              @db.Uuid
   driveFileId       String
   name              String
   mimeType          String
@@ -623,11 +651,11 @@ model DriveFile {
   driveVersion      String?
   sourceStatus      DriveSourceStatus    @default(CONNECTED)
   syncedAt          DateTime             @default(now())
-  driveConnection   DriveConnection      @relation(fields: [driveConnectionId], references: [id], onDelete: Cascade)
+  driveIntegration  GoogleDriveIntegration @relation(fields: [driveIntegrationId], references: [id], onDelete: Restrict)
   docsHubFile       File?
   migrations        DriveFileMigration[] @relation("DriveFileMigrationTarget")
 
-  @@unique([driveConnectionId, driveFileId])
-  @@index([driveConnectionId, driveModifiedTime])
-  @@index([driveConnectionId, normalizedType])
+  @@unique([driveFileId])
+  @@index([driveIntegrationId, driveModifiedTime])
+  @@index([driveIntegrationId, normalizedType])
 }

@@ -167,12 +167,12 @@ export interface CurrentUser {
 export type DriveSyncStatus = "NEVER_SYNCED" | "SYNCING" | "SYNCED" | "FAILED";
 export type DriveFileType = "FOLDER" | "GOOGLE_DOC" | "GOOGLE_SHEET" | "GOOGLE_SLIDE" | "PDF" | "IMAGE" | "VIDEO" | "DOCX" | "XLSX" | "PPTX" | "BINARY";
 export type DriveFileLocation = "MY_DRIVE" | "SHARED_WITH_ME" | "SHARED_DRIVE" | "UNKNOWN";
-export interface DriveConnection {
+export interface DriveIntegration {
   connected: boolean;
   id?: string;
   googleAccountId?: string | null;
   googleEmail?: string | null;
-  connectedAt?: string;
+  connectedAt?: string | null;
   updatedAt?: string;
   syncStatus: DriveSyncStatus;
   lastSyncStartedAt?: string | null;
@@ -181,7 +181,13 @@ export interface DriveConnection {
   revokedAt?: string | null;
   authorizedScopes: string[];
   canWrite: boolean;
+  sharedDriveId?: string | null;
+  sharedDriveName?: string | null;
+  storageFolderId?: string | null;
+  storageFolderName?: string | null;
+  configured?: boolean;
 }
+export interface SharedDriveOption { id: string; name?: string; }
 export interface NativeDocumentCreation {
   operationId: string;
   kind: NativeDocumentKind;
@@ -272,13 +278,13 @@ export class ApiClient {
     return this.request<CurrentUser>("/auth/me");
   }
 
-  async driveConnection() {
-    return this.request<DriveConnection>("/drive/connection");
+  async driveIntegration() {
+    return this.request<DriveIntegration>("/drive/integration");
   }
 
-  async startDriveConnection(mode: "READ" | "WRITE" = "READ") {
+  async startDriveIntegration(mode: "READ" | "WRITE" = "READ") {
     const result = await this.request<{ authorizationUrl: string }>(
-      "/drive/connection/authorize",
+      "/drive/integration/authorize",
       {
         method: "POST",
         ...(mode === "WRITE"
@@ -287,6 +293,17 @@ export class ApiClient {
       },
     );
     window.location.assign(result.authorizationUrl);
+  }
+
+  async listCompanySharedDrives() {
+    return this.request<SharedDriveOption[]>("/drive/integration/shared-drives");
+  }
+
+  async configureCompanySharedDrive(sharedDriveId: string, storageFolderId?: string) {
+    return this.request<DriveIntegration>("/drive/integration/shared-drive", {
+      method: "POST",
+      body: JSON.stringify({ sharedDriveId, storageFolderId: storageFolderId || undefined }),
+    });
   }
 
   async createNativeDocument(
@@ -303,13 +320,13 @@ export class ApiClient {
   }
 
   async syncDrive() {
-    return this.request<DriveConnection>("/drive/connection/sync", {
+    return this.request<DriveIntegration>("/drive/integration/sync", {
       method: "POST",
     });
   }
 
   async disconnectDrive() {
-    return this.request<DriveConnection>("/drive/connection/disconnect", {
+    return this.request<DriveIntegration>("/drive/integration/disconnect", {
       method: "POST",
     });
   }

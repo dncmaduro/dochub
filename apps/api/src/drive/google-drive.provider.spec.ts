@@ -11,9 +11,8 @@ const config = {
   enabled: true,
   clientId: 'client-id',
   clientSecret: 'client-secret',
-  redirectUri: 'https://app.example.test/drive/connection/callback',
+  redirectUri: 'https://app.example.test/drive/integration/callback',
   tokenEncryptionKey: Buffer.alloc(32),
-  creationTarget: { type: 'MY_DRIVE' as const },
 };
 
 afterEach(() => vi.restoreAllMocks());
@@ -57,10 +56,11 @@ describe('GoogleDriveApiProvider', () => {
       );
     const provider = new GoogleDriveApiProvider(config);
     const page = await provider.listFiles('access-token', {
-      pageToken: 'previous',
-      pageSize: 25,
-      nameQuery: "O'Reilly",
-      includeTrashed: false,
+    pageToken: 'previous',
+    pageSize: 25,
+    nameQuery: "O'Reilly",
+    includeTrashed: false,
+    driveId: 'company-drive',
     });
     const request = fetchMock.mock.calls[0]?.[0];
     const requestUrl =
@@ -75,6 +75,10 @@ describe('GoogleDriveApiProvider', () => {
     expect(url.searchParams.get('pageToken')).toBe('previous');
     expect(url.searchParams.get('pageSize')).toBe('25');
     expect(url.searchParams.get('q')).toContain("name contains 'O\\'Reilly'");
+    expect(url.searchParams.get('corpora')).toBe('drive');
+    expect(url.searchParams.get('driveId')).toBe('company-drive');
+    expect(url.searchParams.get('includeItemsFromAllDrives')).toBe('true');
+    expect(url.searchParams.get('supportsAllDrives')).toBe('true');
     expect(page.nextPageToken).toBe('next');
   });
 

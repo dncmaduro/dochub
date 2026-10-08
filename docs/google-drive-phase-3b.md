@@ -1,5 +1,8 @@
 # Google Drive Phase 3B: binary uploads
 
+> Uploads use the company integration and selected Shared Drive. A
+> `DOCUMENT_MANAGER` never connects a personal Drive before uploading.
+
 ## Resulting content model
 
 After Phase 3B, every new file created through the normal Docs Hub UI is
@@ -61,22 +64,22 @@ The backend requires an authenticated, `ACTIVE` user with
 denied. This upload path uses the system role and does not consult legacy
 `PermissionEntry` ACLs. The UI hides Upload for viewers.
 
-A connected Drive account must include the existing `drive.file` write grant.
-Metadata-only connections receive a typed
+A connected company integration must include the existing `drive.file` write
+grant. Metadata-only integrations receive a typed
 `GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED` response; the UI offers the existing
-incremental write authorization flow. The upload does not broaden OAuth scopes
+bounded Admin reauthorization flow. The upload does not broaden OAuth scopes
 beyond `drive.metadata.readonly` plus `drive.file`.
 
 ## Physical and logical placement
 
-The API chooses the physical Google Drive parent from the existing
-`DRIVE_CREATION_TARGET_*` configuration. It never derives a Google parent from
-the Docs Hub folder. In Docs Hub, the new `Node.parentId` records the selected
+The API chooses the physical Google Drive parent from the company integration's
+Shared Drive target. It never derives a Google parent from the Docs Hub folder.
+In Docs Hub, the new `Node.parentId` records the selected
 logical folder. Moving that Node later does not change the physical Drive
 parent.
 
 After Drive confirms an upload, one database transaction upserts `DriveFile`
-by `(driveConnectionId, driveFileId)`, creates a `Node(type=FILE)` and a
+by the globally unique `driveFileId`, creates a `Node(type=FILE)` and a
 `File(backingType=GOOGLE_DRIVE)`, and records `GOOGLE_DRIVE_FILE_UPLOADED`.
 Logical name conflicts keep the existing `name (1).ext` convention. The remote
 Drive name uses the same allocated name as the Node.
@@ -109,9 +112,10 @@ and returns an error identifying the Drive file ID; it does not report success.
 
 The immediate upsert and later metadata sync use the same Drive file ID, so
 sync updates the existing `DriveFile`. External Drive renames are mirrored to
-the linked Node under the Phase 2 name-conflict policy. Disconnecting Drive
-does not delete logical references; existing source state follows the Phase 2
-STALE/UNAVAILABLE behavior, and new writes require a restored write connection.
+the linked Node under the Phase 2 name-conflict policy. Disconnecting the
+company integration does not delete logical references; existing source state
+follows the Phase 2 STALE/UNAVAILABLE behavior, and new writes require an
+Admin to restore the company integration.
 
 ## UI limits and validation
 

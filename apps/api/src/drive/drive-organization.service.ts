@@ -40,9 +40,9 @@ export class DriveOrganizationService {
           const driveFile = await transaction.driveFile.findFirst({
             where: {
               driveFileId,
+              driveIntegration: { singletonKey: 'company' },
               trashed: false,
               sourceStatus: { not: 'UNAVAILABLE' },
-              driveConnection: { userId: actorUserId, revokedAt: null },
             },
             select: {
               id: true,

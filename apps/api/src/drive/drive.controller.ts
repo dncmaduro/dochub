@@ -17,11 +17,13 @@ import { AccessTokenGuard } from '../auth/access-token.guard.js';
 import { AuthCookieService } from '../auth/auth-cookie.service.js';
 import { CurrentAuth } from '../auth/current-auth.decorator.js';
 import type { AuthPrincipal } from '../auth/auth.types.js';
+import { SystemAdminGuard } from '../common/system-admin.guard.js';
 import { DRIVE_CONFIG, type DriveConfig } from './drive.config.js';
 import { DriveFilesQueryDto } from './dto/drive-files.dto.js';
 import { AddToDocsHubDto } from './dto/add-to-docshub.dto.js';
 import { DriveAuthorizeDto } from './dto/drive-authorize.dto.js';
 import { CreateNativeDocumentDto } from './dto/create-native-document.dto.js';
+import { ConfigureSharedDriveDto } from './dto/configure-shared-drive.dto.js';
 import { DriveOrganizationService } from './drive-organization.service.js';
 import { DriveService } from './drive.service.js';
 import { DriveUploadService } from './drive-upload.service.js';
@@ -36,14 +38,14 @@ export class DriveController {
     @Inject(DRIVE_CONFIG) private readonly config: DriveConfig,
   ) {}
 
-  @Get('connection')
+  @Get('integration')
   @UseGuards(AccessTokenGuard)
-  connection(@CurrentAuth() auth: AuthPrincipal) {
-    return this.drive.getConnection(auth.userId);
+  integration(@CurrentAuth() auth: AuthPrincipal) {
+    return this.drive.getIntegration(auth.userId);
   }
 
-  @Post('connection/authorize')
-  @UseGuards(AccessTokenGuard)
+  @Post('integration/authorize')
+  @UseGuards(AccessTokenGuard, SystemAdminGuard)
   async authorize(
     @CurrentAuth() auth: AuthPrincipal,
     @Res({ passthrough: true }) response: Response,
@@ -51,7 +53,7 @@ export class DriveController {
   ) {
     const flow = await this.drive.beginAuthorization(
       auth.userId,
-      dto?.mode ?? 'READ',
+      dto?.mode ?? 'WRITE',
     );
     response.cookie(
       'dochub_drive_state',
@@ -82,7 +84,7 @@ export class DriveController {
     return this.uploads.receive(auth.userId, request, idempotencyKey);
   }
 
-  @Get('connection/callback')
+  @Get('integration/callback')
   async callback(
     @Req() request: Request,
     @Res() response: Response,
@@ -109,16 +111,35 @@ export class DriveController {
     }
   }
 
-  @Post('connection/sync')
-  @UseGuards(AccessTokenGuard)
+  @Post('integration/sync')
+  @UseGuards(AccessTokenGuard, SystemAdminGuard)
   sync(@CurrentAuth() auth: AuthPrincipal) {
     return this.drive.sync(auth.userId);
   }
 
-  @Post('connection/disconnect')
-  @UseGuards(AccessTokenGuard)
+  @Post('integration/disconnect')
+  @UseGuards(AccessTokenGuard, SystemAdminGuard)
   disconnect(@CurrentAuth() auth: AuthPrincipal) {
     return this.drive.disconnect(auth.userId);
+  }
+
+  @Get('integration/shared-drives')
+  @UseGuards(AccessTokenGuard, SystemAdminGuard)
+  sharedDrives(@CurrentAuth() auth: AuthPrincipal) {
+    return this.drive.listSharedDrives(auth.userId);
+  }
+
+  @Post('integration/shared-drive')
+  @UseGuards(AccessTokenGuard, SystemAdminGuard)
+  configureSharedDrive(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Body() dto: ConfigureSharedDriveDto,
+  ) {
+    return this.drive.configureSharedDrive(
+      auth.userId,
+      dto.sharedDriveId,
+      dto.storageFolderId,
+    );
   }
 
   @Get('files')
@@ -152,7 +173,7 @@ export class DriveController {
   }
 
   private successRedirect(status: 'connected' | 'error'): string {
-    const target = this.config.successRedirectUrl ?? '/profile';
+    const target = this.config.successRedirectUrl ?? '/admin?tab=drive';
     const url = new URL(target, 'http://localhost');
     url.searchParams.set('drive', status);
     return url.origin === 'http://localhost'

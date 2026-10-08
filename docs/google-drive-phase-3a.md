@@ -1,5 +1,8 @@
 # Google Drive Phase 3A: native document creation
 
+> Native creation uses the company `GoogleDriveIntegration` and its configured
+> Shared Drive target. It never uses the acting user's My Drive.
+
 Phase 3A makes the Docs Hub **New** menu create native Google Workspace files:
 
 - `DOCUMENT` → `application/vnd.google-apps.document`
@@ -7,10 +10,9 @@ Phase 3A makes the Docs Hub **New** menu create native Google Workspace files:
 - `PRESENTATION` → `application/vnd.google-apps.presentation`
 
 The Docs Hub folder is still the logical parent. The Drive API parent is a
-separate creation target configured by the operator. The default target is the
-connected user's My Drive root. A Shared Drive target is ready through
-`DRIVE_CREATION_TARGET_TYPE=SHARED_DRIVE`, `DRIVE_CREATION_DRIVE_ID`, and
-`DRIVE_CREATION_PARENT_FOLDER_ID`; creation requests use
+separate creation target configured by an administrator in the Admin Drive
+integration section. The target is the selected Shared Drive root or its
+optional physical storage folder, and creation requests use
 `supportsAllDrives=true`.
 
 ## Authorization and capability
@@ -21,8 +23,9 @@ Initial connection remains metadata read-only:
 Document managers and administrators can request incremental write capability
 with the least-privilege `https://www.googleapis.com/auth/drive.file` scope.
 Existing connections remain read-only until that explicit reauthorization is
-completed. `DriveConnection.authorizedScopes` is persisted and the API exposes
-`canWrite`; viewers cannot start the write flow or create native documents.
+completed. `GoogleDriveIntegration.authorizedScopes` is persisted and the API
+exposes `canWrite`; only an administrator configures or reauthorizes the
+company integration, while viewers cannot create native documents.
 
 Imported Drive files remain metadata-backed and read-only in Docs Hub. Native
 creation does not inherit local folder ACL restrictions, while legacy local

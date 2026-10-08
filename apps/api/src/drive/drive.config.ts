@@ -8,14 +8,10 @@ export interface DriveConfig {
   redirectUri?: string;
   successRedirectUrl?: string;
   tokenEncryptionKey?: Buffer;
-  creationTarget: DriveCreationTarget;
-  /** Explicit organization-owned connection used by the legacy migration CLI. */
-  migrationOwnerUserId?: string;
 }
 
 export type DriveCreationTarget =
-  | { type: 'MY_DRIVE'; parentFolderId?: string }
-  | { type: 'SHARED_DRIVE'; driveId: string; parentFolderId: string };
+  | { type: 'SHARED_DRIVE'; driveId: string; parentFolderId?: string };
 
 export const DRIVE_CONFIG = Symbol('DRIVE_CONFIG');
 
@@ -28,15 +24,16 @@ function deriveRedirectUri(auth: AuthConfig): string | undefined {
   if (!auth.google) return undefined;
   return auth.google.redirectUri.replace(
     /\/auth\/google\/callback$/,
-    '/drive/connection/callback',
+    '/drive/integration/callback',
   );
 }
 
 function defaultSuccessRedirectUrl(auth: AuthConfig): string | undefined {
   if (!auth.google) return undefined;
   const url = new URL(auth.google.loginSuccessRedirectUrl);
-  url.pathname = '/profile';
+  url.pathname = '/admin';
   url.search = '';
+  url.searchParams.set('tab', 'drive');
   url.hash = '';
   return url.toString();
 }
@@ -67,22 +64,6 @@ function encryptionKey(value: string | undefined): Buffer | undefined {
   // Hashing permits operators to use a high-entropy secret without requiring
   // a particular encoding while always producing the AES-256 key size.
   return createHash('sha256').update(normalized, 'utf8').digest();
-}
-
-function creationTarget(env: NodeJS.ProcessEnv): DriveCreationTarget {
-  const type = optionalValue(env.DRIVE_CREATION_TARGET_TYPE) ?? 'MY_DRIVE';
-  const parentFolderId = optionalValue(env.DRIVE_CREATION_PARENT_FOLDER_ID);
-  if (type === 'MY_DRIVE') return { type, parentFolderId };
-  if (type === 'SHARED_DRIVE') {
-    const driveId = optionalValue(env.DRIVE_CREATION_DRIVE_ID);
-    if (!driveId || !parentFolderId) {
-      throw new Error(
-        'DRIVE_CREATION_DRIVE_ID and DRIVE_CREATION_PARENT_FOLDER_ID are required for a Shared Drive target',
-      );
-    }
-    return { type, driveId, parentFolderId };
-  }
-  throw new Error('DRIVE_CREATION_TARGET_TYPE must be MY_DRIVE or SHARED_DRIVE');
 }
 
 export function loadDriveConfig(
@@ -117,7 +98,7 @@ export function loadDriveConfig(
   const successRedirectUrl = absoluteHttpUrl(
     'DRIVE_CONNECT_SUCCESS_REDIRECT_URL',
     optionalValue(env.DRIVE_CONNECT_SUCCESS_REDIRECT_URL) ??
-      defaultSuccessRedirectUrl(auth) ?? 'http://localhost/profile',
+      defaultSuccessRedirectUrl(auth) ?? 'http://localhost/admin?tab=drive',
     env.NODE_ENV === 'production',
   );
   if (
@@ -136,7 +117,5 @@ export function loadDriveConfig(
     redirectUri,
     successRedirectUrl,
     tokenEncryptionKey: configuredKey,
-    creationTarget: creationTarget(env),
-    migrationOwnerUserId: optionalValue(env.DRIVE_MIGRATION_OWNER_USER_ID),
   };
 }
