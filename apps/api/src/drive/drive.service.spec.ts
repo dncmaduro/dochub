@@ -156,7 +156,10 @@ function harness() {
     getAccount: vi.fn(async () => ({ googleAccountId: 'google-account', email: 'drive@example.test' })),
     listFiles: vi.fn(),
     listSharedDrives: vi.fn(async () => ({ drives: [] })),
+    getFile: vi.fn(async () => ({ id: 'uploaded-binary' })),
     createNativeFile: vi.fn(async () => ({ id: 'created-doc', name: 'Untitled document', mimeType: 'application/vnd.google-apps.document', webViewLink: 'https://docs.google.com/document/d/created-doc' })),
+    uploadBinaryFile: vi.fn(async () => ({ id: 'uploaded-binary' })),
+    abortResumableUpload: vi.fn(async () => undefined),
     deleteFile: vi.fn(async () => undefined),
   };
   const state = {

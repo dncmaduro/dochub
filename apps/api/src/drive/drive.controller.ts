@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  HttpCode,
   Inject,
   Param,
   Post,
@@ -23,12 +24,14 @@ import { DriveAuthorizeDto } from './dto/drive-authorize.dto.js';
 import { CreateNativeDocumentDto } from './dto/create-native-document.dto.js';
 import { DriveOrganizationService } from './drive-organization.service.js';
 import { DriveService } from './drive.service.js';
+import { DriveUploadService } from './drive-upload.service.js';
 
 @Controller('drive')
 export class DriveController {
   constructor(
     private readonly drive: DriveService,
     private readonly organization: DriveOrganizationService,
+    private readonly uploads: DriveUploadService,
     private readonly authCookies: AuthCookieService,
     @Inject(DRIVE_CONFIG) private readonly config: DriveConfig,
   ) {}
@@ -46,7 +49,10 @@ export class DriveController {
     @Res({ passthrough: true }) response: Response,
     @Body() dto?: DriveAuthorizeDto,
   ) {
-    const flow = await this.drive.beginAuthorization(auth.userId, dto?.mode ?? 'READ');
+    const flow = await this.drive.beginAuthorization(
+      auth.userId,
+      dto?.mode ?? 'READ',
+    );
     response.cookie(
       'dochub_drive_state',
       flow.cookieValue,
@@ -65,8 +71,22 @@ export class DriveController {
     return this.drive.createNativeDocument(auth.userId, dto, idempotencyKey);
   }
 
+  @Post('uploads')
+  @HttpCode(201)
+  @UseGuards(AccessTokenGuard)
+  uploadBinary(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ) {
+    return this.uploads.receive(auth.userId, request, idempotencyKey);
+  }
+
   @Get('connection/callback')
-  async callback(@Req() request: Request, @Res() response: Response): Promise<void> {
+  async callback(
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
     const flowCookie = request.cookies?.dochub_drive_state;
     const state = this.singleQueryValue(request.query.state);
     const code = this.singleQueryValue(request.query.code);

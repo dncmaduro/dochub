@@ -24,6 +24,7 @@ import {
 import { DatabaseService } from '../database/database.service.js';
 import {
   DRIVE_CONFIG,
+  type DriveCreationTarget,
   type DriveConfig,
 } from './drive.config.js';
 import {
@@ -37,6 +38,7 @@ import {
   type DriveProvider,
 } from './google-drive.provider.js';
 import { DriveCreationTargetService } from './drive-creation-target.service.js';
+import type { Readable } from 'node:stream';
 import { canManageDocuments } from '../common/system-role-policy.js';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import {
@@ -55,15 +57,24 @@ const ACCESS_TOKEN_REFRESH_WINDOW_MS = 60_000;
 const NATIVE_DOCUMENTS = {
   [NativeDocumentKind.DOCUMENT]: {
     mimeType: 'application/vnd.google-apps.document',
-    names: { [NativeDocumentLocale.EN]: 'Untitled document', [NativeDocumentLocale.VI]: 'Tài liệu chưa đặt tên' },
+    names: {
+      [NativeDocumentLocale.EN]: 'Untitled document',
+      [NativeDocumentLocale.VI]: 'Tài liệu chưa đặt tên',
+    },
   },
   [NativeDocumentKind.SPREADSHEET]: {
     mimeType: 'application/vnd.google-apps.spreadsheet',
-    names: { [NativeDocumentLocale.EN]: 'Untitled spreadsheet', [NativeDocumentLocale.VI]: 'Bảng tính chưa đặt tên' },
+    names: {
+      [NativeDocumentLocale.EN]: 'Untitled spreadsheet',
+      [NativeDocumentLocale.VI]: 'Bảng tính chưa đặt tên',
+    },
   },
   [NativeDocumentKind.PRESENTATION]: {
     mimeType: 'application/vnd.google-apps.presentation',
-    names: { [NativeDocumentLocale.EN]: 'Untitled presentation', [NativeDocumentLocale.VI]: 'Bản trình bày chưa đặt tên' },
+    names: {
+      [NativeDocumentLocale.EN]: 'Untitled presentation',
+      [NativeDocumentLocale.VI]: 'Bản trình bày chưa đặt tên',
+    },
   },
 } as const;
 
@@ -94,6 +105,12 @@ export interface DriveConnectionView {
   revokedAt?: Date | null;
   authorizedScopes: string[];
   canWrite: boolean;
+}
+
+export interface WritableDriveContext {
+  accessToken: string;
+  connectionId: string;
+  target: DriveCreationTarget;
 }
 
 export type DriveAuthorizationMode = 'READ' | 'WRITE';
@@ -160,7 +177,9 @@ export class DriveService {
     await this.assertActiveUser(userId);
     if (mode === 'WRITE') await this.assertWriteManager(userId);
     const state = this.oauthState.create(userId);
-    const codeChallenge = await this.oauthState.codeChallenge(state.codeVerifier);
+    const codeChallenge = await this.oauthState.codeChallenge(
+      state.codeVerifier,
+    );
     return {
       authorizationUrl: this.provider.authorizationUrl({
         state: state.state,
@@ -214,12 +233,11 @@ export class DriveService {
       accessTokenExpiresAt: exchanged.expiresAt,
       revokedAt: null,
       lastSyncError: null,
-      authorizedScopes:
-        exchanged.scopes?.length
-          ? exchanged.scopes
-          : current?.authorizedScopes?.length
-            ? current.authorizedScopes
-            : [GOOGLE_DRIVE_METADATA_READONLY_SCOPE],
+      authorizedScopes: exchanged.scopes?.length
+        ? exchanged.scopes
+        : current?.authorizedScopes?.length
+          ? current.authorizedScopes
+          : [GOOGLE_DRIVE_METADATA_READONLY_SCOPE],
     };
     const connection = current
       ? await this.database.prisma.driveConnection.update({
@@ -348,15 +366,16 @@ export class DriveService {
 
     let synchronizedFiles = 0;
     try {
-      const latest = await this.database.prisma.driveConnection.findUniqueOrThrow({
-        where: { id: connection.id },
-        select: {
-          id: true,
-          accessTokenEncrypted: true,
-          accessTokenExpiresAt: true,
-          refreshTokenEncrypted: true,
-        },
-      });
+      const latest =
+        await this.database.prisma.driveConnection.findUniqueOrThrow({
+          where: { id: connection.id },
+          select: {
+            id: true,
+            accessTokenEncrypted: true,
+            accessTokenExpiresAt: true,
+            refreshTokenEncrypted: true,
+          },
+        });
       await this.withAccessToken(latest, async (accessToken) => {
         synchronizedFiles = await this.syncProviderFiles(
           connection.id,
@@ -406,7 +425,9 @@ export class DriveService {
         AuditResult.FAILED,
         { error: message },
       );
-      this.logger.warn(`Drive metadata sync failed for connection ${connection.id}: ${message}`);
+      this.logger.warn(
+        `Drive metadata sync failed for connection ${connection.id}: ${message}`,
+      );
       throw new ConflictException(message);
     }
     return this.getConnection(userId);
@@ -491,7 +512,9 @@ export class DriveService {
     await this.authorization.assertDocumentManager(actorUserId);
     const key = idempotencyKey?.trim();
     if (!key || key.length > 200) {
-      throw new BadRequestException('A valid Idempotency-Key header is required');
+      throw new BadRequestException(
+        'A valid Idempotency-Key header is required',
+      );
     }
     await this.requireWritableConnected(actorUserId);
 
@@ -499,7 +522,8 @@ export class DriveService {
     const definition = NATIVE_DOCUMENTS[kind];
     const locale = dto.locale ?? NativeDocumentLocale.EN;
     const parentId = dto.parentId ?? null;
-    if (!definition) throw new BadRequestException('Unsupported native document kind');
+    if (!definition)
+      throw new BadRequestException('Unsupported native document kind');
 
     const { operation, isNew } = await this.beginCreationOperation(
       actorUserId,
@@ -512,15 +536,21 @@ export class DriveService {
     if (operation.userId !== actorUserId) {
       throw new ConflictException('The Idempotency-Key is already in use');
     }
-    if (!isNew && operation.status === DriveCreationOperationStatus.IN_PROGRESS) {
-      throw new ConflictException('This native document creation is already in progress');
+    if (
+      !isNew &&
+      operation.status === DriveCreationOperationStatus.IN_PROGRESS
+    ) {
+      throw new ConflictException(
+        'This native document creation is already in progress',
+      );
     }
     if (operation.status === DriveCreationOperationStatus.SUCCEEDED) {
       return this.creationResponse(operation.idempotencyKey);
     }
     if (operation.status === DriveCreationOperationStatus.FAILED) {
       throw new ConflictException(
-        operation.errorMessage ?? 'This native document creation has already failed',
+        operation.errorMessage ??
+          'This native document creation has already failed',
       );
     }
 
@@ -585,6 +615,72 @@ export class DriveService {
     );
   }
 
+  /** Runs a Drive write using server-held OAuth credentials and the configured physical target. */
+  async withWritableDrive<T>(
+    userId: string,
+    operation: (context: WritableDriveContext) => Promise<T>,
+  ): Promise<T> {
+    this.assertEnabled();
+    await this.assertWriteManager(userId);
+    let connection;
+    try {
+      connection = await this.requireWritableConnected(userId);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw this.writeAuthorizationRequired();
+      }
+      throw error;
+    }
+    // Upload streams are one-shot. Refresh before opening a resumable session,
+    // but do not replay the callback after a provider 401 and reuse a consumed
+    // request stream.
+    const accessToken = await this.accessToken(connection);
+    return operation({
+      accessToken,
+      connectionId: connection.id,
+      target: this.creationTarget.resolve(),
+    });
+  }
+
+  assertDriveUploadManager(userId: string): Promise<void> {
+    return this.assertWriteManager(userId);
+  }
+
+  uploadBinaryWithContext(
+    context: WritableDriveContext,
+    name: string,
+    mimeType: string,
+    source: Readable,
+    signal?: AbortSignal,
+  ): Promise<DriveApiFile> {
+    return this.provider.uploadBinaryFile(
+      context.accessToken,
+      {
+        name,
+        mimeType,
+        ...(context.target.parentFolderId
+          ? { parentFolderId: context.target.parentFolderId }
+          : {}),
+      },
+      source,
+      signal,
+    );
+  }
+
+  deleteBinaryWithContext(
+    context: WritableDriveContext,
+    driveFileId: string,
+  ): Promise<void> {
+    return this.provider.deleteFile(context.accessToken, driveFileId);
+  }
+
+  getFileWithContext(
+    context: WritableDriveContext,
+    driveFileId: string,
+  ): Promise<DriveApiFile> {
+    return this.provider.getFile(context.accessToken, driveFileId);
+  }
+
   private async beginCreationOperation(
     userId: string,
     idempotencyKey: string,
@@ -600,7 +696,11 @@ export class DriveService {
         });
         if (existing) return { operation: existing, isNew: false };
         await this.assertLogicalParent(transaction, parentId);
-        const name = await this.nextAvailableName(transaction, parentId, baseName);
+        const name = await this.nextAvailableName(
+          transaction,
+          parentId,
+          baseName,
+        );
         const operation = await transaction.driveCreationOperation.create({
           data: {
             idempotencyKey,
@@ -615,9 +715,10 @@ export class DriveService {
       });
     } catch (error) {
       if (!this.isUniqueViolation(error)) throw error;
-      const existing = await this.database.prisma.driveCreationOperation.findUnique({
-        where: { idempotencyKey },
-      });
+      const existing =
+        await this.database.prisma.driveCreationOperation.findUnique({
+          where: { idempotencyKey },
+        });
       if (!existing) throw error;
       return { operation: existing, isNew: false };
     }
@@ -713,9 +814,10 @@ export class DriveService {
   }
 
   private async creationResponse(idempotencyKey: string) {
-    const operation = await this.database.prisma.driveCreationOperation.findUnique({
-      where: { idempotencyKey },
-    });
+    const operation =
+      await this.database.prisma.driveCreationOperation.findUnique({
+        where: { idempotencyKey },
+      });
     if (!operation?.nodeId) {
       throw new ConflictException('Native document creation is not complete');
     }
@@ -773,12 +875,20 @@ export class DriveService {
     baseName: string,
   ): Promise<string> {
     const normalizedBase = normalizeNodeName(baseName);
-    if (!(await this.nodeNameExists(client, parentId, normalizedBase.normalizedName))) {
+    if (
+      !(await this.nodeNameExists(
+        client,
+        parentId,
+        normalizedBase.normalizedName,
+      ))
+    ) {
       return normalizedBase.name;
     }
     for (let index = 1; index <= 1000; index += 1) {
       const candidate = normalizeNodeName(`${normalizedBase.name} (${index})`);
-      if (!(await this.nodeNameExists(client, parentId, candidate.normalizedName))) {
+      if (
+        !(await this.nodeNameExists(client, parentId, candidate.normalizedName))
+      ) {
         return candidate.name;
       }
     }
@@ -892,7 +1002,10 @@ export class DriveService {
         create: this.fileData(connectionId, file),
         update: this.fileData(connectionId, file),
       });
-      await this.mirrorLinkedNodeName(stored.id, file.name?.trim() || '(unnamed Drive file)');
+      await this.mirrorLinkedNodeName(
+        stored.id,
+        file.name?.trim() || '(unnamed Drive file)',
+      );
       count += 1;
     }
     return count;
@@ -943,9 +1056,10 @@ export class DriveService {
       sharedDriveId: file.driveId ?? null,
       sizeBytes: this.safeBigInt(file.size),
       driveVersion: file.version ?? null,
-      sourceStatus: file.trashed === true
-        ? DriveSourceStatus.UNAVAILABLE
-        : DriveSourceStatus.CONNECTED,
+      sourceStatus:
+        file.trashed === true
+          ? DriveSourceStatus.UNAVAILABLE
+          : DriveSourceStatus.CONNECTED,
       syncedAt: new Date(),
     } satisfies Prisma.DriveFileUncheckedCreateInput;
   }
@@ -1001,7 +1115,10 @@ export class DriveService {
     try {
       return await operation(accessToken);
     } catch (error) {
-      if (!(error instanceof DriveProviderError) || error.kind !== 'unauthorized') {
+      if (
+        !(error instanceof DriveProviderError) ||
+        error.kind !== 'unauthorized'
+      ) {
         throw error;
       }
       const refreshed = await this.refreshConnection(connection);
@@ -1072,7 +1189,11 @@ export class DriveService {
         authorizedScopes: true,
       },
     });
-    if (!connection || connection.revokedAt || !connection.refreshTokenEncrypted) {
+    if (
+      !connection ||
+      connection.revokedAt ||
+      !connection.refreshTokenEncrypted
+    ) {
       throw new NotFoundException('Google Drive is not connected.');
     }
     return connection;
@@ -1081,11 +1202,17 @@ export class DriveService {
   private async requireWritableConnected(userId: string) {
     const connection = await this.requireConnected(userId);
     if (!connection.authorizedScopes.includes(GOOGLE_DRIVE_FILE_SCOPE)) {
-      throw new ForbiddenException(
-        'Google Drive write access is required for native document creation',
-      );
+      throw this.writeAuthorizationRequired();
     }
     return connection;
+  }
+
+  private writeAuthorizationRequired(): ForbiddenException {
+    return new ForbiddenException({
+      statusCode: 403,
+      code: 'GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED',
+      message: 'Google Drive write access authorization is required.',
+    });
   }
 
   private async assertWriteManager(userId: string): Promise<void> {
@@ -1206,9 +1333,9 @@ export class DriveService {
   }
 
   private encodeCursor(value: { name: string; id: string }): string {
-    return Buffer.from(JSON.stringify({ name: value.name, id: value.id })).toString(
-      'base64url',
-    );
+    return Buffer.from(
+      JSON.stringify({ name: value.name, id: value.id }),
+    ).toString('base64url');
   }
 
   private decodeCursor(value: string): DriveCursor {

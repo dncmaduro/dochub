@@ -32,6 +32,7 @@ export class FilesController {
 
   @Post('files')
   @HttpCode(201)
+  /** @deprecated Legacy local-backed upload endpoint retained for migration/internal use. */
   async createInitial(
     @CurrentAuth() auth: AuthPrincipal,
     @Req() request: Request,

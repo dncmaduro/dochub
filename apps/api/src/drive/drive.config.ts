@@ -9,6 +9,8 @@ export interface DriveConfig {
   successRedirectUrl?: string;
   tokenEncryptionKey?: Buffer;
   creationTarget: DriveCreationTarget;
+  /** Explicit organization-owned connection used by the legacy migration CLI. */
+  migrationOwnerUserId?: string;
 }
 
 export type DriveCreationTarget =
@@ -135,5 +137,6 @@ export function loadDriveConfig(
     successRedirectUrl,
     tokenEncryptionKey: configuredKey,
     creationTarget: creationTarget(env),
+    migrationOwnerUserId: optionalValue(env.DRIVE_MIGRATION_OWNER_USER_ID),
   };
 }

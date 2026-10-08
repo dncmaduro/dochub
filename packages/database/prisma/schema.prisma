@@ -34,6 +34,19 @@ enum FileBackingType {
   GOOGLE_DRIVE
 }
 
+enum DriveFileMigrationStatus {
+  PENDING
+  UPLOADING
+  UPLOADED
+  VERIFYING
+  VERIFIED
+  COMPLETED
+  FAILED
+  BLOCKED
+  STALE
+  ROLLED_BACK
+}
+
 enum TrashOperationStatus {
   ACTIVE
   RESTORED
@@ -144,32 +157,39 @@ enum DriveCreationOperationStatus {
   FAILED
 }
 
+enum DriveUploadOperationStatus {
+  IN_PROGRESS
+  SUCCEEDED
+  FAILED
+}
+
 model User {
-  id                       String            @id @default(uuid()) @db.Uuid
+  id                       String                   @id @default(uuid()) @db.Uuid
   email                    String
-  normalizedEmail          String            @unique
+  normalizedEmail          String                   @unique
   displayName              String
-  status                   UserStatus        @default(INVITED)
-  systemRole               SystemRole        @default(VIEWER)
-  createdAt                DateTime          @default(now())
-  updatedAt                DateTime          @updatedAt
+  status                   UserStatus               @default(INVITED)
+  systemRole               SystemRole               @default(VIEWER)
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
   authAccounts             AuthAccount[]
   sessions                 Session[]
-  createdGroups            Group[]           @relation("GroupCreatedBy")
-  groupMemberships         GroupMember[]     @relation("GroupMemberUser")
-  addedGroupMembers        GroupMember[]     @relation("GroupMemberAddedBy")
-  createdNodes             Node[]            @relation("NodeCreatedBy")
-  updatedNodes             Node[]            @relation("NodeUpdatedBy")
-  createdFileVersions      FileVersion[]     @relation("FileVersionCreatedBy")
-  permissionEntries        PermissionEntry[] @relation("PermissionEntryUser")
-  createdPermissionEntries PermissionEntry[] @relation("PermissionEntryCreatedBy")
-  trashOperations          TrashOperation[]  @relation("TrashOperationTrashedBy")
-  auditLogEntries          AuditLog[]        @relation("AuditLogActor")
-  editorSessions           EditorSession[]   @relation("EditorSessionUser")
-  favorites                Favorite[]        @relation("FavoriteUser")
-  recentItems              RecentItem[]      @relation("RecentItemUser")
+  createdGroups            Group[]                  @relation("GroupCreatedBy")
+  groupMemberships         GroupMember[]            @relation("GroupMemberUser")
+  addedGroupMembers        GroupMember[]            @relation("GroupMemberAddedBy")
+  createdNodes             Node[]                   @relation("NodeCreatedBy")
+  updatedNodes             Node[]                   @relation("NodeUpdatedBy")
+  createdFileVersions      FileVersion[]            @relation("FileVersionCreatedBy")
+  permissionEntries        PermissionEntry[]        @relation("PermissionEntryUser")
+  createdPermissionEntries PermissionEntry[]        @relation("PermissionEntryCreatedBy")
+  trashOperations          TrashOperation[]         @relation("TrashOperationTrashedBy")
+  auditLogEntries          AuditLog[]               @relation("AuditLogActor")
+  editorSessions           EditorSession[]          @relation("EditorSessionUser")
+  favorites                Favorite[]               @relation("FavoriteUser")
+  recentItems              RecentItem[]             @relation("RecentItemUser")
   driveConnection          DriveConnection?
   driveCreationOperations  DriveCreationOperation[]
+  driveUploadOperations    DriveUploadOperation[]
 }
 
 model AuthAccount {
@@ -281,20 +301,21 @@ enum DocumentRole {
 }
 
 model File {
-  id               String          @id @default(uuid()) @db.Uuid
-  nodeId           String          @unique @db.Uuid
-  backingType      FileBackingType @default(LOCAL)
-  driveFileId      String?         @unique @db.Uuid
-  currentVersionId String?         @db.Uuid
-  versionCounter   Int             @default(0)
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
-  node             Node            @relation(fields: [nodeId], references: [id], onDelete: Restrict)
-  driveFile        DriveFile?      @relation(fields: [driveFileId], references: [id], onDelete: Restrict)
-  versions         FileVersion[]   @relation("FileVersions")
-  currentVersion   FileVersion?    @relation("FileCurrentVersion", fields: [id, currentVersionId], references: [fileId, id], onDelete: Restrict)
-  searchDocument   SearchDocument? @relation("SearchDocumentFile")
-  editorSessions   EditorSession[] @relation("EditorSessionFile")
+  id               String               @id @default(uuid()) @db.Uuid
+  nodeId           String               @unique @db.Uuid
+  backingType      FileBackingType      @default(LOCAL)
+  driveFileId      String?              @unique @db.Uuid
+  currentVersionId String?              @db.Uuid
+  versionCounter   Int                  @default(0)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  node             Node                 @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  driveFile        DriveFile?           @relation(fields: [driveFileId], references: [id], onDelete: Restrict)
+  versions         FileVersion[]        @relation("FileVersions")
+  currentVersion   FileVersion?         @relation("FileCurrentVersion", fields: [id, currentVersionId], references: [fileId, id], onDelete: Restrict)
+  searchDocument   SearchDocument?      @relation("SearchDocumentFile")
+  editorSessions   EditorSession[]      @relation("EditorSessionFile")
+  driveMigrations  DriveFileMigration[]
 
   // Required by Prisma for the composite current-version ownership relation.
   @@unique([id, currentVersionId])
@@ -324,6 +345,7 @@ model FileVersion {
   indexedSearchDocuments          SearchDocument[]     @relation("SearchDocumentIndexedVersion")
   editorSessionsBasedOnVersion    EditorSession[]      @relation("EditorSessionBaseVersion")
   finalizedEditorSessions         EditorSession[]      @relation("EditorSessionFinalizedVersion")
+  driveMigrations                 DriveFileMigration[] @relation("DriveFileMigrationSourceVersion")
 
   @@unique([fileId, versionNumber])
   @@unique([fileId, id])
@@ -436,26 +458,26 @@ model SearchDocument {
 }
 
 model EditorSession {
-  id            String              @id @default(uuid()) @db.Uuid
-  fileId        String              @db.Uuid
-  baseVersionId String              @db.Uuid
-  documentKey   String
-  actorType     EditorActorType
-  userId        String?             @db.Uuid
-  mode          EditorMode
-  status        EditorSessionStatus @default(ACTIVE)
-  createdAt     DateTime            @default(now())
-  closedAt      DateTime?
-  stagedArtifactId String?   @db.Uuid
-  stagedSha256     String?
-  stagedSizeBytes  BigInt?
-  stagedAt         DateTime?
-  finalizedFileVersionId String? @db.Uuid
-  finalizedAt      DateTime?
-  file          File                @relation("EditorSessionFile", fields: [fileId], references: [id], onDelete: Restrict)
-  baseVersion   FileVersion         @relation("EditorSessionBaseVersion", fields: [fileId, baseVersionId], references: [fileId, id], onDelete: Restrict)
-  finalizedFileVersion FileVersion? @relation("EditorSessionFinalizedVersion", fields: [finalizedFileVersionId], references: [id], onDelete: Restrict)
-  user          User?               @relation("EditorSessionUser", fields: [userId], references: [id], onDelete: Restrict)
+  id                     String              @id @default(uuid()) @db.Uuid
+  fileId                 String              @db.Uuid
+  baseVersionId          String              @db.Uuid
+  documentKey            String
+  actorType              EditorActorType
+  userId                 String?             @db.Uuid
+  mode                   EditorMode
+  status                 EditorSessionStatus @default(ACTIVE)
+  createdAt              DateTime            @default(now())
+  closedAt               DateTime?
+  stagedArtifactId       String?             @db.Uuid
+  stagedSha256           String?
+  stagedSizeBytes        BigInt?
+  stagedAt               DateTime?
+  finalizedFileVersionId String?             @db.Uuid
+  finalizedAt            DateTime?
+  file                   File                @relation("EditorSessionFile", fields: [fileId], references: [id], onDelete: Restrict)
+  baseVersion            FileVersion         @relation("EditorSessionBaseVersion", fields: [fileId, baseVersionId], references: [fileId, id], onDelete: Restrict)
+  finalizedFileVersion   FileVersion?        @relation("EditorSessionFinalizedVersion", fields: [finalizedFileVersionId], references: [id], onDelete: Restrict)
+  user                   User?               @relation("EditorSessionUser", fields: [userId], references: [id], onDelete: Restrict)
 
   @@index([documentKey])
   @@index([fileId, baseVersionId, documentKey, mode, status])
@@ -483,23 +505,24 @@ model RecentItem {
 }
 
 model DriveConnection {
-  id                    String          @id @default(uuid()) @db.Uuid
-  userId                String          @unique @db.Uuid
+  id                    String               @id @default(uuid()) @db.Uuid
+  userId                String               @unique @db.Uuid
   googleAccountId       String?
   googleEmail           String?
   accessTokenEncrypted  String?
   refreshTokenEncrypted String?
-  connectedAt           DateTime        @default(now())
-  updatedAt             DateTime        @updatedAt
+  connectedAt           DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
   accessTokenExpiresAt  DateTime?
-  syncStatus            DriveSyncStatus @default(NEVER_SYNCED)
+  syncStatus            DriveSyncStatus      @default(NEVER_SYNCED)
   lastSyncStartedAt     DateTime?
   lastSyncCompletedAt   DateTime?
   lastSyncError         String?
   revokedAt             DateTime?
-  authorizedScopes      String[]        @default([])
-  user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authorizedScopes      String[]             @default([])
+  user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   files                 DriveFile[]
+  migrations            DriveFileMigration[]
 
   @@index([revokedAt])
   @@index([syncStatus])
@@ -524,9 +547,67 @@ model DriveCreationOperation {
   @@index([status, createdAt])
 }
 
+model DriveUploadOperation {
+  idempotencyKey   String                     @id
+  userId           String                     @db.Uuid
+  parentId         String?                    @db.Uuid
+  originalFilename String
+  name             String
+  mimeType         String
+  sizeBytes        BigInt?
+  sha256           String?
+  status           DriveUploadOperationStatus @default(IN_PROGRESS)
+  driveFileId      String?
+  nodeId           String?                    @db.Uuid
+  errorMessage     String?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  user             User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model DriveFileMigration {
+  id                String                   @id @default(uuid()) @db.Uuid
+  fileId            String                   @db.Uuid
+  sourceVersionId   String                   @db.Uuid
+  status            DriveFileMigrationStatus @default(PENDING)
+  attempts          Int                      @default(0)
+  driveConnectionId String?                  @db.Uuid
+  driveFileRecordId String?                  @db.Uuid
+  remoteDriveFileId String?
+  sourceSha256      String
+  sourceSizeBytes   BigInt
+  remoteName        String?
+  remoteMimeType    String?
+  remoteSizeBytes   BigInt?
+  remoteMd5Checksum String?
+  leaseToken        String?                  @db.Uuid
+  leaseExpiresAt    DateTime?
+  startedAt         DateTime?
+  uploadedAt        DateTime?
+  verifiedAt        DateTime?
+  completedAt       DateTime?
+  failedAt          DateTime?
+  lastErrorCode     String?
+  lastErrorSummary  String?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  file              File                     @relation(fields: [fileId], references: [id], onDelete: Restrict)
+  sourceVersion     FileVersion              @relation("DriveFileMigrationSourceVersion", fields: [sourceVersionId], references: [id], onDelete: Restrict)
+  driveConnection   DriveConnection?         @relation(fields: [driveConnectionId], references: [id], onDelete: SetNull)
+  driveFile         DriveFile?               @relation("DriveFileMigrationTarget", fields: [driveFileRecordId], references: [id], onDelete: SetNull)
+
+  @@unique([fileId, sourceVersionId])
+  @@index([status, createdAt])
+  @@index([fileId, createdAt])
+  @@index([leaseExpiresAt])
+}
+
 model DriveFile {
-  id                String            @id @default(uuid()) @db.Uuid
-  driveConnectionId String            @db.Uuid
+  id                String               @id @default(uuid()) @db.Uuid
+  driveConnectionId String               @db.Uuid
   driveFileId       String
   name              String
   mimeType          String
@@ -534,16 +615,17 @@ model DriveFile {
   webViewLink       String?
   driveModifiedTime DateTime?
   driveCreatedTime  DateTime?
-  trashed           Boolean           @default(false)
-  driveParents      String[]          @default([])
-  location          DriveFileLocation @default(UNKNOWN)
+  trashed           Boolean              @default(false)
+  driveParents      String[]             @default([])
+  location          DriveFileLocation    @default(UNKNOWN)
   sharedDriveId     String?
   sizeBytes         BigInt?
   driveVersion      String?
-  sourceStatus      DriveSourceStatus @default(CONNECTED)
-  syncedAt          DateTime          @default(now())
-  driveConnection   DriveConnection   @relation(fields: [driveConnectionId], references: [id], onDelete: Cascade)
+  sourceStatus      DriveSourceStatus    @default(CONNECTED)
+  syncedAt          DateTime             @default(now())
+  driveConnection   DriveConnection      @relation(fields: [driveConnectionId], references: [id], onDelete: Cascade)
   docsHubFile       File?
+  migrations        DriveFileMigration[] @relation("DriveFileMigrationTarget")
 
   @@unique([driveConnectionId, driveFileId])
   @@index([driveConnectionId, driveModifiedTime])

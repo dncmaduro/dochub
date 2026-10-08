@@ -1,8 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import {
-  DRIVE_CONFIG,
-  type DriveConfig,
-} from './drive.config.js';
+import type { Readable } from 'node:stream';
+import { DRIVE_CONFIG, type DriveConfig } from './drive.config.js';
 
 export const DRIVE_PROVIDER = Symbol('DRIVE_PROVIDER');
 
@@ -48,9 +46,16 @@ export interface DriveApiFile {
   ownedByMe?: boolean;
   size?: string;
   version?: string;
+  md5Checksum?: string;
 }
 
 export interface DriveNativeFileCreateRequest {
+  name: string;
+  mimeType: string;
+  parentFolderId?: string;
+}
+
+export interface DriveBinaryFileCreateRequest {
   name: string;
   mimeType: string;
   parentFolderId?: string;
@@ -83,26 +88,33 @@ export interface DriveProvider {
   exchangeCode(parameters: DriveOAuthCodeParameters): Promise<DriveOAuthTokens>;
   refreshAccessToken(refreshToken: string): Promise<DriveOAuthTokens>;
   getAccount(accessToken: string): Promise<DriveAccount>;
-  listFiles(accessToken: string, options: DriveListOptions): Promise<DriveFilePage>;
+  listFiles(
+    accessToken: string,
+    options: DriveListOptions,
+  ): Promise<DriveFilePage>;
   listSharedDrives(
     accessToken: string,
     pageToken?: string,
   ): Promise<DriveSharedDrivePage>;
+  getFile(accessToken: string, driveFileId: string): Promise<DriveApiFile>;
   createNativeFile(
     accessToken: string,
     request: DriveNativeFileCreateRequest,
   ): Promise<DriveApiFile>;
+  uploadBinaryFile(
+    accessToken: string,
+    request: DriveBinaryFileCreateRequest,
+    source: Readable,
+    signal?: AbortSignal,
+  ): Promise<DriveApiFile>;
+  abortResumableUpload(accessToken: string, sessionUri: string): Promise<void>;
   deleteFile(accessToken: string, driveFileId: string): Promise<void>;
 }
 
 export class DriveProviderError extends Error {
   constructor(
     readonly kind:
-      | 'unauthorized'
-      | 'forbidden'
-      | 'rate_limited'
-      | 'provider'
-      | 'network',
+      'unauthorized' | 'forbidden' | 'rate_limited' | 'provider' | 'network',
     readonly status?: number,
   ) {
     super('Google Drive request failed');
@@ -113,6 +125,7 @@ export class DriveProviderError extends Error {
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const AUTHORIZATION_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const DRIVE_API_ENDPOINT = 'https://www.googleapis.com/drive/v3';
+const DRIVE_UPLOAD_ENDPOINT = 'https://www.googleapis.com/upload/drive/v3';
 
 const FILE_FIELDS = [
   'id',
@@ -128,7 +141,10 @@ const FILE_FIELDS = [
   'ownedByMe',
   'size',
   'version',
+  'md5Checksum',
 ].join(',');
+
+const RESUMABLE_CHUNK_BYTES = 8 * 1024 * 1024;
 
 function escapeDriveQuery(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
@@ -149,7 +165,9 @@ export class GoogleDriveApiProvider implements DriveProvider {
       client_id: this.config.clientId!,
       redirect_uri: this.config.redirectUri!,
       response_type: 'code',
-      scope: (parameters.scopes ?? [GOOGLE_DRIVE_METADATA_READONLY_SCOPE]).join(' '),
+      scope: (parameters.scopes ?? [GOOGLE_DRIVE_METADATA_READONLY_SCOPE]).join(
+        ' ',
+      ),
       access_type: 'offline',
       prompt: 'consent',
       include_granted_scopes: 'true',
@@ -187,18 +205,19 @@ export class GoogleDriveApiProvider implements DriveProvider {
   }
 
   async getAccount(accessToken: string): Promise<DriveAccount> {
-    const body = await this.driveRequest<{ user?: { permissionId?: string; emailAddress?: string } }>(
-      '/about',
-      accessToken,
-      { fields: 'user(permissionId,emailAddress)' },
-    );
+    const body = await this.driveRequest<{
+      user?: { permissionId?: string; emailAddress?: string };
+    }>('/about', accessToken, { fields: 'user(permissionId,emailAddress)' });
     return {
       googleAccountId: body.user?.permissionId,
       email: body.user?.emailAddress,
     };
   }
 
-  listFiles(accessToken: string, options: DriveListOptions): Promise<DriveFilePage> {
+  listFiles(
+    accessToken: string,
+    options: DriveListOptions,
+  ): Promise<DriveFilePage> {
     const parameters: Record<string, string> = {
       pageSize: String(options.pageSize),
       spaces: 'drive',
@@ -241,7 +260,17 @@ export class GoogleDriveApiProvider implements DriveProvider {
     );
   }
 
-  private async postToken(parameters: Record<string, string>): Promise<unknown> {
+  getFile(accessToken: string, driveFileId: string): Promise<DriveApiFile> {
+    return this.driveRequest<DriveApiFile>(
+      `/files/${encodeURIComponent(driveFileId)}`,
+      accessToken,
+      { fields: FILE_FIELDS, supportsAllDrives: 'true' },
+    );
+  }
+
+  private async postToken(
+    parameters: Record<string, string>,
+  ): Promise<unknown> {
     let response: Response;
     try {
       response = await fetch(TOKEN_ENDPOINT, {
@@ -318,7 +347,248 @@ export class GoogleDriveApiProvider implements DriveProvider {
       mimeType: request.mimeType,
       ...(request.parentFolderId ? { parents: [request.parentFolderId] } : {}),
     };
-    return this.driveMutation<DriveApiFile>('/files', accessToken, 'POST', parameters, body);
+    return this.driveMutation<DriveApiFile>(
+      '/files',
+      accessToken,
+      'POST',
+      parameters,
+      body,
+    );
+  }
+
+  async uploadBinaryFile(
+    accessToken: string,
+    request: DriveBinaryFileCreateRequest,
+    source: Readable,
+    signal?: AbortSignal,
+  ): Promise<DriveApiFile> {
+    const url = new URL(`${DRIVE_UPLOAD_ENDPOINT}/files`);
+    url.search = new URLSearchParams({
+      uploadType: 'resumable',
+      supportsAllDrives: 'true',
+      fields: FILE_FIELDS,
+    }).toString();
+    const metadata = {
+      name: request.name,
+      mimeType: request.mimeType,
+      ...(request.parentFolderId ? { parents: [request.parentFolderId] } : {}),
+    };
+
+    let sessionUri: string | undefined;
+    try {
+      const initiation = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json; charset=UTF-8',
+          'X-Upload-Content-Type': request.mimeType,
+        },
+        body: JSON.stringify(metadata),
+        signal,
+      });
+      if (!initiation.ok) throw this.providerError(initiation.status);
+      sessionUri = initiation.headers.get('location') ?? undefined;
+      if (!sessionUri)
+        throw new DriveProviderError('provider', initiation.status);
+
+      let offset = 0;
+      let pending: Buffer | null = null;
+      let parts: Buffer[] = [];
+      let partBytes = 0;
+
+      const receivedOffset = (response: Response): number => {
+        const range = response.headers.get('range');
+        if (!range) return 0;
+        const match = /^bytes=0-(\d+)$/.exec(range);
+        if (!match) throw new DriveProviderError('provider', response.status);
+        return Number(match[1]) + 1;
+      };
+
+      const queryUploadStatus = async (
+        total?: number,
+      ): Promise<{ offset: number; file?: DriveApiFile }> => {
+        let response: Response;
+        try {
+          response = await fetch(sessionUri!, {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Length': '0',
+              'Content-Range': `bytes */${total ?? '*'}`,
+            },
+            body: new Uint8Array(),
+            signal,
+          });
+        } catch {
+          throw new DriveProviderError('network');
+        }
+        if (response.status === 308) {
+          return { offset: receivedOffset(response) };
+        }
+        if (!response.ok) throw this.providerError(response.status);
+        try {
+          const file = (await response.json()) as DriveApiFile;
+          return { offset: Number.POSITIVE_INFINITY, file };
+        } catch {
+          throw new DriveProviderError('provider', response.status);
+        }
+      };
+
+      const sendChunk = async (
+        bytes: Buffer,
+        finalTotal?: number,
+      ): Promise<DriveApiFile | undefined> => {
+        const start = offset;
+        const end = start + bytes.length - 1;
+        let cursor = start;
+        let noProgressAttempts = 0;
+        while (cursor <= end) {
+          if (signal?.aborted) throw new DriveProviderError('network');
+          const chunk = bytes.subarray(cursor - start);
+          let response: Response;
+          try {
+            response = await fetch(sessionUri!, {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': request.mimeType,
+                'Content-Length': String(chunk.length),
+                'Content-Range': `bytes ${cursor}-${end}/${finalTotal ?? '*'}`,
+              },
+              body: new Uint8Array(chunk),
+              signal,
+            });
+          } catch {
+            if (signal?.aborted) throw new DriveProviderError('network');
+            const status = await queryUploadStatus(finalTotal);
+            if (status.file) return status.file;
+            if (status.offset < offset || status.offset > end + 1) {
+              throw new DriveProviderError('provider');
+            }
+            if (status.offset === end + 1) {
+              offset = status.offset;
+              return undefined;
+            }
+            if (status.offset < cursor) {
+              throw new DriveProviderError('provider');
+            }
+            if (status.offset === cursor && ++noProgressAttempts > 3) {
+              throw new DriveProviderError('network');
+            }
+            cursor = status.offset;
+            continue;
+          }
+
+          if (response.status === 308) {
+            const acceptedOffset = receivedOffset(response);
+            if (
+              acceptedOffset < offset ||
+              acceptedOffset < cursor ||
+              acceptedOffset > end + 1
+            ) {
+              throw new DriveProviderError('provider', response.status);
+            }
+            if (acceptedOffset === cursor && ++noProgressAttempts > 3) {
+              throw new DriveProviderError('network', response.status);
+            }
+            if (acceptedOffset === end + 1) {
+              offset = acceptedOffset;
+              return undefined;
+            }
+            cursor = acceptedOffset;
+            continue;
+          }
+
+          if (response.status >= 500) {
+            const status = await queryUploadStatus(finalTotal);
+            if (status.file) return status.file;
+            if (status.offset < offset || status.offset > end + 1) {
+              throw new DriveProviderError('provider', response.status);
+            }
+            if (status.offset === end + 1) {
+              offset = status.offset;
+              return undefined;
+            }
+            if (status.offset < cursor) {
+              throw new DriveProviderError('provider', response.status);
+            }
+            if (status.offset === cursor && ++noProgressAttempts > 3) {
+              throw this.providerError(response.status);
+            }
+            cursor = status.offset;
+            continue;
+          }
+
+          if (!response.ok || finalTotal === undefined) {
+            throw this.providerError(response.status);
+          }
+          try {
+            const file = (await response.json()) as DriveApiFile;
+            offset = end + 1;
+            return file;
+          } catch {
+            throw new DriveProviderError('provider', response.status);
+          }
+        }
+        return undefined;
+      };
+
+      for await (const value of source) {
+        if (signal?.aborted) throw new DriveProviderError('network');
+        let remaining = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        while (remaining.length > 0) {
+          const take = Math.min(
+            RESUMABLE_CHUNK_BYTES - partBytes,
+            remaining.length,
+          );
+          parts.push(remaining.subarray(0, take));
+          partBytes += take;
+          remaining = remaining.subarray(take);
+          if (partBytes === RESUMABLE_CHUNK_BYTES) {
+            const fullChunk = Buffer.concat(parts, partBytes);
+            parts = [];
+            partBytes = 0;
+            if (pending) await sendChunk(pending);
+            pending = fullChunk;
+          }
+        }
+      }
+
+      if (signal?.aborted) throw new DriveProviderError('network');
+      const tail = partBytes ? Buffer.concat(parts, partBytes) : null;
+      if (tail) {
+        if (pending) await sendChunk(pending);
+        pending = tail;
+      }
+      const finalBytes = pending ?? Buffer.alloc(0);
+      const total = offset + finalBytes.length;
+      let uploaded = await sendChunk(finalBytes, total);
+      if (!uploaded && offset === total) {
+        const status = await queryUploadStatus();
+        uploaded = status.file;
+      }
+      if (!uploaded?.id) throw new DriveProviderError('provider');
+      return uploaded;
+    } catch (error) {
+      if (sessionUri) await this.abortResumableUpload(accessToken, sessionUri);
+      if (error instanceof DriveProviderError) throw error;
+      throw new DriveProviderError('network');
+    }
+  }
+
+  async abortResumableUpload(
+    accessToken: string,
+    sessionUri: string,
+  ): Promise<void> {
+    try {
+      await fetch(sessionUri, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+    } catch {
+      // A resumable URI is sensitive and stays in memory only. The operation
+      // that failed is already being reported; abort is best effort.
+    }
   }
 
   async deleteFile(accessToken: string, driveFileId: string): Promise<void> {

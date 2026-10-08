@@ -19,7 +19,8 @@
     "test:watch": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs",
     "test:cov": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run --coverage",
     "test:debug": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs --inspect-brk --no-file-parallelism",
-    "test:e2e": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run --config ./vitest.config.e2e.ts"
+    "test:e2e": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run --config ./vitest.config.e2e.ts",
+    "migrate:drive": "node --env-file-if-exists=../../.env dist/drive/migration-cli.js"
   },
   "dependencies": {
     "@dochub/database": "workspace:*",

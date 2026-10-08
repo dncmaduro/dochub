@@ -14,7 +14,13 @@ import { PreviewService } from './preview.service.js';
 import { OfficeTemplateService } from './office-template.service.js';
 
 @Module({
-  imports: [AuthModule, AuthorizationModule, DatabaseModule, StorageModule, CollectionsModule],
+  imports: [
+    AuthModule,
+    AuthorizationModule,
+    DatabaseModule,
+    StorageModule,
+    CollectionsModule,
+  ],
   controllers: [FilesController, PreviewController],
   providers: [
     FilesService,
@@ -24,6 +30,6 @@ import { OfficeTemplateService } from './office-template.service.js';
     PreviewService,
     OfficeTemplateService,
   ],
-  exports: [FileReadService],
+  exports: [FileReadService, FileValidationService],
 })
 export class FilesModule {}

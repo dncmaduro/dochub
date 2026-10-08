@@ -2,9 +2,12 @@ import { open } from 'node:fs/promises';
 import path from 'node:path';
 import {
   Injectable,
+  PayloadTooLargeException,
   UnsupportedMediaTypeException,
 } from '@nestjs/common';
-import { fileTypeFromFile } from 'file-type';
+import { createHash } from 'node:crypto';
+import { Transform } from 'node:stream';
+import { fileTypeFromBuffer, fileTypeFromFile } from 'file-type';
 import { normalizeNodeName } from '../nodes/node-name.js';
 import type { TempUpload, ValidatedUpload } from './file-upload.types.js';
 
@@ -47,7 +50,10 @@ const SUPPORTED_TYPES: Readonly<Record<string, SupportedType>> = {
   },
   xls: {
     mimeType: 'application/vnd.ms-excel',
-    declaredMimeTypes: ['application/vnd.ms-excel', 'application/x-ole-storage'],
+    declaredMimeTypes: [
+      'application/vnd.ms-excel',
+      'application/x-ole-storage',
+    ],
     kind: 'ole',
   },
   xlsx: {
@@ -86,14 +92,26 @@ const SUPPORTED_TYPES: Readonly<Record<string, SupportedType>> = {
     declaredMimeTypes: ['image/jpeg', 'image/jpg'],
     kind: 'signature',
   },
-  png: { mimeType: 'image/png', declaredMimeTypes: ['image/png'], kind: 'signature' },
+  png: {
+    mimeType: 'image/png',
+    declaredMimeTypes: ['image/png'],
+    kind: 'signature',
+  },
   webp: {
     mimeType: 'image/webp',
     declaredMimeTypes: ['image/webp'],
     kind: 'signature',
   },
-  gif: { mimeType: 'image/gif', declaredMimeTypes: ['image/gif'], kind: 'signature' },
-  mp4: { mimeType: 'video/mp4', declaredMimeTypes: ['video/mp4'], kind: 'signature' },
+  gif: {
+    mimeType: 'image/gif',
+    declaredMimeTypes: ['image/gif'],
+    kind: 'signature',
+  },
+  mp4: {
+    mimeType: 'video/mp4',
+    declaredMimeTypes: ['video/mp4'],
+    kind: 'signature',
+  },
   webm: {
     mimeType: 'video/webm',
     declaredMimeTypes: ['video/webm'],
@@ -108,6 +126,117 @@ const SUPPORTED_TYPES: Readonly<Record<string, SupportedType>> = {
 
 @Injectable()
 export class FileValidationService {
+  beginStreamingValidation(
+    suppliedFilename: string,
+    declaredMimeType: string,
+    maxBytes: number,
+  ): {
+    stream: Transform;
+    originalFilename: string;
+    nodeName: string;
+    normalizedNodeName: string;
+    extension: string;
+    mimeType: string;
+    finish: () => Promise<ValidatedUpload>;
+  } {
+    const originalFilename = this.cleanedFilename(suppliedFilename);
+    const extension = path.extname(originalFilename).slice(1).toLowerCase();
+    const supported = SUPPORTED_TYPES[extension];
+    if (!supported) {
+      throw new UnsupportedMediaTypeException('Unsupported file type');
+    }
+    this.assertDeclaredMimeType(declaredMimeType, supported);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new Error('The configured upload size limit is invalid');
+    }
+    const logicalName = normalizeNodeName(originalFilename);
+    const hash = createHash('sha256');
+    let sizeBytes = 0;
+    let prefix = Buffer.alloc(0);
+    let tail = Buffer.alloc(0);
+    let finished: ValidatedUpload | undefined;
+    const stream = new Transform({
+      transform: (chunk: Buffer, _encoding, callback) => {
+        sizeBytes += chunk.length;
+        if (sizeBytes > maxBytes) {
+          callback(new PayloadTooLargeException('File exceeds upload limit'));
+          return;
+        }
+        hash.update(chunk);
+        if (prefix.length < 8192) {
+          prefix = Buffer.concat([
+            prefix,
+            chunk.subarray(0, 8192 - prefix.length),
+          ]);
+        }
+        tail = Buffer.concat([tail, chunk]);
+        if (tail.length > 1024 * 1024) {
+          tail = tail.subarray(tail.length - 1024 * 1024);
+        }
+        callback(null, chunk);
+      },
+    });
+
+    return {
+      stream,
+      originalFilename,
+      nodeName: logicalName.name,
+      normalizedNodeName: logicalName.normalizedName,
+      extension,
+      mimeType: supported.mimeType,
+      finish: async () => {
+        if (finished) return finished;
+        if (sizeBytes === 0) {
+          throw new UnsupportedMediaTypeException('Uploaded file is empty');
+        }
+        const detected = await fileTypeFromBuffer(prefix).catch(
+          () => undefined,
+        );
+        if (supported.kind === 'ole') {
+          if (!prefix.subarray(0, OLE_SIGNATURE.length).equals(OLE_SIGNATURE)) {
+            throw new UnsupportedMediaTypeException(
+              'File signature does not match extension',
+            );
+          }
+        } else if (supported.kind === 'ooxml') {
+          const inspection = tail.toString('latin1');
+          if (
+            !this.isOoxmlDetectorCompatible(
+              detected?.mime,
+              supported.mimeType,
+            ) ||
+            !inspection.includes('[Content_Types].xml') ||
+            !inspection.includes(supported.ooxmlMarker!)
+          ) {
+            throw new UnsupportedMediaTypeException(
+              'Invalid Office document package',
+            );
+          }
+        } else {
+          const matched =
+            detected?.mime === supported.mimeType ||
+            (supported.mimeType === 'application/pdf' &&
+              prefix.subarray(0, 5).equals(Buffer.from('%PDF-')));
+          if (!matched) {
+            throw new UnsupportedMediaTypeException(
+              'File signature does not match extension',
+            );
+          }
+        }
+        finished = {
+          originalFilename,
+          nodeName: logicalName.name,
+          normalizedNodeName: logicalName.normalizedName,
+          extension,
+          mimeType: supported.mimeType,
+          sizeBytes: BigInt(sizeBytes),
+          sha256: hash.digest('hex'),
+        };
+        return finished;
+      },
+    };
+  }
+
   async validate(upload: TempUpload): Promise<ValidatedUpload> {
     const originalFilename = this.cleanedFilename(upload.originalFilename);
     const extension = path.extname(originalFilename).slice(1).toLowerCase();
@@ -117,17 +246,23 @@ export class FileValidationService {
     }
     this.assertDeclaredMimeType(upload.declaredMimeType, supported);
 
-    const detected = await fileTypeFromFile(upload.tempPath).catch(() => undefined);
+    const detected = await fileTypeFromFile(upload.tempPath).catch(
+      () => undefined,
+    );
     if (supported.kind === 'ole') {
       if (!(await this.hasOleSignature(upload.tempPath))) {
-        throw new UnsupportedMediaTypeException('File signature does not match extension');
+        throw new UnsupportedMediaTypeException(
+          'File signature does not match extension',
+        );
       }
     } else if (supported.kind === 'ooxml') {
       if (
         !this.isOoxmlDetectorCompatible(detected?.mime, supported.mimeType) ||
         !(await this.hasOoxmlMarkers(upload.tempPath, supported.ooxmlMarker!))
       ) {
-        throw new UnsupportedMediaTypeException('Invalid Office document package');
+        throw new UnsupportedMediaTypeException(
+          'Invalid Office document package',
+        );
       }
     } else if (
       !(await this.signatureMatches(
@@ -136,7 +271,9 @@ export class FileValidationService {
         upload.tempPath,
       ))
     ) {
-      throw new UnsupportedMediaTypeException('File signature does not match extension');
+      throw new UnsupportedMediaTypeException(
+        'File signature does not match extension',
+      );
     }
 
     const nodeName = normalizeNodeName(originalFilename);
@@ -166,7 +303,9 @@ export class FileValidationService {
       !GENERIC_MIME_TYPES.has(normalized) &&
       !supported.declaredMimeTypes.includes(normalized)
     ) {
-      throw new UnsupportedMediaTypeException('Declared MIME type does not match extension');
+      throw new UnsupportedMediaTypeException(
+        'Declared MIME type does not match extension',
+      );
     }
   }
 
@@ -180,7 +319,9 @@ export class FileValidationService {
     }
     // file-type intentionally reports some small PDFs as undefined; the PDF
     // header is a bounded, unambiguous fallback.
-    return expectedMime === 'application/pdf' && (await this.hasPdfHeader(tempPath));
+    return (
+      expectedMime === 'application/pdf' && (await this.hasPdfHeader(tempPath))
+    );
   }
 
   private async hasPdfHeader(tempPath: string): Promise<boolean> {

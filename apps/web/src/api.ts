@@ -226,10 +226,12 @@ const apiOrigin = (
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -534,12 +536,13 @@ export class ApiClient {
     );
   }
 
-  async upload(file: File, parentId: string | null) {
+  async upload(file: File, parentId: string | null, idempotencyKey: string) {
     const form = new FormData();
     form.append("parentId", parentId ?? "");
     form.append("file", file);
-    return this.request<UploadResponse>("/files", {
+    return this.request<UploadResponse>("/drive/uploads", {
       method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
       body: form,
     });
   }
@@ -606,9 +609,13 @@ export class ApiClient {
         ? "Your session has ended. Please sign in again."
         : "The request could not be completed.";
     try {
-      const body = (await response.json()) as { message?: string | string[] };
+      const body = (await response.json()) as {
+        message?: string | string[];
+        code?: string;
+      };
       if (Array.isArray(body.message)) message = body.message[0] ?? message;
       else if (body.message) message = body.message;
+      return new ApiError(message, response.status, body.code);
     } catch {
       /* Use the safe fallback. */
     }

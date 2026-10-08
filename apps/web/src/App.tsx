@@ -1450,6 +1450,10 @@ function DriveApp({
   const [removeDriveNode, setRemoveDriveNode] = useState<Node | null>(null);
   const [versionNode, setVersionNode] = useState<Node | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  const [driveConnection, setDriveConnection] = useState<DriveConnection | null>(null);
+  const [driveConnectionLoading, setDriveConnectionLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [driveWriteAuthorizationRequired, setDriveWriteAuthorizationRequired] = useState(false);
   const uploadInput = useRef<HTMLInputElement>(null);
   const loadController = useRef<AbortController | null>(null);
   const load = useCallback(async (id: string | null) => {
@@ -1482,6 +1486,14 @@ function DriveApp({
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  useEffect(() => {
+    let active = true;
+    void api.driveConnection().then(
+      (connection) => active && setDriveConnection(connection),
+      () => active && setDriveConnection(null),
+    ).finally(() => active && setDriveConnectionLoading(false));
+    return () => { active = false; };
   }, []);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1523,12 +1535,30 @@ function DriveApp({
     if (!file) return;
     try {
       setNotice(null);
-      const result = await api.upload(file, folderId);
+      setUploading(true);
+      setNotice({ tone: "info", message: t("files.uploadingFile", { name: file.name }) });
+      const result = await api.upload(file, folderId, crypto.randomUUID());
       await load(folderId);
+      setDriveWriteAuthorizationRequired(false);
       setNotice({
         tone: "success",
         message: t("files.uploaded", { name: result.node.name }),
       });
+    } catch (requestError) {
+      if (
+        requestError instanceof ApiError &&
+        requestError.code === "GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED"
+      ) {
+        setDriveWriteAuthorizationRequired(true);
+      }
+      setNotice({ tone: "error", message: displayError(requestError) });
+    } finally {
+      setUploading(false);
+    }
+  }
+  async function enableDriveUploads() {
+    try {
+      await api.startDriveConnection("WRITE");
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
     }
@@ -1590,21 +1620,33 @@ function DriveApp({
             >
               <Icon name="refresh" />
             </button>
-            {canCreateHere ? (
+            {canManageDocuments ? (
               <>
+                {!driveConnectionLoading &&
+                  (!driveConnection?.canWrite || driveWriteAuthorizationRequired) && (
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={() => void enableDriveUploads()}
+                    >
+                      {t("drive.enableWrite")}
+                    </button>
+                  )}
                 <button
                   type="button"
                   className="button button-primary"
                   onClick={() => uploadInput.current?.click()}
+                  disabled={uploading || driveConnectionLoading}
                 >
                   <Icon name="upload" />
-                  {t("files.upload")}
+                  {uploading ? t("files.uploading") : t("files.upload")}
                 </button>
                 <input
                   className="visually-hidden"
                   ref={uploadInput}
                   type="file"
                   onChange={upload}
+                  disabled={!canManageDocuments || uploading}
                 />
               </>
             ) : null}
@@ -1618,6 +1660,8 @@ function DriveApp({
           {status === "ready" && nodes.length === 0 && (
             <EmptyState
               canCreateHere={canCreateHere}
+              canUpload={canManageDocuments}
+              uploadDisabled={uploading || driveConnectionLoading}
               onFolder={onCreateFolder}
               onUpload={() => uploadInput.current?.click()}
             />
@@ -2033,7 +2077,7 @@ function FileRow({
                 {t("files.versionHistory")}
               </button>
             )}
-            {hasCapability(node, "SHARE") && (
+            {node.backing?.type !== "GOOGLE_DRIVE" && hasCapability(node, "SHARE") && (
               <button
                 type="button"
                 role="menuitem"
@@ -3287,10 +3331,14 @@ function NameDialog({
 }
 function EmptyState({
   canCreateHere,
+  canUpload,
+  uploadDisabled,
   onFolder,
   onUpload,
 }: {
   canCreateHere: boolean;
+  canUpload: boolean;
+  uploadDisabled: boolean;
   onFolder: () => void;
   onUpload: () => void;
 }) {
@@ -3298,18 +3346,19 @@ function EmptyState({
     <div className="content-state">
       <h1>{t("files.noFiles")}</h1>
       <p>{t("files.noFilesDescription")}</p>
-      {canCreateHere && (
+      {(canCreateHere || canUpload) && (
         <div>
-          <button type="button" className="button" onClick={onFolder}>
+          {canCreateHere && <button type="button" className="button" onClick={onFolder}>
             {t("files.newFolder")}
-          </button>
-          <button
+          </button>}
+          {canUpload && <button
             type="button"
             className="button button-primary"
             onClick={onUpload}
+            disabled={uploadDisabled}
           >
-            {t("files.upload")}
-          </button>
+            {uploadDisabled ? t("files.uploading") : t("files.upload")}
+          </button>}
         </div>
       )}
     </div>
