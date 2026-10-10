@@ -291,6 +291,110 @@ describe('DriveService', () => {
     );
   });
 
+  it('browses the configured Drive subtree live, including nested folders and search results', async () => {
+    const h = harness();
+    vi.mocked(h.provider.listFiles).mockImplementation(async (_token, options) => {
+      if (options.parentFolderId === 'storage-folder') {
+        return {
+          files: [
+            {
+              id: 'nested-folder',
+              name: 'Nested',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['storage-folder'],
+            },
+            {
+              id: 'root-doc',
+              name: 'Root document',
+              mimeType: 'application/vnd.google-apps.document',
+              parents: ['storage-folder'],
+            },
+          ],
+        };
+      }
+      if (options.parentFolderId === 'nested-folder') {
+        return {
+          files: [{
+            id: 'nested-doc',
+            name: 'Nested notes',
+            mimeType: 'application/pdf',
+            parents: ['nested-folder'],
+          }],
+        };
+      }
+      return { files: [] };
+    });
+
+    await expect(h.service.listBrowserFiles(h.userId, {})).resolves.toMatchObject({
+      items: [
+        { driveFileId: 'nested-folder', normalizedType: DriveFileType.FOLDER },
+        { driveFileId: 'nested-doc', name: 'Nested notes' },
+        { driveFileId: 'root-doc', name: 'Root document' },
+      ],
+      nextCursor: null,
+    });
+    const firstPage = await h.service.listBrowserFiles(h.userId, { limit: 2 });
+    expect(firstPage.items).toHaveLength(2);
+    expect(firstPage.nextCursor).toBeTruthy();
+    await expect(
+      h.service.listBrowserFiles(h.userId, {
+        limit: 2,
+        cursor: firstPage.nextCursor!,
+      }),
+    ).resolves.toMatchObject({
+      items: [{ driveFileId: 'root-doc', name: 'Root document' }],
+      nextCursor: null,
+    });
+    await expect(
+      h.service.listBrowserFiles(h.userId, { q: 'notes' }),
+    ).resolves.toMatchObject({
+      items: [{ driveFileId: 'nested-doc', name: 'Nested notes' }],
+    });
+    expect(h.provider.listFiles).toHaveBeenCalledWith(
+      'access',
+      expect.objectContaining({
+        parentFolderId: 'storage-folder',
+        includeTrashed: false,
+      }),
+    );
+  });
+
+  it('imports a live Drive file without requiring a pre-existing DriveFile row', async () => {
+    const h = harness();
+    vi.mocked(h.provider.getFile).mockResolvedValueOnce({
+      id: 'live-file',
+      name: 'Live document',
+      mimeType: 'application/pdf',
+      parents: ['storage-folder'],
+      webViewLink: 'https://drive.google.com/file/d/live-file',
+    });
+
+    await expect(
+      h.service.prepareDriveFileForImport(h.userId, 'live-file'),
+    ).resolves.toMatchObject({
+      integrationId: h.connection.id,
+      driveFile: { driveFileId: 'live-file', name: 'Live document' },
+    });
+    expect(h.files.get('live-file')).toMatchObject({ driveFileId: 'live-file' });
+    expect(h.prisma.driveFile.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { driveFileId: 'live-file' } }),
+    );
+  });
+
+  it('does not import a Drive file outside the configured storage subtree', async () => {
+    const h = harness();
+    vi.mocked(h.provider.getFile).mockImplementation(async (_token, driveFileId) =>
+      driveFileId === 'outside-file'
+        ? { id: 'outside-file', name: 'Outside', mimeType: 'application/pdf', parents: ['outside-folder'] }
+        : { id: 'outside-folder', name: 'Outside folder', mimeType: 'application/vnd.google-apps.folder', parents: [] },
+    );
+
+    await expect(
+      h.service.prepareDriveFileForImport(h.userId, 'outside-file'),
+    ).rejects.toThrow(/not found/i);
+    expect(h.files.has('outside-file')).toBe(false);
+  });
+
   it('marks a connection revoked after refresh failure and scopes file reads to the owner', async () => {
     const h = harness();
     h.connection.accessTokenExpiresAt = new Date(Date.now() - 1_000);
@@ -535,6 +639,25 @@ describe('DriveService', () => {
     ).rejects.toThrow();
     expect(h.prisma.node.create).not.toHaveBeenCalled();
     expect(h.operations.get('provider-failure-key')).toMatchObject({ status: DriveCreationOperationStatus.FAILED });
+  });
+
+  it('maps an unexpected native Drive provider failure to a safe typed response', async () => {
+    const h = harness();
+    vi.mocked(h.provider.createNativeFile).mockRejectedValueOnce(
+      new Error('provider response contained an internal token'),
+    );
+
+    await expect(
+      h.service.createNativeDocument(h.userId, { kind: 'DOCUMENT' } as any, 'unexpected-provider-failure-key'),
+    ).rejects.toMatchObject({
+      status: 502,
+      message: 'Google Drive could not create the file in the storage folder.',
+    });
+    expect(h.operations.get('unexpected-provider-failure-key')).toMatchObject({
+      status: DriveCreationOperationStatus.FAILED,
+      errorMessage: 'Google Drive could not create the file in the storage folder.',
+    });
+    expect(h.operations.get('unexpected-provider-failure-key')?.errorMessage).not.toContain('internal token');
   });
 
   it('rejects native creation for a read-only Drive connection', async () => {

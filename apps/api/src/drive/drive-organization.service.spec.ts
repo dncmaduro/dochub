@@ -10,9 +10,6 @@ function harness() {
   const file = { id: randomUUID() };
   const auditLog: any[] = [];
   const tx = {
-    driveFile: {
-      findFirst: vi.fn(async () => driveFile),
-    },
     file: {
       findUnique: vi.fn(async () => null),
       create: vi.fn(async () => file),
@@ -40,6 +37,18 @@ function harness() {
       capabilities: new Set([DocumentCapability.VIEW]),
     })),
   };
+  const drive = {
+    prepareDriveFileForImport: vi.fn(async () => ({
+      integrationId: 'integration-1',
+      driveFile,
+      remoteFile: {
+        id: driveFile.driveFileId,
+        name: driveFile.name,
+        mimeType: 'application/pdf',
+        parents: ['storage-folder'],
+      },
+    })),
+  };
   return {
     actorUserId,
     driveFile,
@@ -49,10 +58,12 @@ function harness() {
     tx,
     authorization,
     folders,
+    drive,
     service: new DriveOrganizationService(
       { prisma } as any,
       authorization as any,
       folders as any,
+      drive as any,
     ),
   };
 }
@@ -69,6 +80,10 @@ describe('DriveOrganizationService', () => {
         driveFileId: h.driveFile.id,
       }),
     }));
+    expect(h.drive.prepareDriveFileForImport).toHaveBeenCalledWith(
+      h.actorUserId,
+      h.driveFile.driveFileId,
+    );
     expect(h.auditLog[0]).toMatchObject({ action: 'DRIVE_FILE_ADDED_TO_DOCSHUB' });
   });
 
@@ -88,7 +103,7 @@ describe('DriveOrganizationService', () => {
     ).resolves.toEqual({ nodeId: h.node.id, removed: true });
     expect(h.tx.file.delete).toHaveBeenCalledWith({ where: { id: h.file.id } });
     expect(h.tx.node.delete).toHaveBeenCalledWith({ where: { id: h.node.id } });
-    expect(h.tx.driveFile).not.toHaveProperty('delete');
+    expect(h.tx).not.toHaveProperty('driveFile.delete');
     expect(h.auditLog[0]).toMatchObject({ action: 'DRIVE_FILE_REMOVED_FROM_DOCSHUB' });
   });
 

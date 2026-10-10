@@ -16,6 +16,7 @@ import { DatabaseService } from '../database/database.service.js';
 import { FolderAccessService } from '../authorization/folder-access.service.js';
 import { normalizeNodeName } from '../nodes/node-name.js';
 import type { AddToDocsHubDto } from './dto/add-to-docshub.dto.js';
+import { DriveService } from './drive.service.js';
 
 @Injectable()
 export class DriveOrganizationService {
@@ -23,6 +24,7 @@ export class DriveOrganizationService {
     private readonly database: DatabaseService,
     private readonly authorization: DocumentAuthorizationService,
     private readonly folders: FolderAccessService,
+    private readonly drive: DriveService,
   ) {}
 
   async addToDocsHub(
@@ -32,27 +34,15 @@ export class DriveOrganizationService {
   ) {
     const parentId = dto.parentId ?? null;
     try {
+      const prepared = await this.drive.prepareDriveFileForImport(
+        actorUserId,
+        driveFileId,
+      );
       return await this.database.prisma.$transaction(
         async (transaction) => {
           await this.authorization.assertDocumentManager(actorUserId, transaction);
           await this.requireDestination(actorUserId, parentId, transaction);
-
-          const driveFile = await transaction.driveFile.findFirst({
-            where: {
-              driveFileId,
-              driveIntegration: { singletonKey: 'company' },
-              trashed: false,
-              sourceStatus: { not: 'UNAVAILABLE' },
-            },
-            select: {
-              id: true,
-              driveFileId: true,
-              name: true,
-            },
-          });
-          if (!driveFile) {
-            throw new NotFoundException('Drive file not found');
-          }
+          const driveFile = prepared.driveFile;
 
           const existing = await transaction.file.findUnique({
             where: { driveFileId: driveFile.id },

@@ -345,6 +345,13 @@ export class ApiClient {
     return this.request<DriveFilePage>(`/drive/files?${parameters}`);
   }
 
+  async listDriveBrowserFiles(q = "", cursor?: string, limit = 50) {
+    const parameters = new URLSearchParams({ limit: String(limit) });
+    if (q.trim()) parameters.set("q", q.trim());
+    if (cursor) parameters.set("cursor", cursor);
+    return this.request<DriveFilePage>(`/drive/browser/files?${parameters}`);
+  }
+
   async addDriveFileToDocsHub(driveFileId: string, parentId: string | null) {
     return this.request<{ nodeId: string; name: string }>(
       `/drive/files/${encodeURIComponent(driveFileId)}/add-to-docshub`,

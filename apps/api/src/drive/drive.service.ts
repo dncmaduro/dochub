@@ -54,6 +54,8 @@ import { normalizeNodeName } from '../nodes/node-name.js';
 
 const DRIVE_PAGE_SIZE = 100;
 const MAX_API_PAGE_SIZE = 100;
+const MAX_LIVE_BROWSER_FILES = 5_000;
+const MAX_LIVE_BROWSER_FOLDERS = 1_000;
 const ACCESS_TOKEN_REFRESH_WINDOW_MS = 60_000;
 
 const NATIVE_DOCUMENTS = {
@@ -613,6 +615,120 @@ export class DriveService {
     };
   }
 
+  async listBrowserFiles(
+    userId: string,
+    options: DriveFileListOptions,
+  ): Promise<DriveFileListView> {
+    this.assertEnabled();
+    const connection = await this.requireReadableConnected(userId);
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), MAX_API_PAGE_SIZE);
+    const cursor = options.cursor ? this.decodeCursor(options.cursor) : null;
+    const query = options.q?.trim().toLocaleLowerCase();
+
+    let liveFiles: DriveApiFile[];
+    try {
+      liveFiles = await this.withAccessToken(connection, (accessToken) =>
+        this.listLiveStorageFiles(accessToken, connection.storageFolderId!),
+      );
+    } catch (error) {
+      throw this.liveDriveBrowserError(error);
+    }
+
+    const matchingFiles = liveFiles
+      .filter((file) => !query || file.name?.toLocaleLowerCase().includes(query))
+      .sort((left, right) => {
+        const nameOrder = (left.name ?? left.id).localeCompare(right.name ?? right.id);
+        return nameOrder || left.id.localeCompare(right.id);
+      });
+    const afterCursor = cursor
+      ? matchingFiles.filter((file) => {
+          const name = file.name ?? file.id;
+          const nameOrder = name.localeCompare(cursor.name);
+          return nameOrder > 0 || (nameOrder === 0 && file.id.localeCompare(cursor.id) > 0);
+        })
+      : matchingFiles;
+    const page = afterCursor.slice(0, limit + 1);
+    const hasNext = page.length > limit;
+    const visible = page.slice(0, limit);
+    const linked = visible.length
+      ? await this.database.prisma.driveFile.findMany({
+          where: {
+            driveIntegrationId: connection.id,
+            driveFileId: { in: visible.map((file) => file.id) },
+          },
+          select: {
+            driveFileId: true,
+            docsHubFile: { select: { nodeId: true } },
+          },
+        })
+      : [];
+    const linkedByDriveFileId = new Map(
+      linked.map((file) => [file.driveFileId, file.docsHubFile?.nodeId ?? null]),
+    );
+    const last = visible.at(-1);
+    return {
+      items: visible.map((file) =>
+        this.liveFileView(file, linkedByDriveFileId.get(file.id) ?? null),
+      ),
+      nextCursor:
+        hasNext && last
+          ? this.encodeCursor({ name: last.name ?? last.id, id: last.id })
+          : null,
+    };
+  }
+
+  async prepareDriveFileForImport(
+    userId: string,
+    driveFileId: string,
+  ): Promise<{
+    integrationId: string;
+    driveFile: { id: string; driveFileId: string; name: string };
+    remoteFile: DriveApiFile;
+  }> {
+    this.assertEnabled();
+    await this.authorization.assertDocumentManager(userId);
+    const connection = await this.requireReadableConnected(userId);
+    const requestedId = driveFileId.trim();
+    if (!requestedId) throw new NotFoundException('Drive file not found');
+
+    let remoteFile: DriveApiFile;
+    try {
+      remoteFile = await this.withAccessToken(connection, async (accessToken) => {
+        const file = await this.provider.getFile(accessToken, requestedId);
+        if (!file.id || file.id !== requestedId || file.trashed === true) {
+          throw new NotFoundException('Drive file not found');
+        }
+        if (file.mimeType === 'application/vnd.google-apps.folder') {
+          throw new ConflictException('Google Drive folders cannot be added as files.');
+        }
+        if (
+          !(await this.isWithinStorageFolder(
+            accessToken,
+            connection.storageFolderId!,
+            file.parents ?? [],
+          ))
+        ) {
+          throw new NotFoundException('Drive file not found in the configured storage folder.');
+        }
+        return file;
+      });
+    } catch (error) {
+      throw this.liveDriveBrowserError(error);
+    }
+
+    const stored = await this.database.prisma.driveFile.upsert({
+      where: { driveFileId: remoteFile.id },
+      create: this.fileData(connection.id, remoteFile),
+      update: this.fileData(connection.id, remoteFile),
+      select: { id: true, driveFileId: true, name: true },
+    });
+    return {
+      integrationId: connection.id,
+      driveFile: stored,
+      remoteFile,
+    };
+  }
+
   async createNativeFile(
     userId: string,
     request: { name: string; mimeType: string },
@@ -703,32 +819,36 @@ export class DriveService {
     } catch (error) {
       const message = this.creationFailureMessage(error);
       if (!created?.file.id) {
-        await this.markCreationFailed(operation.idempotencyKey, message);
+        await this.markCreationFailedSafely(operation.idempotencyKey, message);
         throw error;
       }
       try {
         await this.deleteNativeFile(actorUserId, created.file.id);
-        await this.markCreationFailed(
+        await this.markCreationFailedSafely(
           operation.idempotencyKey,
           'Native document creation failed; the Google Drive file was removed.',
         );
       } catch (compensationError) {
-        await this.markCreationFailed(
+        await this.markCreationFailedSafely(
           operation.idempotencyKey,
           'Google Drive created a file that Docs Hub could not register; manual reconciliation is required.',
         );
-        await this.audit(
-          actorUserId,
-          'GOOGLE_DRIVE_DOCUMENT_ORPHANED',
-          null,
-          AuditResult.FAILED,
-          {
-            operationId: operation.idempotencyKey,
-            driveFileId: created.file.id,
-            error: message,
-            compensationError: this.creationFailureMessage(compensationError),
-          },
-        );
+        try {
+          await this.audit(
+            actorUserId,
+            'GOOGLE_DRIVE_DOCUMENT_ORPHANED',
+            null,
+            AuditResult.FAILED,
+            {
+              operationId: operation.idempotencyKey,
+              driveFileId: created.file.id,
+              error: message,
+              compensationError: this.creationFailureMessage(compensationError),
+            },
+          );
+        } catch (auditError) {
+          this.logNativeCreationFailure('orphan audit failed', auditError);
+        }
         throw new ServiceUnavailableException(
           `Google Drive created a file that Docs Hub could not register. Reconcile Drive file ${created.file.id}.`,
         );
@@ -1064,9 +1184,38 @@ export class DriveService {
     });
   }
 
+  private async markCreationFailedSafely(
+    idempotencyKey: string,
+    errorMessage: string,
+  ): Promise<void> {
+    try {
+      await this.markCreationFailed(idempotencyKey, errorMessage);
+    } catch (error) {
+      this.logNativeCreationFailure('creation status update failed', error);
+    }
+  }
+
   private creationFailureMessage(error: unknown): string {
-    if (error instanceof Error && error.message) return error.message;
+    if (error instanceof DriveProviderError) return this.safeDriveError(error);
+    if (
+      error instanceof BadGatewayException ||
+      error instanceof ForbiddenException ||
+      error instanceof ServiceUnavailableException ||
+      error instanceof UnauthorizedException
+    ) {
+      return error.message;
+    }
     return 'Native Google Workspace document creation failed.';
+  }
+
+  private logNativeCreationFailure(context: string, error: unknown): void {
+    const detail =
+      error instanceof DriveProviderError
+        ? `${error.kind}${error.status ? ` (${error.status})` : ''}`
+        : error instanceof Error
+          ? error.name
+          : typeof error;
+    this.logger.error(`Native Google Drive document creation ${context}: ${detail}`);
   }
 
   private isUniqueViolation(error: unknown): boolean {
@@ -1120,6 +1269,71 @@ export class DriveService {
       data: { sourceStatus: DriveSourceStatus.UNAVAILABLE },
     });
     return count;
+  }
+
+  private async listLiveStorageFiles(
+    accessToken: string,
+    storageFolderId: string,
+  ): Promise<DriveApiFile[]> {
+    const files = new Map<string, DriveApiFile>();
+    const pendingFolders = [storageFolderId];
+    const visitedFolders = new Set<string>();
+    while (pendingFolders.length > 0) {
+      const parentFolderId = pendingFolders.shift()!;
+      if (visitedFolders.has(parentFolderId)) continue;
+      visitedFolders.add(parentFolderId);
+      if (visitedFolders.size > MAX_LIVE_BROWSER_FOLDERS) {
+        throw new ConflictException(
+          'The configured Google Drive storage folder is too large to browse live.',
+        );
+      }
+      let pageToken: string | undefined;
+      do {
+        const page = await this.provider.listFiles(accessToken, {
+          pageToken,
+          pageSize: DRIVE_PAGE_SIZE,
+          includeTrashed: false,
+          parentFolderId,
+        });
+        for (const file of page.files) {
+          if (!file.id) continue;
+          files.set(file.id, file);
+          if (
+            file.mimeType === 'application/vnd.google-apps.folder' &&
+            file.trashed !== true
+          ) {
+            pendingFolders.push(file.id);
+          }
+        }
+        if (files.size > MAX_LIVE_BROWSER_FILES) {
+          throw new ConflictException(
+            'The configured Google Drive storage folder is too large to browse live.',
+          );
+        }
+        pageToken = page.nextPageToken;
+      } while (pageToken);
+    }
+    return [...files.values()];
+  }
+
+  private async isWithinStorageFolder(
+    accessToken: string,
+    storageFolderId: string,
+    parentIds: string[],
+  ): Promise<boolean> {
+    const pendingParents = [...parentIds];
+    const visited = new Set<string>();
+    while (pendingParents.length > 0) {
+      const parentId = pendingParents.shift()!;
+      if (parentId === storageFolderId) return true;
+      if (visited.has(parentId)) continue;
+      visited.add(parentId);
+      if (visited.size > MAX_LIVE_BROWSER_FOLDERS) return false;
+      const parent = await this.provider.getFile(accessToken, parentId);
+      if (parent.trashed === true) continue;
+      pendingParents.push(...(parent.parents ?? []));
+    }
+    return false;
   }
 
   private async upsertPage(
@@ -1233,6 +1447,30 @@ export class DriveService {
       syncedAt: file.syncedAt,
       sourceStatus: file.sourceStatus,
       docsHubNodeId: file.docsHubFile?.nodeId ?? null,
+    };
+  }
+
+  private liveFileView(
+    file: DriveApiFile,
+    docsHubNodeId: string | null,
+  ): DriveFileView {
+    return {
+      id: file.id,
+      driveFileId: file.id,
+      name: file.name?.trim() || '(unnamed Drive file)',
+      mimeType: file.mimeType ?? 'application/octet-stream',
+      normalizedType: this.normalizeType(file.mimeType),
+      webViewLink: file.webViewLink ?? null,
+      driveModifiedTime: this.safeDate(file.modifiedTime),
+      driveCreatedTime: this.safeDate(file.createdTime),
+      trashed: file.trashed === true,
+      driveParents: file.parents ?? [],
+      location: this.location(file),
+      sharedDriveId: file.driveId ?? null,
+      sizeBytes: this.safeBigInt(file.size)?.toString() ?? null,
+      syncedAt: new Date(),
+      sourceStatus: DriveSourceStatus.CONNECTED,
+      docsHubNodeId,
     };
   }
 
@@ -1509,6 +1747,44 @@ export class DriveService {
     });
   }
 
+  private liveDriveBrowserError(error: unknown): Error {
+    if (error instanceof NotFoundException || error instanceof ConflictException) {
+      return error;
+    }
+    if (error instanceof DriveProviderError) {
+      if (error.status === 404) {
+        return new NotFoundException('Drive file not found.');
+      }
+      if (error.kind === 'unauthorized' || error.kind === 'forbidden') {
+        return this.readAuthorizationRequired();
+      }
+      if (error.kind === 'rate_limited') {
+        return new ServiceUnavailableException({
+          statusCode: 503,
+          code: 'GOOGLE_DRIVE_RATE_LIMITED',
+          message: 'Google Drive is temporarily rate-limiting requests. Try again later.',
+        });
+      }
+      if (error.kind === 'network') {
+        return new ServiceUnavailableException({
+          statusCode: 503,
+          code: 'GOOGLE_DRIVE_UNAVAILABLE',
+          message: 'Google Drive could not be reached. Try again later.',
+        });
+      }
+      return new BadGatewayException({
+        statusCode: 502,
+        code: 'GOOGLE_DRIVE_PROVIDER_ERROR',
+        message: 'Google Drive returned an unexpected error. Try again later.',
+      });
+    }
+    return new ServiceUnavailableException({
+      statusCode: 503,
+      code: 'GOOGLE_DRIVE_UNAVAILABLE',
+      message: 'Google Drive could not be reached. Try again later.',
+    });
+  }
+
   private async listAllDriveFolders(
     accessToken: string,
     nameQuery?: string,
@@ -1569,11 +1845,12 @@ export class DriveService {
 
   private storageFolderWriteError(error: unknown): Error {
     if (!(error instanceof DriveProviderError)) {
-      return error instanceof Error
-        ? error
-        : new ServiceUnavailableException(
-            'Google Drive storage-folder write failed.',
-          );
+      this.logNativeCreationFailure('storage-folder write failed', error);
+      return new BadGatewayException({
+        statusCode: 502,
+        code: 'GOOGLE_DRIVE_STORAGE_FOLDER_WRITE_FAILED',
+        message: 'Google Drive could not create the file in the storage folder.',
+      });
     }
     if (error.kind === 'forbidden') {
       return new ForbiddenException({

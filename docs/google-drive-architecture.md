@@ -52,10 +52,17 @@ Docs/Sheets/Slides, binary uploads, and Phase 4A migration uploads always send
 `parents: [storageFolderId]`. No creation path derives a Google parent from a
 Docs Hub folder or falls back to the acting user's My Drive.
 
-Sync is metadata-only and is restricted to the configured folder's subtree.
-The API lists direct children with `'<folderId>' in parents`, traverses nested
-folders, and ignores unrelated My Drive files and files outside the subtree.
-It does not use Shared Drive discovery, `corpora=drive`, or a `driveId` filter.
+The primary browser is provider-backed and reads the configured folder's
+subtree live. It lists direct children with `'<folderId>' in parents`, traverses
+nested folders, and ignores unrelated My Drive files and files outside the
+subtree. Search and import therefore do not require a prior metadata sync.
+The browser does not use Shared Drive discovery, `corpora=drive`, or a `driveId`
+filter.
+
+Sync remains metadata-only reconciliation for the same subtree. It refreshes
+the local `DriveFile` catalog and marks metadata that is no longer returned as
+unavailable; it is not a prerequisite for browsing or adding a logical
+reference.
 
 `DriveFile.driveFileId` remains the external identity and is unique in the
 company corpus. `DriveFile.location` and the nullable `sharedDriveId` field
@@ -66,8 +73,8 @@ for a normal My Drive folder. `DriveFile` rows store metadata only.
 
 The Google Drive physical folder is not the Docs Hub logical hierarchy. A
 Docs Hub move changes only `Node.parentId`; it never changes a Google Drive
-parent. “Add to Docs Hub” creates a logical reference to a synchronized Drive
-file without relocating the source file.
+parent. “Add to Docs Hub” live-validates and records a metadata-only logical
+reference to a Drive file without relocating the source file.
 
 - `ADMIN`: account administration, integration configuration, document
   organization, and viewing.
@@ -88,6 +95,7 @@ migration. Audit records use the operator when one exists and `SYSTEM` for
 unattended work.
 
 Production acceptance is: connect the company account, choose and validate a
-storage folder, run metadata sync, create one native document, upload one tiny
-binary, and verify that both are under that folder before resuming the existing
+storage folder, browse and import a live file without syncing first, run a
+metadata reconciliation, create one native document, upload one tiny binary,
+and verify that both are under that folder before resuming the existing
 one-file legacy migration procedure.

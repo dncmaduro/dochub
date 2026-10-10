@@ -151,6 +151,15 @@ export class DriveController {
     return this.drive.listFiles(auth.userId, query);
   }
 
+  @Get('browser/files')
+  @UseGuards(AccessTokenGuard)
+  browserFiles(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Query() query: DriveFilesQueryDto,
+  ) {
+    return this.drive.listBrowserFiles(auth.userId, query);
+  }
+
   @Post('files/:driveFileId/add-to-docshub')
   @UseGuards(AccessTokenGuard)
   addToDocsHub(

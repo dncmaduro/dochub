@@ -51,17 +51,20 @@ local folders still honor the existing ACL and capability model, so Groups,
 for `LOCAL` content. Local uploads, Office creation, and legacy local moves
 therefore retain their existing ACL boundary.
 
-Drive-backed references are metadata-only `Node`/`File` links. They do not
+Drive-backed references are metadata-only `Node`/`File` links. The
+provider-backed Drive browser searches the configured storage-folder subtree
+live, so adding a reference does not require a prior sync. They do not
 create `PermissionEntry` rows and do not expose the legacy Share/permissions
 UI or APIs. Their visibility is the Docs Hub logical visibility (currently
 general viewer access), while the source file's Google Drive permissions stay
-authoritative in Google Drive. Active accounts browse the common synchronized
+authoritative in Google Drive. Active accounts browse the common live
 company corpus; only `ADMIN` and `DOCUMENT_MANAGER` can add, move, or remove a
 Drive reference in Docs Hub.
 
 ## UI behavior
 
-The connected Drive browser shows whether a file is already in Docs Hub and
+The connected Drive browser searches the configured storage-folder subtree
+live, shows whether a file is already in Docs Hub, and
 offers a logical-folder picker for import. Docs Hub rows expose native Google
 Docs/Sheets/Slides types, use Drive modified time, open through
 `webViewLink`, and record the open in Recent. Removing a row is labelled

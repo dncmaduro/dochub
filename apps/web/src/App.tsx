@@ -160,6 +160,12 @@ function navigateProfile() {
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
+function navigateGoogleDrive() {
+  if (window.location.pathname !== "/drive/google") {
+    window.history.pushState({}, "", "/drive/google");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
 function currentSearchQuery() {
   return new URLSearchParams(window.location.search).get("q") ?? "";
 }
@@ -1169,26 +1175,29 @@ function GoogleDriveApp({ canManageDocuments: canManage }: { canManageDocuments:
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Notice>(null);
-  const [search, setSearch] = useState("");
   const [pickerFile, setPickerFile] = useState<DriveFile | null>(null);
   const [addingId, setAddingId] = useState<string | null>(null);
+  const requestRevision = useRef(0);
   const load = useCallback(async (nextCursor?: string) => {
+    const revision = ++requestRevision.current;
     setLoading(true);
     try {
-      const page = await api.listDriveFiles(search, nextCursor);
+      const page = await api.listDriveBrowserFiles(query, nextCursor);
+      if (revision !== requestRevision.current) return;
       setFiles((current) => nextCursor ? [...current, ...page.items] : page.items);
       setCursor(page.nextCursor);
     } catch (requestError) {
+      if (revision !== requestRevision.current) return;
       setError({ tone: "error", message: displayError(requestError) });
     } finally {
-      setLoading(false);
+      if (revision === requestRevision.current) setLoading(false);
     }
-  }, [search]);
+  }, [query]);
   async function addToDocsHub(file: DriveFile, parentId: string | null) {
-    setAddingId(file.id);
+    setAddingId(file.driveFileId);
     try {
       const result = await api.addDriveFileToDocsHub(file.driveFileId, parentId);
-      setFiles((current) => current.map((item) => item.id === file.id
+      setFiles((current) => current.map((item) => item.driveFileId === file.driveFileId
         ? { ...item, docsHubNodeId: result.nodeId }
         : item));
       setPickerFile(null);
@@ -1202,16 +1211,20 @@ function GoogleDriveApp({ canManageDocuments: canManage }: { canManageDocuments:
   useEffect(() => {
     void api.driveIntegration().then((state) => {
       setConnection(state);
-      if (state.connected && state.configured) {
-        void load();
-        return;
-      }
-      setLoading(false);
+      if (!state.connected || !state.configured) setLoading(false);
     }).catch((requestError) => {
       setError({ tone: "error", message: displayError(requestError) });
       setLoading(false);
     });
-  }, [load]);
+  }, []);
+  useEffect(() => {
+    if (!connection) return;
+    if (!connection.connected || !connection.configured) {
+      return;
+    }
+    const timer = window.setTimeout(() => void load(), 300);
+    return () => window.clearTimeout(timer);
+  }, [connection, load]);
   if ((!connection?.connected || !connection.configured) && !loading) return <>
     <PageHeader title={<h1 className="page-title">{t("drive.browserTitle")}</h1>} />
     <section className="integration-empty"><h2>{t("drive.notConnected")}</h2><p>{t("drive.adminConfigures")}</p></section>
@@ -1222,11 +1235,11 @@ function GoogleDriveApp({ canManageDocuments: canManage }: { canManageDocuments:
       <button type="button" className="button" onClick={() => void load()} disabled={loading}>{t("files.refresh")}</button>
     </PageHeader>
     <section className="drive-external-content">
-      <div className="drive-external-toolbar"><p>{t("drive.browserDescription")}</p><div className="search-field drive-external-search"><Icon name="search" size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setSearch(query); setCursor(null); } }} placeholder={t("drive.searchPlaceholder")} aria-label={t("drive.searchPlaceholder")} /></div></div>
+      <div className="drive-external-toolbar"><p>{t("drive.browserDescription")}</p><div className="search-field drive-external-search"><Icon name="search" size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("drive.searchPlaceholder")} aria-label={t("drive.searchPlaceholder")} /></div></div>
       {loading && files.length === 0 ? <p className="integration-state">{t("common.loading")}</p> : files.length === 0 ? <p className="integration-empty">{t("drive.noFiles")}</p> : <div className="file-table-wrap"><table className="file-table drive-external-table"><thead><tr><th>{t("common.name")}</th><th>{t("common.type")}</th><th>{t("common.modified")}</th><th>{t("drive.location")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{files.map((file) => <tr key={file.id}><td className="drive-external-name">{file.name}</td><td>{driveTypeLabel(file.normalizedType)}</td><td>{file.driveModifiedTime ? formatDate(file.driveModifiedTime) : "—"}</td><td>{driveLocationLabel(file.location)}</td><td className="drive-external-actions">{file.docsHubNodeId ? <span className="drive-in-docshub">{t("drive.alreadyInDocsHub")}</span> : file.normalizedType === "FOLDER" || !canManage ? "—" : <button type="button" className="button" disabled={addingId !== null} onClick={() => setPickerFile(file)}>{t("drive.addToDocsHub")}</button>} {file.webViewLink && <a className="button" href={file.webViewLink} target="_blank" rel="noreferrer">{t("drive.openInGoogle")}</a>}</td></tr>)}</tbody></table></div>}
       {cursor && <button type="button" className="button drive-load-more" onClick={() => void load(cursor)} disabled={loading}>{t("search.loadMore")}</button>}
     </section>
-    {pickerFile && <DocsHubFolderPicker file={pickerFile} onClose={() => setPickerFile(null)} onSelect={(parentId) => void addToDocsHub(pickerFile, parentId)} pending={addingId === pickerFile.id} />}
+    {pickerFile && <DocsHubFolderPicker file={pickerFile} onClose={() => setPickerFile(null)} onSelect={(parentId) => void addToDocsHub(pickerFile, parentId)} pending={addingId === pickerFile.driveFileId} />}
   </>;
 }
 
@@ -1766,6 +1779,14 @@ function DriveApp({
   return (
     <>
         <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />} searchQuery="">
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={navigateGoogleDrive}
+            >
+              <Icon name="drive" />
+              {t("drive.addFromGoogleDrive")}
+            </button>
             <button
               type="button"
               className="icon-button"
