@@ -1,7 +1,8 @@
 # Google Drive Phase 3A: native document creation
 
 > Native creation uses the company `GoogleDriveIntegration` and its configured
-> Shared Drive target. It never uses the acting user's My Drive.
+> Google Drive storage-folder target. It never falls back to the acting user's
+> My Drive.
 
 Phase 3A makes the Docs Hub **New** menu create native Google Workspace files:
 
@@ -11,20 +12,19 @@ Phase 3A makes the Docs Hub **New** menu create native Google Workspace files:
 
 The Docs Hub folder is still the logical parent. The Drive API parent is a
 separate creation target configured by an administrator in the Admin Drive
-integration section. The target is the selected Shared Drive root or its
-optional physical storage folder, and creation requests use
-`supportsAllDrives=true`.
+integration section. The target is the validated `storageFolderId`, and the
+creation request sends it as the explicit physical parent.
 
 ## Authorization and capability
 
-The company connection requires Shared Drive discovery/read access through:
+The company connection requires Drive read access through:
 `https://www.googleapis.com/auth/drive.readonly`.
 
 The WRITE authorization flow requests the additional least-privilege
 `https://www.googleapis.com/auth/drive.file` scope. Existing connections that
 only have the former metadata-read scope must be explicitly reauthorized;
 `GoogleDriveIntegration.authorizedScopes` is persisted and never mutated by
-the deployment. The API exposes separate read/discovery and write capability
+the deployment. The API exposes separate read and write capability
 state; only an administrator configures or reauthorizes the company
 integration, while viewers cannot create native documents.
 

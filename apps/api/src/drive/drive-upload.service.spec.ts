@@ -168,7 +168,7 @@ function harness(
   const context = {
     accessToken: 'server-only-access-token',
     integrationId: connectionId,
-    target: { type: 'SHARED_DRIVE', driveId: 'company-drive', parentFolderId: PHYSICAL_PARENT },
+    target: { type: 'DRIVE_FOLDER', parentFolderId: PHYSICAL_PARENT },
   };
   const drive = {
     assertDriveUploadManager: vi.fn(async () => {

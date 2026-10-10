@@ -189,7 +189,11 @@ export interface DriveIntegration {
   storageFolderName?: string | null;
   configured?: boolean;
 }
-export interface SharedDriveOption { id: string; name?: string; }
+export interface DriveFolderOption {
+  id: string;
+  name: string;
+  parentIds: string[];
+}
 export interface NativeDocumentCreation {
   operationId: string;
   kind: NativeDocumentKind;
@@ -297,14 +301,15 @@ export class ApiClient {
     window.location.assign(result.authorizationUrl);
   }
 
-  async listCompanySharedDrives() {
-    return this.request<SharedDriveOption[]>("/drive/integration/shared-drives");
+  async listCompanyDriveFolders(query?: string) {
+    const suffix = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : "";
+    return this.request<DriveFolderOption[]>(`/drive/integration/folders${suffix}`);
   }
 
-  async configureCompanySharedDrive(sharedDriveId: string, storageFolderId?: string) {
-    return this.request<DriveIntegration>("/drive/integration/shared-drive", {
+  async configureCompanyStorageFolder(storageFolderId: string) {
+    return this.request<DriveIntegration>("/drive/integration/storage-folder", {
       method: "POST",
-      body: JSON.stringify({ sharedDriveId, storageFolderId: storageFolderId || undefined }),
+      body: JSON.stringify({ storageFolderId }),
     });
   }
 

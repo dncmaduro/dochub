@@ -11,7 +11,7 @@ export interface DriveConfig {
 }
 
 export type DriveCreationTarget =
-  | { type: 'SHARED_DRIVE'; driveId: string; parentFolderId?: string };
+  | { type: 'DRIVE_FOLDER'; parentFolderId: string };
 
 export const DRIVE_CONFIG = Symbol('DRIVE_CONFIG');
 

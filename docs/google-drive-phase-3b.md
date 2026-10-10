@@ -1,6 +1,6 @@
 # Google Drive Phase 3B: binary uploads
 
-> Uploads use the company integration and selected Shared Drive. A
+> Uploads use the company integration and selected Drive storage folder. A
 > `DOCUMENT_MANAGER` never connects a personal Drive before uploading.
 
 ## Resulting content model
@@ -65,7 +65,7 @@ denied. This upload path uses the system role and does not consult legacy
 `PermissionEntry` ACLs. The UI hides Upload for viewers.
 
 A connected company integration must include the existing `drive.file` write
-grant and `drive.readonly` for Shared Drive discovery. Integrations missing
+grant and `drive.readonly` for Drive folder discovery. Integrations missing
 the read grant receive a typed
 `GOOGLE_DRIVE_READ_AUTHORIZATION_REQUIRED` response, while integrations missing
 the write grant receive `GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED`. The UI
@@ -75,7 +75,8 @@ broaden OAuth scopes beyond `drive.readonly` plus `drive.file`.
 ## Physical and logical placement
 
 The API chooses the physical Google Drive parent from the company integration's
-Shared Drive target. It never derives a Google parent from the Docs Hub folder.
+validated `storageFolderId`. It never derives a Google parent from the Docs Hub
+folder.
 In Docs Hub, the new `Node.parentId` records the selected
 logical folder. Moving that Node later does not change the physical Drive
 parent.

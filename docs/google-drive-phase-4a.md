@@ -1,7 +1,7 @@
 # Google Drive Phase 4A: legacy local-file migration
 
-> Phase 4A uses the company `GoogleDriveIntegration` and configured Shared
-> Drive. No production local file migration is part of this architecture
+> Phase 4A uses the company `GoogleDriveIntegration` and configured Drive
+> storage folder. No production local file migration is part of this architecture
 > refactor.
 
 Phase 4A migrates the current authoritative `FileVersion` for one existing
@@ -11,7 +11,7 @@ Phase 4A migrates the current authoritative `FileVersion` for one existing
 ## Ownership and safety
 
 Migration resolves the singleton `GoogleDriveIntegration`, which must be
-connected with the `drive.file` scope and configured with a Shared Drive
+connected with the `drive.file` scope and configured with a storage folder
 target. It does not use `DRIVE_MIGRATION_OWNER_USER_ID`; credentials and
 physical storage ownership belong to the company integration. An audit record
 uses the operator when supplied or `SYSTEM` for unattended work.

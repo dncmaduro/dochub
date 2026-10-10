@@ -447,7 +447,6 @@ export class DriveUploadService {
         ...remoteFile,
         name: remoteName,
         mimeType: operation.mimeType,
-        driveId: remoteFile.driveId ?? context.target.driveId,
       },
       sizeBytes,
     );

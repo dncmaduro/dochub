@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import { DriveCreationOperationStatus, DriveFileType, DriveSyncStatus, UserStatus } from '@dochub/database';
 import { DriveService } from './drive.service.js';
@@ -33,10 +33,10 @@ function harness() {
     lastSyncError: null,
     revokedAt: null,
     authorizedScopes: [GOOGLE_DRIVE_READONLY_SCOPE, GOOGLE_DRIVE_FILE_SCOPE],
-    sharedDriveId: 'company-drive',
-    sharedDriveName: 'Company Shared Drive',
-    storageFolderId: null,
-    storageFolderName: null,
+    sharedDriveId: null,
+    sharedDriveName: null,
+    storageFolderId: 'storage-folder',
+    storageFolderName: 'Docs Hub storage',
   };
   connections.set('company', connection);
 
@@ -164,7 +164,7 @@ function harness() {
     refreshAccessToken: vi.fn(async () => ({ accessToken: 'access', expiresAt: new Date(Date.now() + 300_000) })),
     getAccount: vi.fn(async () => ({ googleAccountId: 'google-account', email: 'drive@example.test' })),
     listFiles: vi.fn(),
-    listSharedDrives: vi.fn(async () => ({ drives: [] })),
+    listFolders: vi.fn(async () => ({ folders: [] })),
     getFile: vi.fn(async () => ({ id: 'uploaded-binary' })),
     createNativeFile: vi.fn(async () => ({ id: 'created-doc', name: 'Untitled document', mimeType: 'application/vnd.google-apps.document', webViewLink: 'https://docs.google.com/document/d/created-doc' })),
     uploadBinaryFile: vi.fn(async () => ({ id: 'uploaded-binary' })),
@@ -182,9 +182,8 @@ function harness() {
   };
   const target = {
     resolve: vi.fn(() => ({
-      type: 'SHARED_DRIVE',
-      driveId: 'company-drive',
-      parentFolderId: 'company-drive',
+      type: 'DRIVE_FOLDER',
+      parentFolderId: 'storage-folder',
     })),
   };
   const authorization = { assertDocumentManager: vi.fn(async () => undefined) };
@@ -228,7 +227,7 @@ describe('DriveService', () => {
     await h.service.sync(h.userId);
     expect(h.files.size).toBe(4);
     expect(vi.mocked(h.provider.listFiles).mock.calls[0]?.[1]).toMatchObject({
-      driveId: 'company-drive',
+      parentFolderId: 'storage-folder',
     });
     const first = [...h.files.values()].find((file) => file.driveFileId === 'doc-1');
     expect(first.normalizedType).toBe(DriveFileType.GOOGLE_DOC);
@@ -241,6 +240,55 @@ describe('DriveService', () => {
     expect([...h.files.values()].filter((file) => file.driveFileId === 'doc-1')).toHaveLength(1);
     expect([...h.files.values()].find((file) => file.driveFileId === 'doc-1')?.name).toBe('Renamed plan');
     expect(h.auditLog.some((entry) => entry.action === 'DRIVE_SYNC_COMPLETED')).toBe(true);
+  });
+
+  it('syncs only the configured folder subtree and traverses nested folders', async () => {
+    const h = harness();
+    vi.mocked(h.provider.listFiles).mockImplementation(async (_token, options) => {
+      if (options.parentFolderId === 'storage-folder') {
+        return {
+          files: [
+            {
+              id: 'nested-folder',
+              name: 'Nested',
+              mimeType: 'application/vnd.google-apps.folder',
+              ownedByMe: true,
+            },
+            {
+              id: 'root-doc',
+              name: 'Root document',
+              mimeType: 'application/vnd.google-apps.document',
+              ownedByMe: true,
+            },
+          ],
+        };
+      }
+      if (options.parentFolderId === 'nested-folder') {
+        return {
+          files: [
+            {
+              id: 'nested-doc',
+              name: 'Nested document',
+              mimeType: 'application/vnd.google-apps.document',
+              ownedByMe: true,
+            },
+          ],
+        };
+      }
+      return { files: [] };
+    });
+    await h.service.sync(h.userId);
+    expect([...h.files.keys()]).toEqual(
+      expect.arrayContaining(['nested-folder', 'root-doc', 'nested-doc']),
+    );
+    expect(h.provider.listFiles).toHaveBeenCalledWith(
+      'access',
+      expect.objectContaining({ parentFolderId: 'storage-folder' }),
+    );
+    expect(h.provider.listFiles).toHaveBeenCalledWith(
+      'access',
+      expect.objectContaining({ parentFolderId: 'nested-folder' }),
+    );
   });
 
   it('marks a connection revoked after refresh failure and scopes file reads to the owner', async () => {
@@ -273,10 +321,10 @@ describe('DriveService', () => {
       LEGACY_METADATA_READONLY_SCOPE,
       GOOGLE_DRIVE_FILE_SCOPE,
     ];
-    await expect(h.service.listSharedDrives(h.userId)).rejects.toBeInstanceOf(
+    await expect(h.service.listDriveFolders(h.userId)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
-    await expect(h.service.listSharedDrives(h.userId)).rejects.toMatchObject({
+    await expect(h.service.listDriveFolders(h.userId)).rejects.toMatchObject({
       response: expect.objectContaining({
         code: 'GOOGLE_DRIVE_READ_AUTHORIZATION_REQUIRED',
       }),
@@ -290,32 +338,81 @@ describe('DriveService', () => {
     });
   });
 
-  it('discovers Shared Drives with the Drive read scope', async () => {
+  it('lists accessible Drive folders with the Drive read scope', async () => {
     const h = harness();
-    vi.mocked(h.provider.listSharedDrives).mockResolvedValueOnce({
-      drives: [{ id: 'drive-1', name: 'Company Shared Drive' }],
+    vi.mocked(h.provider.listFolders).mockResolvedValueOnce({
+      folders: [{ id: 'folder-1', name: 'Company documents', parents: [] }],
     });
-    await expect(h.service.listSharedDrives(h.userId)).resolves.toEqual([
-      { id: 'drive-1', name: 'Company Shared Drive' },
+    await expect(h.service.listDriveFolders(h.userId)).resolves.toEqual([
+      { id: 'folder-1', name: 'Company documents', parentIds: [] },
     ]);
   });
 
-  it('maps a Shared Drive discovery 403 to a safe read authorization error', async () => {
+  it('maps Drive folder discovery 403 to a safe read authorization error', async () => {
     const h = harness();
-    vi.mocked(h.provider.listSharedDrives).mockRejectedValueOnce(
+    vi.mocked(h.provider.listFolders).mockRejectedValueOnce(
       new DriveProviderError('forbidden', 403),
     );
-    await expect(h.service.listSharedDrives(h.userId)).rejects.toMatchObject({
+    await expect(h.service.listDriveFolders(h.userId)).rejects.toMatchObject({
       response: {
         statusCode: 403,
         code: 'GOOGLE_DRIVE_READ_AUTHORIZATION_REQUIRED',
         message: 'Google Drive read authorization is required.',
       },
     });
-    expect(h.provider.listSharedDrives).toHaveBeenCalledWith(
+    expect(h.provider.listFolders).toHaveBeenCalledWith(
       'access',
       undefined,
+      undefined,
     );
+  });
+
+  it('validates and persists an arbitrary Drive folder as the storage target', async () => {
+    const h = harness();
+    vi.mocked(h.provider.getFile).mockResolvedValueOnce({
+      id: 'folder-2',
+      name: 'Docs Hub storage',
+      mimeType: 'application/vnd.google-apps.folder',
+      capabilities: { canAddChildren: true },
+    });
+    await expect(
+      h.service.configureStorageFolder(h.userId, 'folder-2'),
+    ).resolves.toMatchObject({ configured: true });
+    expect(h.connection).toMatchObject({
+      sharedDriveId: null,
+      sharedDriveName: null,
+      storageFolderId: 'folder-2',
+      storageFolderName: 'Docs Hub storage',
+    });
+    expect(h.auditLog.some((entry) => entry.action === 'DRIVE_STORAGE_FOLDER_CONFIGURED')).toBe(true);
+  });
+
+  it('rejects a non-folder storage target', async () => {
+    const h = harness();
+    vi.mocked(h.provider.getFile).mockResolvedValueOnce({
+      id: 'file-2',
+      mimeType: 'application/pdf',
+    });
+    await expect(
+      h.service.configureStorageFolder(h.userId, 'file-2'),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('rejects a storage folder that explicitly denies child creation', async () => {
+    const h = harness();
+    vi.mocked(h.provider.getFile).mockResolvedValueOnce({
+      id: 'read-only-folder',
+      name: 'Read only',
+      mimeType: 'application/vnd.google-apps.folder',
+      capabilities: { canAddChildren: false },
+    });
+    await expect(
+      h.service.configureStorageFolder(h.userId, 'read-only-folder'),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'GOOGLE_DRIVE_STORAGE_FOLDER_NOT_WRITABLE',
+      },
+    });
   });
 
   it('allows only an active administrator to start the company integration flow', async () => {
@@ -341,7 +438,7 @@ describe('DriveService', () => {
     expect(h.provider.createNativeFile).toHaveBeenCalledWith('access', {
       name: 'Tài liệu chưa đặt tên',
       mimeType: 'application/vnd.google-apps.document',
-      parentFolderId: 'company-drive',
+      parentFolderId: 'storage-folder',
     });
     expect(h.operations.get('create-document-1')).toMatchObject({
       status: DriveCreationOperationStatus.SUCCEEDED,
@@ -365,7 +462,7 @@ describe('DriveService', () => {
   it('keeps the logical parent separate from the configured physical Drive parent', async () => {
     const h = harness();
     const logicalParentId = randomUUID();
-    h.target.resolve.mockReturnValue({ type: 'SHARED_DRIVE', driveId: 'company-drive', parentFolderId: 'physical-target' });
+    h.target.resolve.mockReturnValue({ type: 'DRIVE_FOLDER', parentFolderId: 'physical-target' });
     h.prisma.node.findFirst.mockImplementation(async (args: any) =>
       args.where.type === 'FOLDER' ? { id: logicalParentId } : null,
     );

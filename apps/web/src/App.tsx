@@ -17,8 +17,8 @@ import { useTranslation } from "react-i18next";
 import {
   ApiClient,
   ApiError,
+  type DriveFolderOption,
   type DriveIntegration,
-  type SharedDriveOption,
   type DriveFile,
   type Breadcrumb,
   type AdminGroup,
@@ -789,17 +789,16 @@ function AdminApp({ tab }: { tab: "users" | "groups" | "drive" }) {
 
 function AdminDriveIntegration() {
   const [connection, setConnection] = useState<DriveIntegration | null>(null);
-  const [sharedDrives, setSharedDrives] = useState<SharedDriveOption[]>([]);
-  const [selectedDriveId, setSelectedDriveId] = useState("");
-  const [storageFolderId, setStorageFolderId] = useState("");
+  const [folders, setFolders] = useState<DriveFolderOption[]>([]);
+  const [selectedFolderId, setSelectedFolderId] = useState("");
+  const [folderQuery, setFolderQuery] = useState("");
   const [busy, setBusy] = useState<"load" | "connect" | "save" | "sync" | "disconnect" | null>("load");
   const [notice, setNotice] = useState<Notice>(null);
   const load = useCallback(async () => {
     try {
       const state = await api.driveIntegration();
       setConnection(state);
-      setSelectedDriveId(state.sharedDriveId ?? "");
-      setStorageFolderId(state.storageFolderId ?? "");
+      setSelectedFolderId(state.storageFolderId ?? "");
     } catch (error) {
       setNotice({ tone: "error", message: displayError(error) });
     } finally {
@@ -814,14 +813,14 @@ function AdminDriveIntegration() {
     setBusy("connect");
     try { await api.startDriveIntegration("WRITE"); } catch (error) { setBusy(null); setNotice({ tone: "error", message: displayError(error) }); }
   }
-  async function loadSharedDrives() {
+  async function loadFolders() {
     setBusy("load");
-    try { setSharedDrives(await api.listCompanySharedDrives()); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
+    try { setFolders(await api.listCompanyDriveFolders(folderQuery)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
   }
   async function save() {
-    if (!selectedDriveId) return;
+    if (!selectedFolderId) return;
     setBusy("save");
-    try { setConnection(await api.configureCompanySharedDrive(selectedDriveId, storageFolderId)); setNotice({ tone: "success", message: t("admin.driveSaved") }); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
+    try { setConnection(await api.configureCompanyStorageFolder(selectedFolderId)); setNotice({ tone: "success", message: t("admin.driveSaved") }); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
   }
   async function sync() {
     setBusy("sync");
@@ -841,16 +840,16 @@ function AdminDriveIntegration() {
           <div><dt>{t("drive.status")}</dt><dd>{connection?.connected ? connection.needsReauthorization ? t("drive.reauthorizationRequired") : t("drive.connected") : t("drive.notConnected")}</dd></div>
           <div><dt>{t("drive.access")}</dt><dd>{connection?.canRead ? t("drive.readEnabled") : connection?.connected ? t("drive.readAuthorizationRequired") : t("drive.notConfigured")}</dd></div>
           <div><dt>{t("drive.writeAccess")}</dt><dd>{connection?.canWrite ? t("drive.writeEnabled") : connection?.connected ? t("drive.writeAuthorizationRequired") : t("drive.notConfigured")}</dd></div>
-          <div><dt>{t("drive.sharedDrive")}</dt><dd>{connection?.sharedDriveName ?? connection?.sharedDriveId ?? t("drive.notConfigured")}</dd></div>
-          <div><dt>{t("drive.storageFolder")}</dt><dd>{connection?.storageFolderName ?? connection?.storageFolderId ?? t("drive.sharedDriveRoot")}</dd></div>
+          <div><dt>{t("drive.account")}</dt><dd>{connection?.googleEmail ?? t("drive.notConfigured")}</dd></div>
+          <div><dt>{t("drive.storageFolder")}</dt><dd>{connection?.storageFolderName ?? connection?.storageFolderId ?? t("drive.notConfigured")}</dd></div>
           <div><dt>{t("drive.lastSynced")}</dt><dd>{connection?.lastSyncCompletedAt ? formatDate(connection.lastSyncCompletedAt) : t("drive.neverSynced")}</dd></div>
         </dl>
         <div className="integration-actions">
           {(!connection?.connected || connection.needsReauthorization) && <button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void connect()}>{busy === "connect" ? t("drive.connecting") : connection?.connected ? t("drive.reauthorize") : t("drive.connectCompany")}</button>}
-          {connection?.connected && <><button type="button" className="button" disabled={busy !== null || !connection.canRead} onClick={() => void loadSharedDrives()}>{t("drive.chooseSharedDrive")}</button><button type="button" className="button button-primary" disabled={busy !== null || !connection.configured} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></>}
+          {connection?.connected && <><input value={folderQuery} onChange={(event) => setFolderQuery(event.target.value)} placeholder={t("drive.searchFolders")} aria-label={t("drive.searchFolders")} /><button type="button" className="button" disabled={busy !== null || !connection.canRead} onClick={() => void loadFolders()}>{t("drive.chooseDriveFolder")}</button><button type="button" className="button button-primary" disabled={busy !== null || !connection.configured} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></>}
         </div>
         {connection?.needsReauthorization && <p className="form-error">{t("drive.reauthorizationRequired")}</p>}
-        {sharedDrives.length > 0 && <div className="admin-inline-form"><select value={selectedDriveId} onChange={(event) => setSelectedDriveId(event.target.value)} aria-label={t("drive.chooseSharedDrive")}><option value="">{t("drive.chooseSharedDrive")}</option>{sharedDrives.map((drive) => <option key={drive.id} value={drive.id}>{drive.name ?? drive.id}</option>)}</select><input value={storageFolderId} onChange={(event) => setStorageFolderId(event.target.value)} placeholder={t("drive.storageFolderId")} aria-label={t("drive.storageFolderId")} /><button type="button" className="button button-primary" disabled={busy !== null || !selectedDriveId} onClick={() => void save()}>{busy === "save" ? t("common.saving") : t("common.save")}</button></div>}
+        {folders.length > 0 && <div className="admin-inline-form"><select value={selectedFolderId} onChange={(event) => setSelectedFolderId(event.target.value)} aria-label={t("drive.chooseDriveFolder")}><option value="">{t("drive.chooseDriveFolder")}</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select><button type="button" className="button button-primary" disabled={busy !== null || !selectedFolderId} onClick={() => void save()}>{busy === "save" ? t("common.saving") : t("common.save")}</button></div>}
       </>}
     </section>
   </>;

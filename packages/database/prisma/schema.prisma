@@ -192,9 +192,10 @@ model User {
   driveUploadOperations    DriveUploadOperation[]
 }
 
-// Docs Hub has one company-wide Google Shared Drive integration. The
-// singletonKey makes that invariant explicit without introducing tenancy into
-// the rest of the schema.
+// Docs Hub has one company-wide Google Drive integration and one physical
+// storage-folder target. The nullable shared-drive fields are retained for
+// compatibility with legacy rows; singletonKey keeps the company invariant
+// explicit without introducing tenancy into the rest of the schema.
 model GoogleDriveIntegration {
   id                    String               @id @default(uuid()) @db.Uuid
   singletonKey          String               @unique @default("company")

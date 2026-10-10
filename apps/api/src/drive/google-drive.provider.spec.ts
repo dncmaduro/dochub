@@ -60,7 +60,7 @@ describe('GoogleDriveApiProvider', () => {
     pageSize: 25,
     nameQuery: "O'Reilly",
     includeTrashed: false,
-    driveId: 'company-drive',
+    parentFolderId: 'storage-folder',
     });
     const request = fetchMock.mock.calls[0]?.[0];
     const requestUrl =
@@ -74,12 +74,37 @@ describe('GoogleDriveApiProvider', () => {
     const url = new URL(requestUrl);
     expect(url.searchParams.get('pageToken')).toBe('previous');
     expect(url.searchParams.get('pageSize')).toBe('25');
+    expect(url.searchParams.get('q')).toContain("'storage-folder' in parents");
     expect(url.searchParams.get('q')).toContain("name contains 'O\\'Reilly'");
-    expect(url.searchParams.get('corpora')).toBe('drive');
-    expect(url.searchParams.get('driveId')).toBe('company-drive');
-    expect(url.searchParams.get('includeItemsFromAllDrives')).toBe('true');
-    expect(url.searchParams.get('supportsAllDrives')).toBe('true');
+    expect(url.searchParams.has('corpora')).toBe(false);
+    expect(url.searchParams.has('driveId')).toBe(false);
     expect(page.nextPageToken).toBe('next');
+  });
+
+  it('lists accessible folders without using a Drive corpus or drive ID', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ files: [{ id: 'folder-1', name: 'Docs Hub' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const provider = new GoogleDriveApiProvider(config);
+    await expect(
+      provider.listFolders('access-token', undefined, 'Docs'),
+    ).resolves.toEqual({
+      folders: [{ id: 'folder-1', name: 'Docs Hub' }],
+    });
+    const request = fetchMock.mock.calls[0]?.[0];
+    const url = new URL(
+      request instanceof URL ? request.toString() : String(request),
+    );
+    expect(url.pathname).toBe('/drive/v3/files');
+    expect(url.searchParams.get('q')).toContain(
+      "mimeType = 'application/vnd.google-apps.folder'",
+    );
+    expect(url.searchParams.get('q')).toContain("name contains 'Docs'");
+    expect(url.searchParams.has('corpora')).toBe(false);
+    expect(url.searchParams.has('driveId')).toBe(false);
   });
 
   it('normalizes provider authorization failures without exposing response bodies', async () => {
@@ -98,7 +123,7 @@ describe('GoogleDriveApiProvider', () => {
     ).rejects.not.toThrow('secret');
   });
 
-  it('creates a native file with a physical Drive parent and supports Shared Drives', async () => {
+  it('creates a native file with the configured Drive folder as its physical parent', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -128,7 +153,7 @@ describe('GoogleDriveApiProvider', () => {
       }),
     );
     const url = fetchMock.mock.calls[0]?.[0];
-    expect(String(url)).toContain('supportsAllDrives=true');
+    expect(String(url)).not.toContain('supportsAllDrives');
   });
 
   it('streams a binary file through a Drive resumable session at the configured parent', async () => {
@@ -228,7 +253,11 @@ describe('GoogleDriveApiProvider', () => {
     const bytes = Buffer.alloc(chunkSize + 3, 0x61);
     await provider.uploadBinaryFile(
       'access-token',
-      { name: 'large.bin', mimeType: 'application/octet-stream' },
+      {
+        name: 'large.bin',
+        mimeType: 'application/octet-stream',
+        parentFolderId: 'storage-folder',
+      },
       Readable.from([bytes]),
     );
 
@@ -276,7 +305,11 @@ describe('GoogleDriveApiProvider', () => {
     const provider = new GoogleDriveApiProvider(config);
     await provider.uploadBinaryFile(
       'access-token',
-      { name: 'large.bin', mimeType: 'application/octet-stream' },
+      {
+        name: 'large.bin',
+        mimeType: 'application/octet-stream',
+        parentFolderId: 'storage-folder',
+      },
       Readable.from([Buffer.alloc(chunkSize + 1, 0x61)]),
     );
 
@@ -305,7 +338,11 @@ describe('GoogleDriveApiProvider', () => {
     await expect(
       provider.uploadBinaryFile(
         'access-token',
-        { name: 'report.pdf', mimeType: 'application/pdf' },
+        {
+          name: 'report.pdf',
+          mimeType: 'application/pdf',
+          parentFolderId: 'storage-folder',
+        },
         Readable.from([Buffer.from('%PDF-1.7 test')]),
       ),
     ).rejects.toMatchObject({ kind: 'provider', status: 503 });

@@ -1,67 +1,73 @@
 # Docs Hub Google Drive architecture
 
-## One company Shared Drive
+## One company Google Drive integration
 
-Docs Hub has one company-wide Google Shared Drive and one singleton
-`GoogleDriveIntegration`. All synchronized metadata and all new Drive-backed
-content belong to that common corpus. Docs Hub users do not connect personal
-My Drives, and `DOCUMENT_MANAGER`/`VIEWER` accounts do not need a Drive
-connection of their own.
+Docs Hub has exactly one company-wide `GoogleDriveIntegration`. It represents
+one connected Google account and one configured Google Drive folder. The folder
+may be in My Drive or another location the account can access; a Shared Drive
+is not required.
 
 The integration stores encrypted OAuth credential material, authorized scopes,
-connection/sync state, the selected `sharedDriveId` and name, and an optional
-physical `storageFolderId`/name. Legacy `DriveConnection` rows are retained
-during the transition so old encrypted credentials are not destroyed before
-the company integration has been verified. Runtime access uses the company
-integration, so removing the administrator who completed OAuth does not remove
-company data access.
+connection/sync state, and the selected `storageFolderId`/name. The old
+nullable `sharedDriveId`/name columns remain for safe compatibility with
+existing rows, but runtime readiness and target resolution use the connected
+account, OAuth scopes, and `storageFolderId` only. Legacy `DriveConnection`
+rows are also retained and are not destructively migrated.
 
-Only `ADMIN` can connect, reconnect, disconnect, select the Shared Drive, set
-the optional physical storage folder, and start metadata sync. The Admin
-Google Drive section is the only Drive integration configuration UI. Profile
-contains account/Google sign-in information only.
+Only `ADMIN` can connect, reconnect, disconnect, choose the storage folder,
+and start metadata sync. The Admin Google Drive section is the only Drive
+integration configuration UI. Profile contains account/Google sign-in
+information only.
 
-## Company OAuth scopes and reauthorization
+## OAuth scopes and folder validation
 
-The company integration's WRITE authorization requests both
-`https://www.googleapis.com/auth/drive.readonly` and
-`https://www.googleapis.com/auth/drive.file`. `drive.readonly` is required to
-discover Shared Drives with `drives.list` and to read the existing company
-Drive corpus. `drive.file` remains required for files that Docs Hub creates or
-opens/manages. The broader full `drive` scope is not required.
+The read authorization requests
+`https://www.googleapis.com/auth/drive.readonly`. The WRITE authorization
+requests that scope plus the least-privilege
+`https://www.googleapis.com/auth/drive.file` scope. The broader full `drive`
+scope is not requested.
 
-`drives.list` cannot be authorized by `drive.metadata.readonly` or
-`drive.file` alone. Existing connections retain their stored
-`authorizedScopes` unchanged; if `drive.readonly` is missing, the API reports
-that Shared Drive read authorization is required and the Admin UI asks the
-administrator to reconnect. The integration state separately exposes whether
-it can discover/read Drive content and whether it can write Docs Hub-managed
-files.
+Folder selection lists accessible Drive folders through the Drive files API and
+validates the selected ID with a metadata request. The target must be a folder;
+an inaccessible target returns a typed access error, and a folder whose Drive
+capabilities explicitly deny adding children returns a typed write-access
+error. The service never accepts an unvalidated browser-supplied folder as a
+storage target.
 
-## Physical target and API boundary
+Existing connections retain their stored `authorizedScopes` unchanged. If
+`drive.readonly` is missing, the API reports
+`GOOGLE_DRIVE_READ_AUTHORIZATION_REQUIRED`; if `drive.file` is missing, writes
+report `GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED`. The Admin UI exposes read,
+write, account, storage-folder, sync, and reauthorization state separately.
 
-The selected Shared Drive is the only synchronized source. Drive list requests
-use `includeItemsFromAllDrives=true`, `supportsAllDrives=true`,
-`corpora=drive`, and the configured `driveId`. Sync does not enumerate a
-user's My Drive, `sharedWithMe`, or arbitrary Shared Drives.
+The `drive.file` scope is retained for least-privilege writes. It is not
+replaced with full `drive`; the configured folder is validated through the
+Drive API, and any Google permission or per-file authorization limitation is
+returned as a safe typed error.
 
-New native Docs/Sheets/Slides and binary uploads use the same company
-integration and the configured Shared Drive target. If `storageFolderId` is
-set, files are created directly under that folder; otherwise they use the
-Shared Drive root. Docs Hub never derives a physical Drive parent from a
-logical Docs Hub folder and never defaults new content to My Drive.
+## Physical target and sync boundary
 
-`DriveFile.driveFileId` is the external identity and is unique in the company
-corpus. It is not scoped by a user or a user-owned connection. One company
-sync upserts the common `DriveFile` metadata set. Native opening continues to
-use Google's `webViewLink`; Drive-backed files do not go through ONLYOFFICE.
+The physical target is `{ type: 'DRIVE_FOLDER', parentFolderId }`. New native
+Docs/Sheets/Slides, binary uploads, and Phase 4A migration uploads always send
+`parents: [storageFolderId]`. No creation path derives a Google parent from a
+Docs Hub folder or falls back to the acting user's My Drive.
+
+Sync is metadata-only and is restricted to the configured folder's subtree.
+The API lists direct children with `'<folderId>' in parents`, traverses nested
+folders, and ignores unrelated My Drive files and files outside the subtree.
+It does not use Shared Drive discovery, `corpora=drive`, or a `driveId` filter.
+
+`DriveFile.driveFileId` remains the external identity and is unique in the
+company corpus. `DriveFile.location` and the nullable `sharedDriveId` field
+are retained as source metadata when Google supplies it; neither is required
+for a normal My Drive folder. `DriveFile` rows store metadata only.
 
 ## Logical organization and roles
 
-The Shared Drive hierarchy and Docs Hub hierarchy are separate. A Docs Hub
-move changes only `Node.parentId`; it does not update Google Drive parents.
-“Add to Docs Hub” selects a file from the company Shared Drive corpus and
-places a logical reference into the Docs Hub tree.
+The Google Drive physical folder is not the Docs Hub logical hierarchy. A
+Docs Hub move changes only `Node.parentId`; it never changes a Google Drive
+parent. “Add to Docs Hub” creates a logical reference to a synchronized Drive
+file without relocating the source file.
 
 - `ADMIN`: account administration, integration configuration, document
   organization, and viewing.
@@ -69,22 +75,19 @@ places a logical reference into the Docs Hub tree.
   through the configured company integration.
 - `VIEWER`: viewing/browsing only.
 
-Docs Hub roles and Google Shared Drive membership are separate systems. This
-checkpoint does not synchronize Google membership or permissions. A
-`webViewLink` still requires the viewer's actual Google Workspace access to
-the Shared Drive. Future work may map Docs Hub roles to Shared Drive roles.
+Docs Hub roles and Google permissions remain separate. A `webViewLink` still
+requires the viewer's actual Google access to the source file.
 
 ## Local files and Phase 4A
 
 `StorageService`, `FileVersion`, ONLYOFFICE, and `EditorSession` remain for
 existing `LOCAL` files until migration is complete. The standard UI does not
-create new local files. Phase 4A resolves the company `GoogleDriveIntegration`
-and its Shared Drive target; it does not use
-`DRIVE_MIGRATION_OWNER_USER_ID`, and it does not migrate files as part of this
-architecture refactor. Audit records use the operator when one exists and
-`SYSTEM` for unattended migration work.
+create new local files. Phase 4A resolves the company integration and its
+configured storage folder; it does not start migration during boot or a Prisma
+migration. Audit records use the operator when one exists and `SYSTEM` for
+unattended work.
 
-Production acceptance after deployment is: configure and verify the Shared
-Drive, run metadata sync, create one native document, upload one tiny binary,
-verify both are in the same Shared Drive, and only then resume the existing
+Production acceptance is: connect the company account, choose and validate a
+storage folder, run metadata sync, create one native document, upload one tiny
+binary, and verify that both are under that folder before resuming the existing
 one-file legacy migration procedure.

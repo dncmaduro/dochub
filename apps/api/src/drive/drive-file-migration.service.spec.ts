@@ -203,7 +203,6 @@ function harness(
     mimeType: 'application/pdf',
     size: String(bytes.length),
     md5Checksum: sourceMd5,
-    driveId: 'company-drive',
     webViewLink: 'https://drive.google.com/file/d/remote-file-1/view',
     parents: ['physical-target'],
   };
@@ -213,7 +212,7 @@ function harness(
         callback({
           accessToken: 'server',
           integrationId: connectionId,
-          target: { type: 'SHARED_DRIVE', driveId: 'company-drive', parentFolderId: 'physical-target' },
+          target: { type: 'DRIVE_FOLDER', parentFolderId: 'physical-target' },
         }),
     ),
     uploadBinaryWithContext: vi.fn(
@@ -298,7 +297,7 @@ describe('DriveFileMigrationService', () => {
     expect(h.files.get(h.fileId).node.parentId).toBeNull();
     expect(h.drive.uploadBinaryWithContext).toHaveBeenCalledWith(
       expect.objectContaining({
-        target: { type: 'SHARED_DRIVE', driveId: 'company-drive', parentFolderId: 'physical-target' },
+        target: { type: 'DRIVE_FOLDER', parentFolderId: 'physical-target' },
       }),
       'legacy.pdf',
       'application/pdf',

@@ -41,24 +41,27 @@ export interface DriveApiFile {
   createdTime?: string;
   trashed?: boolean;
   parents?: string[];
-  driveId: string;
+  driveId?: string;
   sharedWithMeTime?: string;
   ownedByMe?: boolean;
   size?: string;
   version?: string;
   md5Checksum?: string;
+  capabilities?: {
+    canAddChildren?: boolean;
+  };
 }
 
 export interface DriveNativeFileCreateRequest {
   name: string;
   mimeType: string;
-  parentFolderId?: string;
+  parentFolderId: string;
 }
 
 export interface DriveBinaryFileCreateRequest {
   name: string;
   mimeType: string;
-  parentFolderId?: string;
+  parentFolderId: string;
 }
 
 export interface DriveFilePage {
@@ -71,16 +74,17 @@ export interface DriveListOptions {
   pageSize: number;
   nameQuery?: string;
   includeTrashed: boolean;
-  driveId: string;
+  parentFolderId: string;
 }
 
-export interface DriveSharedDrive {
+export interface DriveFolderOption {
   id: string;
   name?: string;
+  parents?: string[];
 }
 
-export interface DriveSharedDrivePage {
-  drives: DriveSharedDrive[];
+export interface DriveFolderPage {
+  folders: DriveFolderOption[];
   nextPageToken?: string;
 }
 
@@ -93,10 +97,11 @@ export interface DriveProvider {
     accessToken: string,
     options: DriveListOptions,
   ): Promise<DriveFilePage>;
-  listSharedDrives(
+  listFolders(
     accessToken: string,
     pageToken?: string,
-  ): Promise<DriveSharedDrivePage>;
+    nameQuery?: string,
+  ): Promise<DriveFolderPage>;
   getFile(accessToken: string, driveFileId: string): Promise<DriveApiFile>;
   createNativeFile(
     accessToken: string,
@@ -143,6 +148,7 @@ const FILE_FIELDS = [
   'size',
   'version',
   'md5Checksum',
+  'capabilities(canAddChildren)',
 ].join(',');
 
 const RESUMABLE_CHUNK_BYTES = 8 * 1024 * 1024;
@@ -224,13 +230,10 @@ export class GoogleDriveApiProvider implements DriveProvider {
       spaces: 'drive',
       fields: `nextPageToken,files(${FILE_FIELDS})`,
       orderBy: 'modifiedTime desc,name',
-      includeItemsFromAllDrives: 'true',
-      supportsAllDrives: 'true',
     };
     if (options.pageToken) parameters.pageToken = options.pageToken;
-    parameters.corpora = 'drive';
-    parameters.driveId = options.driveId;
     const clauses = [
+      `'${escapeDriveQuery(options.parentFolderId)}' in parents`,
       options.includeTrashed ? '' : 'trashed = false',
       options.nameQuery?.trim()
         ? `name contains '${escapeDriveQuery(options.nameQuery.trim())}'`
@@ -241,19 +244,36 @@ export class GoogleDriveApiProvider implements DriveProvider {
     return this.driveRequest<DriveFilePage>('/files', accessToken, parameters);
   }
 
-  listSharedDrives(
+  listFolders(
     accessToken: string,
     pageToken?: string,
-  ): Promise<DriveSharedDrivePage> {
+    nameQuery?: string,
+  ): Promise<DriveFolderPage> {
     const parameters: Record<string, string> = {
       pageSize: '100',
-      fields: 'nextPageToken,drives(id,name)',
+      spaces: 'drive',
+      fields: `nextPageToken,files(${FILE_FIELDS})`,
+      orderBy: 'name',
+      q: [
+        "mimeType = 'application/vnd.google-apps.folder'",
+        'trashed = false',
+        nameQuery?.trim()
+          ? `name contains '${escapeDriveQuery(nameQuery.trim())}'`
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' and '),
     };
     if (pageToken) parameters.pageToken = pageToken;
-    return this.driveRequest<DriveSharedDrivePage>(
-      '/drives',
-      accessToken,
-      parameters,
+    return this.driveRequest<DriveFilePage>('/files', accessToken, parameters).then(
+      (page) => ({
+        folders: page.files.map((file) => ({
+          id: file.id,
+          name: file.name,
+          parents: file.parents,
+        })),
+        nextPageToken: page.nextPageToken,
+      }),
     );
   }
 
@@ -261,7 +281,7 @@ export class GoogleDriveApiProvider implements DriveProvider {
     return this.driveRequest<DriveApiFile>(
       `/files/${encodeURIComponent(driveFileId)}`,
       accessToken,
-      { fields: FILE_FIELDS, supportsAllDrives: 'true' },
+      { fields: FILE_FIELDS },
     );
   }
 
@@ -337,12 +357,11 @@ export class GoogleDriveApiProvider implements DriveProvider {
   ): Promise<DriveApiFile> {
     const parameters = {
       fields: FILE_FIELDS,
-      supportsAllDrives: 'true',
     };
     const body = {
       name: request.name,
       mimeType: request.mimeType,
-      ...(request.parentFolderId ? { parents: [request.parentFolderId] } : {}),
+      parents: [request.parentFolderId],
     };
     return this.driveMutation<DriveApiFile>(
       '/files',
@@ -362,13 +381,12 @@ export class GoogleDriveApiProvider implements DriveProvider {
     const url = new URL(`${DRIVE_UPLOAD_ENDPOINT}/files`);
     url.search = new URLSearchParams({
       uploadType: 'resumable',
-      supportsAllDrives: 'true',
       fields: FILE_FIELDS,
     }).toString();
     const metadata = {
       name: request.name,
       mimeType: request.mimeType,
-      ...(request.parentFolderId ? { parents: [request.parentFolderId] } : {}),
+      parents: [request.parentFolderId],
     };
 
     let sessionUri: string | undefined;
@@ -593,7 +611,7 @@ export class GoogleDriveApiProvider implements DriveProvider {
       `/files/${encodeURIComponent(driveFileId)}`,
       accessToken,
       'DELETE',
-      { supportsAllDrives: 'true' },
+      {},
     );
   }
 

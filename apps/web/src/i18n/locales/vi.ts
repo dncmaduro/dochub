@@ -26,4 +26,26 @@ const vi = {
   language: { language: "Ngôn ngữ", vietnamese: "Tiếng Việt", english: "English" },
 } as const;
 
+Object.assign(vi.admin as unknown as Record<string, unknown>, {
+  driveDescription: "Kết nối tài khoản Google và chọn thư mục Drive dùng để lưu trữ Docs Hub.",
+  driveSaved: "Đã lưu thư mục lưu trữ Google Drive của công ty.",
+});
+Object.assign(vi.drive as unknown as Record<string, unknown>, {
+  description: "Tài liệu công ty được cung cấp từ thư mục lưu trữ Google Drive đã cấu hình.",
+  readEnabled: "Đã bật quyền đọc Google Drive",
+  readAuthorizationRequired: "Cần cấp quyền đọc Google Drive",
+  writeAccess: "Quyền ghi",
+  writeAuthorizationRequired: "Cần cấp quyền ghi tệp Drive",
+  writeEnabled: "Đã bật tạo và tải tệp lên Drive",
+  account: "Tài khoản Google",
+  chooseDriveFolder: "Chọn thư mục Drive",
+  searchFolders: "Tìm thư mục Drive",
+  storageFolder: "Thư mục lưu trữ",
+  storageFolderId: "ID thư mục lưu trữ",
+  connectFromProfile: "Quản trị viên cần cấu hình thư mục lưu trữ Drive của công ty trước.",
+  adminConfigures: "Quản trị viên cần cấu hình thư mục lưu trữ Drive của công ty.",
+  reauthorizationRequired: "Cần cấp lại quyền để đọc và quản lý tệp Docs Hub trong Google Drive.",
+  locations: { ...en.drive.locations, SHARED_DRIVE: "Vị trí dùng chung" },
+});
+
 export default vi;

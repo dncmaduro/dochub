@@ -757,14 +757,8 @@ export class DriveFileMigrationService {
     await this.database.prisma.$transaction(async (tx) => {
       const stored = await tx.driveFile.upsert({
         where: { driveFileId: remote.id },
-        create: this.driveFileData(context.integrationId, {
-          ...remote,
-          driveId: remote.driveId ?? context.target.driveId,
-        }),
-        update: this.driveFileData(context.integrationId, {
-          ...remote,
-          driveId: remote.driveId ?? context.target.driveId,
-        }),
+        create: this.driveFileData(context.integrationId, remote),
+        update: this.driveFileData(context.integrationId, remote),
       });
       const linked = await tx.file.findFirst({
         where: { driveFileId: stored.id, id: { not: claim.fileId } },
@@ -1015,8 +1009,6 @@ export class DriveFileMigrationService {
       !remote.parents?.includes(target.parentFolderId)
     )
       throw new ConflictException('Drive returned an unexpected parent folder');
-    if (target.type === 'SHARED_DRIVE' && remote.driveId !== target.driveId)
-      throw new ConflictException('Drive returned an unexpected Shared Drive');
   }
 
   private driveFileData(

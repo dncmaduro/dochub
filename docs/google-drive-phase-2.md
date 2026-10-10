@@ -1,7 +1,7 @@
 # Google Drive pivot — Phase 2
 
-> The source corpus is the one company Shared Drive, not a per-user Drive
-> connection. See [Google Drive architecture](google-drive-architecture.md).
+> The source corpus is the configured subtree of the one company Google Drive
+> integration, not a per-user Docs Hub connection. See [Google Drive architecture](google-drive-architecture.md).
 
 Phase 2 adds metadata-only Google Drive references to the existing Docs Hub
 logical tree. Drive bytes remain in Google Drive; local uploads and ONLYOFFICE

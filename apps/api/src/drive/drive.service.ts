@@ -116,6 +116,12 @@ export interface DriveIntegrationView {
   configured?: boolean;
 }
 
+export interface DriveFolderView {
+  id: string;
+  name: string;
+  parentIds: string[];
+}
+
 export interface WritableDriveContext {
   accessToken: string;
   integrationId: string;
@@ -332,69 +338,91 @@ export class DriveService {
       canRead,
       canWrite,
       needsReauthorization: connected && (!canRead || !canWrite),
-      configured: Boolean(connection.sharedDriveId) && canRead,
+      configured: Boolean(connection.storageFolderId) && canRead,
     };
   }
 
-  async configureSharedDrive(
+  async configureStorageFolder(
     adminUserId: string,
-    sharedDriveId: string,
-    storageFolderId?: string,
+    storageFolderId: string,
   ): Promise<DriveIntegrationView> {
     this.assertEnabled();
     await this.assertAdmin(adminUserId);
     const integration = await this.requireReadableConnected(adminUserId, {
-      requireSharedDrive: false,
+      requireStorageFolder: false,
     });
-    const sharedDrives = await this.listSharedDrivesWithSafeErrors(integration);
-    const sharedDrive = sharedDrives.find((item) => item.id === sharedDriveId);
-    if (!sharedDrive) {
-      throw new NotFoundException('The selected Shared Drive is not available.');
+    const folderId = storageFolderId.trim();
+    if (!folderId) {
+      throw new BadRequestException('A Google Drive storage folder is required.');
     }
-
-    let storageFolderName: string | null = null;
-    if (storageFolderId) {
-      const folder = await this.withAccessToken(integration, (accessToken) =>
-        this.provider.getFile(accessToken, storageFolderId),
+    let folder: DriveApiFile;
+    try {
+      folder = await this.withAccessToken(integration, (accessToken) =>
+        this.provider.getFile(accessToken, folderId),
       );
-      if (
-        folder.driveId !== sharedDriveId ||
-        folder.mimeType !== 'application/vnd.google-apps.folder'
-      ) {
-        throw new ConflictException(
-          'The configured storage folder must belong to the selected Shared Drive.',
-        );
-      }
-      storageFolderName = folder.name?.trim() || null;
+    } catch (error) {
+      throw this.storageFolderConfigurationError(error);
+    }
+    if (
+      folder.trashed === true ||
+      folder.mimeType !== 'application/vnd.google-apps.folder'
+    ) {
+      throw new ConflictException({
+        statusCode: 409,
+        code:
+          folder.trashed === true
+            ? 'GOOGLE_DRIVE_STORAGE_TARGET_UNAVAILABLE'
+            : 'GOOGLE_DRIVE_STORAGE_TARGET_NOT_A_FOLDER',
+        message:
+          folder.trashed === true
+            ? 'The selected Google Drive storage folder is unavailable.'
+            : 'The Google Drive storage target must be a folder.',
+      });
+    }
+    if (folder.capabilities?.canAddChildren === false) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'GOOGLE_DRIVE_STORAGE_FOLDER_NOT_WRITABLE',
+        message: 'The connected Google account cannot add files to this folder.',
+      });
     }
 
     await this.database.prisma.googleDriveIntegration.update({
       where: { id: integration.id },
       data: {
-        sharedDriveId,
-        sharedDriveName: sharedDrive.name ?? null,
-        storageFolderId: storageFolderId ?? null,
-        storageFolderName,
+        // These nullable fields are retained for old rows, but are not part
+        // of the active storage-target model.
+        sharedDriveId: null,
+        sharedDriveName: null,
+        storageFolderId: folderId,
+        storageFolderName: folder.name?.trim() || folderId,
         lastSyncError: null,
       },
     });
+    await this.database.prisma.driveFile.updateMany({
+      where: {
+        driveIntegrationId: integration.id,
+        trashed: false,
+      },
+      data: { sourceStatus: DriveSourceStatus.STALE },
+    });
     await this.audit(
       adminUserId,
-      'DRIVE_SHARED_DRIVE_CONFIGURED',
+      'DRIVE_STORAGE_FOLDER_CONFIGURED',
       integration.id,
       AuditResult.SUCCESS,
-      { sharedDriveId, storageFolderId: storageFolderId ?? null },
+      { storageFolderId: folderId },
     );
     return this.getIntegration(adminUserId);
   }
 
-  async listSharedDrives(adminUserId: string) {
+  async listDriveFolders(adminUserId: string, nameQuery?: string) {
     this.assertEnabled();
     await this.assertAdmin(adminUserId);
     const integration = await this.requireReadableConnected(adminUserId, {
-      requireSharedDrive: false,
+      requireStorageFolder: false,
     });
-    return this.listSharedDrivesWithSafeErrors(integration);
+    return this.listDriveFoldersWithSafeErrors(integration, nameQuery);
   }
 
   async disconnect(userId: string): Promise<DriveIntegrationView> {
@@ -477,7 +505,7 @@ export class DriveService {
       await this.withAccessToken(latest, async (accessToken) => {
         synchronizedFiles = await this.syncProviderFiles(
           connection.id,
-          connection.sharedDriveId!,
+          connection.storageFolderId!,
           accessToken,
         );
       });
@@ -592,13 +620,18 @@ export class DriveService {
     this.assertEnabled();
     const connection = await this.requireWritableConnected(userId);
     const target = this.creationTarget.resolve(connection);
-    const file = await this.withAccessToken(connection, (accessToken) =>
-      this.provider.createNativeFile(accessToken, {
-        name: request.name,
-        mimeType: request.mimeType,
-        parentFolderId: target.parentFolderId,
-      }),
-    );
+    let file: DriveApiFile;
+    try {
+      file = await this.withAccessToken(connection, (accessToken) =>
+        this.provider.createNativeFile(accessToken, {
+          name: request.name,
+          mimeType: request.mimeType,
+          parentFolderId: target.parentFolderId,
+        }),
+      );
+    } catch (error) {
+      throw this.storageFolderWriteError(error);
+    }
     return { integrationId: connection.id, file };
   }
 
@@ -766,18 +799,20 @@ export class DriveService {
     source: Readable,
     signal?: AbortSignal,
   ): Promise<DriveApiFile> {
-    return this.provider.uploadBinaryFile(
-      context.accessToken,
-      {
-        name,
-        mimeType,
-        ...(context.target.parentFolderId
-          ? { parentFolderId: context.target.parentFolderId }
-          : {}),
-      },
-      source,
-      signal,
-    );
+    return this.provider
+      .uploadBinaryFile(
+        context.accessToken,
+        {
+          name,
+          mimeType,
+          parentFolderId: context.target.parentFolderId,
+        },
+        source,
+        signal,
+      )
+      .catch((error: unknown) => {
+        throw this.storageFolderWriteError(error);
+      });
   }
 
   deleteBinaryWithContext(
@@ -1043,22 +1078,38 @@ export class DriveService {
 
   private async syncProviderFiles(
     integrationId: string,
-    sharedDriveId: string,
+    storageFolderId: string,
     accessToken: string,
   ): Promise<number> {
     let count = 0;
     const seenDriveFileIds = new Set<string>();
-    let pageToken: string | undefined;
-    do {
-      const page = await this.provider.listFiles(accessToken, {
-        pageToken,
-        pageSize: DRIVE_PAGE_SIZE,
-        includeTrashed: true,
-        driveId: sharedDriveId,
-      });
-      count += await this.upsertPage(integrationId, page, seenDriveFileIds);
-      pageToken = page.nextPageToken;
-    } while (pageToken);
+    const pendingFolders = [storageFolderId];
+    const visitedFolders = new Set<string>();
+    while (pendingFolders.length > 0) {
+      const parentFolderId = pendingFolders.shift()!;
+      if (visitedFolders.has(parentFolderId)) continue;
+      visitedFolders.add(parentFolderId);
+      let pageToken: string | undefined;
+      do {
+        const page = await this.provider.listFiles(accessToken, {
+          pageToken,
+          pageSize: DRIVE_PAGE_SIZE,
+          includeTrashed: true,
+          parentFolderId,
+        });
+        count += await this.upsertPage(integrationId, page, seenDriveFileIds);
+        for (const file of page.files) {
+          if (
+            file.mimeType === 'application/vnd.google-apps.folder' &&
+            file.trashed !== true &&
+            file.id
+          ) {
+            pendingFolders.push(file.id);
+          }
+        }
+        pageToken = page.nextPageToken;
+      } while (pageToken);
+    }
     await this.database.prisma.driveFile.updateMany({
       where: {
         driveIntegrationId: integrationId,
@@ -1262,7 +1313,7 @@ export class DriveService {
 
   private async requireConnected(
     _userId: string,
-    options: { requireSharedDrive?: boolean } = {},
+    options: { requireStorageFolder?: boolean } = {},
   ) {
     const connection = await this.database.prisma.googleDriveIntegration.findUnique({
       where: { singletonKey: 'company' },
@@ -1284,9 +1335,9 @@ export class DriveService {
     ) {
       throw new NotFoundException('Google Drive is not connected.');
     }
-    if (options.requireSharedDrive !== false && !connection.sharedDriveId) {
+    if (options.requireStorageFolder !== false && !connection.storageFolderId) {
       throw new ConflictException(
-        'The company Shared Drive must be configured before using Google Drive.',
+        'A company Google Drive storage folder must be configured before using Google Drive.',
       );
     }
     return connection;
@@ -1294,7 +1345,7 @@ export class DriveService {
 
   private async requireReadableConnected(
     userId: string,
-    options: { requireSharedDrive?: boolean } = {},
+    options: { requireStorageFolder?: boolean } = {},
   ) {
     const connection = await this.requireConnected(userId, options);
     if (!connection.authorizedScopes.includes(GOOGLE_DRIVE_READONLY_SCOPE)) {
@@ -1408,22 +1459,25 @@ export class DriveService {
     return 'Google Drive metadata sync failed. Previously synchronized metadata was preserved.';
   }
 
-  private async listSharedDrivesWithSafeErrors(connection: {
+  private async listDriveFoldersWithSafeErrors(
+    connection: {
     id: string;
     accessTokenEncrypted: string | null;
     accessTokenExpiresAt: Date | null;
     refreshTokenEncrypted: string | null;
-  }) {
+    },
+    nameQuery?: string,
+  ): Promise<DriveFolderView[]> {
     try {
       return await this.withAccessToken(connection, (accessToken) =>
-        this.listAllSharedDrives(accessToken),
+        this.listAllDriveFolders(accessToken, nameQuery),
       );
     } catch (error) {
-      throw this.sharedDriveDiscoveryError(error);
+      throw this.driveFolderDiscoveryError(error);
     }
   }
 
-  private sharedDriveDiscoveryError(error: unknown): Error {
+  private driveFolderDiscoveryError(error: unknown): Error {
     if (error instanceof DriveProviderError) {
       if (error.kind === 'unauthorized' || error.kind === 'forbidden') {
         return this.readAuthorizationRequired();
@@ -1455,15 +1509,92 @@ export class DriveService {
     });
   }
 
-  private async listAllSharedDrives(accessToken: string) {
-    const drives: Array<{ id: string; name?: string }> = [];
+  private async listAllDriveFolders(
+    accessToken: string,
+    nameQuery?: string,
+  ): Promise<DriveFolderView[]> {
+    const folders: DriveFolderView[] = [];
     let pageToken: string | undefined;
     do {
-      const page = await this.provider.listSharedDrives(accessToken, pageToken);
-      drives.push(...page.drives);
+      const page = await this.provider.listFolders(
+        accessToken,
+        pageToken,
+        nameQuery,
+      );
+      folders.push(
+        ...page.folders.map((folder) => ({
+          id: folder.id,
+          name: folder.name?.trim() || folder.id,
+          parentIds: folder.parents ?? [],
+        })),
+      );
       pageToken = page.nextPageToken;
     } while (pageToken);
-    return drives;
+    return folders;
+  }
+
+  private storageFolderConfigurationError(error: unknown): Error {
+    if (error instanceof DriveProviderError) {
+      if (error.kind === 'unauthorized' || error.kind === 'forbidden') {
+        return new ForbiddenException({
+          statusCode: 403,
+          code: 'GOOGLE_DRIVE_STORAGE_FOLDER_ACCESS_REQUIRED',
+          message: 'The connected Google account cannot access this storage folder.',
+        });
+      }
+      if (error.status === 404) {
+        return new NotFoundException('The selected Google Drive folder was not found.');
+      }
+      if (error.kind === 'rate_limited') {
+        return new ServiceUnavailableException({
+          statusCode: 503,
+          code: 'GOOGLE_DRIVE_RATE_LIMITED',
+          message: 'Google Drive is temporarily rate-limiting requests. Try again later.',
+        });
+      }
+      if (error.kind === 'network') {
+        return new ServiceUnavailableException({
+          statusCode: 503,
+          code: 'GOOGLE_DRIVE_UNAVAILABLE',
+          message: 'Google Drive could not be reached. Try again later.',
+        });
+      }
+    }
+    return new BadGatewayException({
+      statusCode: 502,
+      code: 'GOOGLE_DRIVE_STORAGE_FOLDER_VALIDATION_FAILED',
+      message: 'Google Drive could not validate the selected storage folder.',
+    });
+  }
+
+  private storageFolderWriteError(error: unknown): Error {
+    if (!(error instanceof DriveProviderError)) {
+      return error instanceof Error
+        ? error
+        : new ServiceUnavailableException(
+            'Google Drive storage-folder write failed.',
+          );
+    }
+    if (error.kind === 'forbidden') {
+      return new ForbiddenException({
+        statusCode: 403,
+        code: 'GOOGLE_DRIVE_STORAGE_FOLDER_NOT_WRITABLE',
+        message: 'The connected Google account cannot write to the storage folder.',
+      });
+    }
+    if (error.kind === 'unauthorized') {
+      return new UnauthorizedException(
+        'Google Drive authorization expired or was revoked. Reconnect Google Drive.',
+      );
+    }
+    if (error.kind === 'rate_limited' || error.kind === 'network') {
+      return new ServiceUnavailableException(
+        'Google Drive is temporarily unavailable. Try again later.',
+      );
+    }
+    return new BadGatewayException(
+      'Google Drive returned an unexpected storage-folder error.',
+    );
   }
 
   private normalizeType(mimeType: string | undefined): DriveFileType {

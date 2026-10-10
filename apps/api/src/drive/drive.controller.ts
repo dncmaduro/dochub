@@ -23,7 +23,8 @@ import { DriveFilesQueryDto } from './dto/drive-files.dto.js';
 import { AddToDocsHubDto } from './dto/add-to-docshub.dto.js';
 import { DriveAuthorizeDto } from './dto/drive-authorize.dto.js';
 import { CreateNativeDocumentDto } from './dto/create-native-document.dto.js';
-import { ConfigureSharedDriveDto } from './dto/configure-shared-drive.dto.js';
+import { ConfigureStorageFolderDto } from './dto/configure-storage-folder.dto.js';
+import { DriveFoldersQueryDto } from './dto/drive-folders.dto.js';
 import { DriveOrganizationService } from './drive-organization.service.js';
 import { DriveService } from './drive.service.js';
 import { DriveUploadService } from './drive-upload.service.js';
@@ -123,23 +124,22 @@ export class DriveController {
     return this.drive.disconnect(auth.userId);
   }
 
-  @Get('integration/shared-drives')
+  @Get('integration/folders')
   @UseGuards(AccessTokenGuard, SystemAdminGuard)
-  sharedDrives(@CurrentAuth() auth: AuthPrincipal) {
-    return this.drive.listSharedDrives(auth.userId);
+  folders(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Query() query: DriveFoldersQueryDto,
+  ) {
+    return this.drive.listDriveFolders(auth.userId, query.q);
   }
 
-  @Post('integration/shared-drive')
+  @Post('integration/storage-folder')
   @UseGuards(AccessTokenGuard, SystemAdminGuard)
-  configureSharedDrive(
+  configureStorageFolder(
     @CurrentAuth() auth: AuthPrincipal,
-    @Body() dto: ConfigureSharedDriveDto,
+    @Body() dto: ConfigureStorageFolderDto,
   ) {
-    return this.drive.configureSharedDrive(
-      auth.userId,
-      dto.sharedDriveId,
-      dto.storageFolderId,
-    );
+    return this.drive.configureStorageFolder(auth.userId, dto.storageFolderId);
   }
 
   @Get('files')

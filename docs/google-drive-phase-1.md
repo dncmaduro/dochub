@@ -1,7 +1,7 @@
 # Google Drive Phase 1
 
-> Architecture correction: Docs Hub uses one company-wide Shared Drive and
-> one `GoogleDriveIntegration`. See [Google Drive architecture](google-drive-architecture.md).
+> Architecture correction: Docs Hub uses one company-wide Google Drive
+> integration and one configured storage folder. See [Google Drive architecture](google-drive-architecture.md).
 
 Docs Hub's Drive integration is intentionally separate from Google sign-in.
 The existing Google OIDC login continues to request only `openid email profile`
@@ -11,21 +11,20 @@ not configure Drive.
 
 ## Scope and discovery boundary
 
-Phase 1 requests exactly:
+Read-only Phase 1 requests exactly:
 
-`https://www.googleapis.com/auth/drive.metadata.readonly`
+`https://www.googleapis.com/auth/drive.readonly`
 
-This is sufficient to list files and read metadata, including native Google
-Docs, Sheets, and Slides MIME types. The sync requests metadata fields only;
-it never calls a download/export endpoint. The initial sync includes the
-configured company Shared Drive with `includeItemsFromAllDrives=true`,
-`supportsAllDrives=true`, `corpora=drive`, and `driveId`. It does not enumerate
-a user's My Drive or `sharedWithMe`.
+This is sufficient to list accessible folders and read metadata, including
+native Google Docs, Sheets, and Slides MIME types. The sync requests metadata
+fields only; it never calls a download/export endpoint. Sync is restricted to
+the configured storage folder subtree and does not enumerate unrelated Drive
+files.
 
 ## Storage boundary
 
-`GoogleDriveIntegration` stores encrypted OAuth token material, Shared Drive
-target, and sync state. `DriveFile` stores the external Drive file ID,
+`GoogleDriveIntegration` stores encrypted OAuth token material, the validated
+storage-folder target, and sync state. `DriveFile` stores the external Drive file ID,
 metadata, normalized type, and links. The unique identity is `driveFileId`.
 Legacy `DriveConnection` rows are retained only for safe transition. Drive files
 are not inserted into `Node`, `File`, or `FileVersion`, and no StorageService or
