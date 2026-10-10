@@ -34,3 +34,13 @@ export interface BreadcrumbResponse {
   items: Array<{ id: string; name: string; type: NodeType }>;
   truncated: boolean;
 }
+
+export interface FolderTreeItem {
+  id: string;
+  parentId: string | null;
+  name: string;
+}
+
+export interface FolderTreeResponse {
+  items: FolderTreeItem[];
+}

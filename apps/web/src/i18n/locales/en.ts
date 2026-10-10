@@ -2,6 +2,7 @@ const en = {
   common: {
     cancel: "Cancel",
     close: "Close",
+    back: "Back",
     done: "Done",
     save: "Save",
     saving: "Saving…",
@@ -48,6 +49,9 @@ const en = {
     admin: "Admin",
     main: "Main navigation",
     breadcrumb: "Breadcrumb",
+    docsHubFolders: "Docs Hub folders",
+    expandFolder: "Expand {{name}}",
+    collapseFolder: "Collapse {{name}}",
   },
   account: {
     myAccount: "My account",
@@ -174,6 +178,9 @@ const en = {
     reauthorize: "Reauthorize company Drive",
     reauthorizationRequired: "Reauthorization required to read and manage Docs Hub files in Google Drive.",
     searchPlaceholder: "Search Drive file names",
+    viewMode: "View mode",
+    listView: "List view",
+    gridView: "Grid view",
     noFiles: "No Drive files found.",
     location: "Location",
     openInGoogle: "Open in Google",
@@ -214,6 +221,7 @@ const en = {
   files: {
     title: "Files",
     new: "New",
+    createNew: "Create new",
     newFolder: "New folder",
     document: "Document",
     wordDocument: "Word document",
@@ -252,6 +260,7 @@ const en = {
     collectionLoadFailed: "Couldn’t load {{name}}.",
     fileActions: "Actions for {{name}}",
     tableActions: "Actions",
+    sortBy: "Sort by",
     units: { bytes: "B", kilobytes: "KB", megabytes: "MB" },
   },
   search: {

@@ -155,6 +155,7 @@ export interface DriveFileListOptions {
   limit?: number;
   cursor?: string;
   q?: string;
+  parentId?: string;
 }
 
 export interface DriveFileListView {
@@ -621,6 +622,9 @@ export class DriveService {
   ): Promise<DriveFileListView> {
     this.assertEnabled();
     const connection = await this.requireReadableConnected(userId);
+    if (options.parentId?.trim()) {
+      return this.listDirectBrowserFiles(connection, options);
+    }
     const limit = Math.min(Math.max(options.limit ?? 50, 1), MAX_API_PAGE_SIZE);
     const cursor = options.cursor ? this.decodeCursor(options.cursor) : null;
     const query = options.q?.trim().toLocaleLowerCase();
@@ -675,6 +679,82 @@ export class DriveService {
           ? this.encodeCursor({ name: last.name ?? last.id, id: last.id })
           : null,
     };
+  }
+
+  /**
+   * Lists one physical Drive folder at a time. The older subtree listing is
+   * retained for compatibility, while the modal browser uses this scoped
+   * path so folder clicks never create or imply Docs Hub folders.
+   */
+  private async listDirectBrowserFiles(
+    connection: Awaited<ReturnType<DriveService['requireReadableConnected']>>,
+    options: DriveFileListOptions,
+  ): Promise<DriveFileListView> {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), MAX_API_PAGE_SIZE);
+    const parentId = options.parentId!.trim();
+    const query = options.q?.trim();
+    let page: DriveFilePage;
+    try {
+      page = await this.withAccessToken(connection, async (accessToken) => {
+        await this.assertBrowserParent(
+          accessToken,
+          connection.storageFolderId!,
+          parentId,
+        );
+        return this.provider.listFiles(accessToken, {
+          pageToken: options.cursor,
+          pageSize: limit,
+          nameQuery: query,
+          includeTrashed: false,
+          parentFolderId: parentId,
+        });
+      });
+    } catch (error) {
+      throw this.liveDriveBrowserError(error);
+    }
+
+    const linked = page.files.length
+      ? await this.database.prisma.driveFile.findMany({
+          where: {
+            driveIntegrationId: connection.id,
+            driveFileId: { in: page.files.map((file) => file.id) },
+          },
+          select: {
+            driveFileId: true,
+            docsHubFile: { select: { nodeId: true } },
+          },
+        })
+      : [];
+    const linkedByDriveFileId = new Map(
+      linked.map((file) => [file.driveFileId, file.docsHubFile?.nodeId ?? null]),
+    );
+    return {
+      items: page.files.map((file) =>
+        this.liveFileView(file, linkedByDriveFileId.get(file.id) ?? null),
+      ),
+      nextCursor: page.nextPageToken ?? null,
+    };
+  }
+
+  private async assertBrowserParent(
+    accessToken: string,
+    storageFolderId: string,
+    parentId: string,
+  ): Promise<void> {
+    if (parentId === storageFolderId) return;
+    const parent = await this.provider.getFile(accessToken, parentId);
+    if (
+      parent.id !== parentId ||
+      parent.trashed === true ||
+      parent.mimeType !== 'application/vnd.google-apps.folder' ||
+      !(await this.isWithinStorageFolder(
+        accessToken,
+        storageFolderId,
+        parent.parents ?? [],
+      ))
+    ) {
+      throw new NotFoundException('Drive folder not found in the configured storage folder.');
+    }
   }
 
   async prepareDriveFileForImport(

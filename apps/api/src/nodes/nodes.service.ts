@@ -41,6 +41,7 @@ import {
 } from './node-sort.js';
 import type {
   BreadcrumbResponse,
+  FolderTreeResponse,
   NodePage,
   NodeResponse,
 } from './node.types.js';
@@ -182,6 +183,30 @@ export class NodesService {
       ?.recordRecent(actorUserId, parentId)
       .catch(() => undefined);
     return this.listFolder(actorUserId, parent, query);
+  }
+
+  async listFolderTree(
+    actorUserId: string,
+    parentId: string | null,
+  ): Promise<FolderTreeResponse> {
+    const parent = await this.folders.requireBrowse(actorUserId, parentId);
+    const groupIds = await this.authorization.findUserGroupIds(actorUserId);
+    if (groupIds === null) {
+      throw new NotFoundException('Node not found');
+    }
+    const folders = await this.database.prisma.node.findMany({
+      where: {
+        type: NodeType.FOLDER,
+        ...this.folders.childVisibilityWhere(parent, actorUserId, groupIds),
+      },
+      select: {
+        id: true,
+        parentId: true,
+        name: true,
+      },
+      orderBy: [{ normalizedName: 'asc' }, { id: 'asc' }],
+    });
+    return { items: folders };
   }
 
   private async listFolder(

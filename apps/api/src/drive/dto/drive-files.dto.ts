@@ -10,6 +10,11 @@ import {
 
 export class DriveFilesQueryDto {
   @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  parentId?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)

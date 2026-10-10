@@ -227,6 +227,11 @@ export interface DriveFilePage {
   items: DriveFile[];
   nextCursor: string | null;
 }
+export interface FolderTreeItem {
+  id: string;
+  parentId: string | null;
+  name: string;
+}
 interface RefreshResponse {
   accessToken: string;
   systemRole: SystemRole;
@@ -345,11 +350,18 @@ export class ApiClient {
     return this.request<DriveFilePage>(`/drive/files?${parameters}`);
   }
 
-  async listDriveBrowserFiles(q = "", cursor?: string, limit = 50) {
+  async listDriveBrowserFiles(
+    parentId: string,
+    q = "",
+    cursor?: string,
+    limit = 50,
+    signal?: AbortSignal,
+  ) {
     const parameters = new URLSearchParams({ limit: String(limit) });
+    parameters.set("parentId", parentId);
     if (q.trim()) parameters.set("q", q.trim());
     if (cursor) parameters.set("cursor", cursor);
-    return this.request<DriveFilePage>(`/drive/browser/files?${parameters}`);
+    return this.request<DriveFilePage>(`/drive/browser/files?${parameters}`, { signal });
   }
 
   async addDriveFileToDocsHub(driveFileId: string, parentId: string | null) {
@@ -381,6 +393,12 @@ export class ApiClient {
       ? `/nodes/${folderId}/children?${parameters}`
       : `/nodes/root?${parameters}`;
     return this.request<NodePage>(path, { signal });
+  }
+  async listFolderTree(parentId: string | null, signal?: AbortSignal) {
+    const path = parentId
+      ? `/folders/tree/${encodeURIComponent(parentId)}`
+      : "/folders/tree/root";
+    return this.request<{ items: FolderTreeItem[] }>(path, { signal });
   }
   async breadcrumb(nodeId: string, signal?: AbortSignal) {
     return (await this.breadcrumbPage(nodeId, signal)).items;

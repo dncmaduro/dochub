@@ -42,6 +42,78 @@
   display: grid;
   gap: 3px;
 }
+.folder-tree {
+  min-width: 0;
+  padding: 0 4px;
+}
+.folder-tree-heading {
+  padding: 2px 6px 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+.folder-tree ul {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.folder-tree ul ul {
+  margin-left: 14px;
+}
+.folder-tree-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border-radius: var(--radius);
+}
+.folder-tree-row.is-active {
+  background: var(--accent-soft);
+  color: #174ea6;
+}
+.folder-tree-toggle,
+.folder-tree-link {
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+.folder-tree-toggle {
+  display: inline-flex;
+  width: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.folder-tree-toggle .icon {
+  transition: transform 120ms ease;
+}
+.folder-tree-toggle.is-open .icon {
+  transform: rotate(90deg);
+}
+.folder-tree-link {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px 4px 0;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.folder-tree-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-tree-link:hover,
+.folder-tree-toggle:hover:not(:disabled) {
+  color: var(--accent);
+}
 .sidebar-divider {
   height: 1px;
   margin: 14px 10px 11px;
@@ -566,6 +638,129 @@
 .drive-load-more {
   margin-top: 14px;
 }
+.drive-import-dialog {
+  display: flex;
+  width: min(940px, calc(100vw - 32px));
+  max-height: min(760px, calc(100dvh - 32px));
+  flex-direction: column;
+  overflow: hidden;
+}
+.drive-import-dialog .dialog-header h2 {
+  text-align: left;
+}
+.drive-import-notice {
+  margin: 0;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+.drive-import-notice-error {
+  color: var(--danger);
+}
+.drive-import-notice-success {
+  color: #137333;
+}
+.drive-import-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.drive-import-search {
+  min-width: 180px;
+  flex: 1;
+}
+.drive-import-content {
+  min-height: 240px;
+  overflow: auto;
+  padding: 16px 20px 20px;
+}
+.drive-import-state {
+  display: grid;
+  min-height: 240px;
+  place-content: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+.drive-import-state h3,
+.drive-import-state p {
+  margin: 0;
+}
+.drive-import-state h3 {
+  color: var(--text);
+  font-size: 15px;
+}
+.drive-import-table-wrap {
+  border-radius: 6px;
+}
+.drive-import-table th:last-child {
+  width: 160px;
+}
+.drive-import-table td {
+  height: 48px;
+}
+.drive-browser-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.drive-browser-card {
+  display: flex;
+  min-width: 0;
+  min-height: 132px;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 12px;
+}
+.drive-browser-card-main {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.drive-browser-card-main .icon {
+  color: #5f6368;
+}
+.drive-browser-card-main strong,
+.drive-browser-card-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drive-browser-card-main span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.drive-browser-card-main:hover strong {
+  text-decoration: underline;
+}
+.drive-browser-card > .button {
+  align-self: flex-start;
+}
+.create-new-dialog {
+  width: min(420px, calc(100vw - 32px));
+}
+.create-new-dialog .dialog-header h2 {
+  text-align: left;
+}
+.create-new-options {
+  display: grid;
+  gap: 6px;
+  padding: 14px 20px 20px;
+}
+.create-new-options .button {
+  justify-content: flex-start;
+}
 @media (max-width: 700px) {
   .drive-external-toolbar {
     align-items: stretch;
@@ -573,6 +768,14 @@
   }
   .drive-external-search {
     width: 100%;
+  }
+  .drive-import-toolbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+  .drive-import-search {
+    order: 3;
+    flex-basis: 100%;
   }
   .drive-storage-folder-row {
     align-items: stretch;
@@ -691,6 +894,39 @@
   flex: none;
   align-items: center;
   gap: 8px;
+}
+.view-toggle,
+.sort-controls {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.view-toggle button,
+.sort-controls button {
+  min-height: 32px;
+  border: 0;
+  border-right: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.view-toggle button {
+  width: 32px;
+  padding: 0;
+}
+.sort-controls button {
+  padding: 0 8px;
+}
+.view-toggle button:last-child,
+.sort-controls button:last-child {
+  border-right: 0;
+}
+.view-toggle button.is-active,
+.sort-controls button.is-active {
+  background: var(--accent-soft);
+  color: #174ea6;
 }
 .new-menu {
   position: relative;
@@ -847,6 +1083,68 @@
 }
 .file-table tbody tr:hover {
   background: #f8fafd;
+}
+.file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+.file-tile {
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.file-tile-main {
+  position: relative;
+  min-height: 112px;
+  padding: 14px;
+}
+.file-tile-open {
+  display: grid;
+  width: calc(100% - 26px);
+  min-width: 0;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.file-tile-open .icon {
+  color: #5f6368;
+}
+.file-tile-open strong,
+.file-tile-open span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-tile-open span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.file-tile-open:not(:disabled):hover strong {
+  text-decoration: underline;
+}
+.file-tile-open:disabled {
+  cursor: default;
+}
+.file-tile-actions {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+}
+.file-tile-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--muted);
+  font-size: 11px;
+}
+.file-tile-meta span {
+  white-space: nowrap;
 }
 .trash-table {
   min-width: 0;

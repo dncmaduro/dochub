@@ -55,7 +55,9 @@ Docs Hub folder or falls back to the acting user's My Drive.
 The primary browser is provider-backed and reads the configured folder's
 subtree live. It lists direct children with `'<folderId>' in parents`, traverses
 nested folders, and ignores unrelated My Drive files and files outside the
-subtree. Search and import therefore do not require a prior metadata sync.
+subtree. The modal's search is scoped to the currently open physical folder's
+direct children, so it never silently broadens a search to unrelated My Drive
+files. Search and import therefore do not require a prior metadata sync.
 The browser does not use Shared Drive discovery, `corpora=drive`, or a `driveId`
 filter.
 

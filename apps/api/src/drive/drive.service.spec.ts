@@ -359,6 +359,54 @@ describe('DriveService', () => {
     );
   });
 
+  it('browses direct physical children and enforces the configured folder boundary', async () => {
+    const h = harness();
+    vi.mocked(h.provider.getFile).mockImplementation(async (_token, driveFileId) => {
+      if (driveFileId === 'nested-folder') {
+        return {
+          id: 'nested-folder',
+          name: 'Nested',
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: ['storage-folder'],
+        };
+      }
+      return {
+        id: driveFileId,
+        name: 'Outside',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['outside-root'],
+      };
+    });
+    vi.mocked(h.provider.listFiles).mockResolvedValue({
+      nextPageToken: 'next-page',
+      files: [{
+        id: 'nested-doc',
+        name: 'Nested notes',
+        mimeType: 'application/pdf',
+        parents: ['nested-folder'],
+      }],
+    });
+
+    await expect(h.service.listBrowserFiles(h.userId, {
+      parentId: 'nested-folder',
+      q: 'notes',
+      limit: 25,
+    })).resolves.toMatchObject({
+      items: [{ driveFileId: 'nested-doc', name: 'Nested notes' }],
+      nextCursor: 'next-page',
+    });
+    const directCall = vi.mocked(h.provider.listFiles).mock.calls.at(-1)?.[1];
+    expect(directCall).toMatchObject({
+      pageSize: 25,
+      parentFolderId: 'nested-folder',
+      nameQuery: 'notes',
+      includeTrashed: false,
+    });
+    await expect(h.service.listBrowserFiles(h.userId, {
+      parentId: 'outside-folder',
+    })).rejects.toThrow(/not found in the configured storage folder/i);
+  });
+
   it('imports a live Drive file without requiring a pre-existing DriveFile row', async () => {
     const h = harness();
     vi.mocked(h.provider.getFile).mockResolvedValueOnce({
