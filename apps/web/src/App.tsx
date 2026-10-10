@@ -4021,7 +4021,7 @@ function AddDriveMenu({
       }}
     >
       <Icon name="plus" />
-      {t("drive.addFromGoogleDrive")}
+      {t("drive.addFrom")}
       <Icon name="chevron-down" size={15} />
     </button>
     {open && createPortal(

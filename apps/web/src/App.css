@@ -640,10 +640,17 @@
 }
 .drive-import-dialog {
   display: flex;
-  width: min(940px, calc(100vw - 32px));
-  max-height: min(760px, calc(100dvh - 32px));
+  width: 90vw;
+  height: 90vh;
+  max-width: none;
+  max-height: none;
   flex-direction: column;
   overflow: hidden;
+}
+.drive-import-dialog > .dialog-header,
+.drive-import-toolbar,
+.drive-import-notice {
+  flex: none;
 }
 .drive-import-dialog .dialog-header h2 {
   text-align: left;
@@ -672,7 +679,8 @@
   flex: 1;
 }
 .drive-import-content {
-  min-height: 240px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 16px 20px 20px;
 }
@@ -694,17 +702,43 @@
   font-size: 15px;
 }
 .drive-import-table-wrap {
+  min-width: 680px;
   border-radius: 6px;
 }
-.drive-import-table th:last-child {
+.drive-import-table {
+  min-width: 680px;
+  table-layout: fixed;
+}
+.drive-import-table th,
+.drive-import-table td {
+  white-space: nowrap;
+}
+.drive-import-table th:first-child {
+  width: auto;
+}
+.drive-import-table th:nth-child(2) {
+  width: 140px;
+}
+.drive-import-table th:nth-child(3) {
   width: 160px;
+}
+.drive-import-table th:last-child {
+  width: 170px;
 }
 .drive-import-table td {
   height: 48px;
 }
+.drive-import-table .drive-external-actions {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.drive-import-table .button {
+  white-space: nowrap;
+}
 .drive-browser-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  align-content: start;
   gap: 10px;
 }
 .drive-browser-card {
@@ -762,6 +796,10 @@
   justify-content: flex-start;
 }
 @media (max-width: 700px) {
+  .drive-import-dialog {
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+  }
   .drive-external-toolbar {
     align-items: stretch;
     flex-direction: column;

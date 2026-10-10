@@ -156,6 +156,7 @@ const en = {
     syncing: "Syncing…",
     syncComplete: "Google Drive metadata synced.",
     browse: "Browse Drive",
+    addFrom: "Add from",
     addFromGoogleDrive: "Add from Google Drive",
     disconnect: "Disconnect",
     disconnecting: "Disconnecting…",
