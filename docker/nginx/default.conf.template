@@ -20,6 +20,7 @@ server {
         # this changes only the Path attribute, not cookie values or security
         # attributes such as HttpOnly, Secure, SameSite, or Max-Age.
         proxy_cookie_path ~^/auth(?<dochub_auth_path>/.*)?$ /api/auth$dochub_auth_path;
+        proxy_cookie_path /drive/integration/callback /api/drive/integration/callback;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

@@ -1531,9 +1531,13 @@ function DriveApp({
     if (!file) return;
     try {
       setNotice(null);
+<<<<<<< Updated upstream
       setUploading(true);
       setNotice({ tone: "info", message: t("files.uploadingFile", { name: file.name }) });
       const result = await api.upload(file, folderId, crypto.randomUUID());
+=======
+      const result = await api.upload(file, folderId);
+>>>>>>> Stashed changes
       await load(folderId);
       setNotice({
         tone: "success",
@@ -1543,6 +1547,15 @@ function DriveApp({
       setNotice({ tone: "error", message: displayError(requestError) });
     } finally {
       setUploading(false);
+    }
+  }
+  function changeSort(next: DriveSort) {
+    setSort(next);
+    setSortActivated(true);
+    const path = drivePath(folderId, next);
+    if (`${window.location.pathname}${window.location.search}` !== path) {
+      window.history.pushState({}, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
     }
   }
   function changeSort(next: DriveSort) {
@@ -1756,7 +1769,10 @@ function FileList({
   sort,
   onSortChange,
   sortActivated,
+<<<<<<< Updated upstream
   canManageDocuments = false,
+=======
+>>>>>>> Stashed changes
 }: {
   nodes: Node[];
   onFolder: (id: string) => void;
@@ -1774,7 +1790,10 @@ function FileList({
   sort?: DriveSort;
   onSortChange?: (sort: DriveSort) => void;
   sortActivated?: boolean;
+<<<<<<< Updated upstream
   canManageDocuments?: boolean;
+=======
+>>>>>>> Stashed changes
 }) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   return (
@@ -1789,7 +1808,10 @@ function FileList({
               onSortChange={showLastModified ? onSortChange : undefined}
               sortActivated={showLastModified ? sortActivated : undefined}
             />
+<<<<<<< Updated upstream
             <th scope="col">{t("common.type")}</th>
+=======
+>>>>>>> Stashed changes
             {showLastModified ? (
               <>
                 <th scope="col">{t("common.modifiedBy")}</th>
