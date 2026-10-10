@@ -279,24 +279,15 @@ export class NodesService {
 
     const rows = await this.database.prisma.$queryRaw<OrderedNodeIdRow[]>`
       SELECT n."id"
-<<<<<<< Updated upstream
-        FROM "Node" AS n
-        LEFT JOIN "File" AS file_record ON file_record."nodeId" = n."id"
-      LEFT JOIN "DriveFile" AS drive_record ON drive_record."id" = file_record."driveFileId"
-=======
       FROM "Node" AS n
       LEFT JOIN "File" AS file_record ON file_record."nodeId" = n."id"
->>>>>>> Stashed changes
+      LEFT JOIN "DriveFile" AS drive_record ON drive_record."id" = file_record."driveFileId"
       LEFT JOIN "FileVersion" AS current_version
         ON current_version."id" = file_record."currentVersionId"
       WHERE ${visibility}
         ${cursorPredicate}
       ORDER BY
-<<<<<<< Updated upstream
         COALESCE(drive_record."driveModifiedTime", current_version."createdAt", n."updatedAt") ${direction},
-=======
-        COALESCE(current_version."createdAt", n."updatedAt") ${direction},
->>>>>>> Stashed changes
         n."id" ASC
       LIMIT ${limit + 1}
     `;
@@ -365,11 +356,7 @@ export class NodesService {
       `;
     }
     const modifiedAt = Prisma.sql`
-<<<<<<< Updated upstream
       COALESCE(drive_record."driveModifiedTime", current_version."createdAt", n."updatedAt")
-=======
-      COALESCE(current_version."createdAt", n."updatedAt")
->>>>>>> Stashed changes
     `;
     const cursorDate = new Date(cursor.sortValue);
     return Prisma.sql`
