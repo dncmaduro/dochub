@@ -638,20 +638,6 @@
 .drive-load-more {
   margin-top: 14px;
 }
-.drive-import-dialog {
-  display: flex;
-  width: 90vw;
-  height: 90vh;
-  max-width: none;
-  max-height: none;
-  flex-direction: column;
-  overflow: hidden;
-}
-.drive-import-dialog > .dialog-header,
-.drive-import-toolbar,
-.drive-import-notice {
-  flex: none;
-}
 .drive-import-dialog .dialog-header h2 {
   text-align: left;
 }
@@ -796,10 +782,6 @@
   justify-content: flex-start;
 }
 @media (max-width: 700px) {
-  .drive-import-dialog {
-    width: calc(100vw - 16px);
-    height: calc(100dvh - 16px);
-  }
   .drive-external-toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -1404,6 +1386,26 @@
   border-radius: 9px;
   background: var(--surface);
   box-shadow: 0 8px 24px rgb(60 64 67 / 20%);
+}
+.dialog.drive-import-dialog {
+  display: flex;
+  width: 90vw;
+  height: 90vh;
+  max-width: none;
+  max-height: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dialog.drive-import-dialog > .dialog-header,
+.dialog.drive-import-dialog .drive-import-toolbar,
+.dialog.drive-import-dialog .drive-import-notice {
+  flex: none;
+}
+@media (max-width: 700px) {
+  .dialog.drive-import-dialog {
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+  }
 }
 .dialog form {
   padding: 20px;
