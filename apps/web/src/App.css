@@ -129,7 +129,6 @@
   font: inherit;
 }
 .search-field-admin { width: min(360px, 100%); margin-bottom: 12px; }
-.search-field-drive-folder { width: min(320px, 100%); }
 .admin-table-wrap {
   overflow-x: auto;
 }
@@ -402,6 +401,103 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+.drive-storage-folder {
+  margin: 18px 0;
+}
+.drive-storage-folder > label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.drive-storage-folder-row {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.drive-folder-combobox {
+  position: relative;
+  width: min(420px, 100%);
+  min-width: 0;
+}
+.drive-folder-combobox-trigger {
+  justify-content: flex-start;
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.drive-folder-combobox-trigger:focus-visible {
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.drive-folder-combobox-trigger:disabled {
+  cursor: not-allowed;
+  opacity: .75;
+}
+.drive-folder-combobox-value {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drive-folder-combobox-value.is-placeholder {
+  color: var(--muted);
+}
+.drive-folder-combobox-input {
+  width: 100%;
+}
+.drive-folder-combobox-dropdown {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 100%;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 2px 6px rgb(32 33 36 / 12%);
+}
+.drive-folder-combobox-status {
+  margin: 0;
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.drive-folder-combobox-error {
+  color: var(--danger);
+}
+.drive-folder-combobox-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+.drive-folder-combobox-option:hover,
+.drive-folder-combobox-option.is-selected {
+  background: var(--accent-soft);
+}
+.drive-folder-combobox-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .integration-empty,
 .drive-external-content {
   padding: 24px;
@@ -476,6 +572,13 @@
     flex-direction: column;
   }
   .drive-external-search {
+    width: 100%;
+  }
+  .drive-storage-folder-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .drive-folder-combobox {
     width: 100%;
   }
 }

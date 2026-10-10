@@ -789,9 +789,8 @@ function AdminApp({ tab }: { tab: "users" | "groups" | "drive" }) {
 
 function AdminDriveIntegration() {
   const [connection, setConnection] = useState<DriveIntegration | null>(null);
-  const [folders, setFolders] = useState<DriveFolderOption[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState("");
-  const [folderQuery, setFolderQuery] = useState("");
+  const [selectedFolderName, setSelectedFolderName] = useState("");
   const [busy, setBusy] = useState<"load" | "connect" | "save" | "sync" | "disconnect" | null>("load");
   const [notice, setNotice] = useState<Notice>(null);
   const load = useCallback(async () => {
@@ -799,6 +798,7 @@ function AdminDriveIntegration() {
       const state = await api.driveIntegration();
       setConnection(state);
       setSelectedFolderId(state.storageFolderId ?? "");
+      setSelectedFolderName(state.storageFolderName ?? state.storageFolderId ?? "");
     } catch (error) {
       setNotice({ tone: "error", message: displayError(error) });
     } finally {
@@ -813,14 +813,16 @@ function AdminDriveIntegration() {
     setBusy("connect");
     try { await api.startDriveIntegration("WRITE"); } catch (error) { setBusy(null); setNotice({ tone: "error", message: displayError(error) }); }
   }
-  async function loadFolders() {
-    setBusy("load");
-    try { setFolders(await api.listCompanyDriveFolders(folderQuery)); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
-  }
   async function save() {
-    if (!selectedFolderId) return;
+    if (!selectedFolderId || selectedFolderId === connection?.storageFolderId) return;
     setBusy("save");
-    try { setConnection(await api.configureCompanyStorageFolder(selectedFolderId)); setNotice({ tone: "success", message: t("admin.driveSaved") }); } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
+    try {
+      const state = await api.configureCompanyStorageFolder(selectedFolderId);
+      setConnection(state);
+      setSelectedFolderId(state.storageFolderId ?? "");
+      setSelectedFolderName(state.storageFolderName ?? state.storageFolderId ?? "");
+      setNotice({ tone: "success", message: t("admin.driveSaved") });
+    } catch (error) { setNotice({ tone: "error", message: displayError(error) }); } finally { setBusy(null); }
   }
   async function sync() {
     setBusy("sync");
@@ -841,18 +843,186 @@ function AdminDriveIntegration() {
           <div><dt>{t("drive.access")}</dt><dd>{connection?.canRead ? t("drive.readEnabled") : connection?.connected ? t("drive.readAuthorizationRequired") : t("drive.notConfigured")}</dd></div>
           <div><dt>{t("drive.writeAccess")}</dt><dd>{connection?.canWrite ? t("drive.writeEnabled") : connection?.connected ? t("drive.writeAuthorizationRequired") : t("drive.notConfigured")}</dd></div>
           <div><dt>{t("drive.account")}</dt><dd>{connection?.googleEmail ?? t("drive.notConfigured")}</dd></div>
-          <div><dt>{t("drive.storageFolder")}</dt><dd>{connection?.storageFolderName ?? connection?.storageFolderId ?? t("drive.notConfigured")}</dd></div>
           <div><dt>{t("drive.lastSynced")}</dt><dd>{connection?.lastSyncCompletedAt ? formatDate(connection.lastSyncCompletedAt) : t("drive.neverSynced")}</dd></div>
         </dl>
+        {connection?.connected && <div className="drive-storage-folder">
+          <label htmlFor="drive-storage-folder-trigger">{t("drive.storageFolder")}</label>
+          <div className="drive-storage-folder-row">
+            <DriveFolderCombobox
+              enabled={connection.canRead}
+              disabled={!connection.canRead}
+              selectedFolderId={selectedFolderId}
+              selectedFolderName={selectedFolderName}
+              onSelect={(folder) => {
+                setSelectedFolderId(folder.id);
+                setSelectedFolderName(folder.name);
+              }}
+            />
+            <button type="button" className="button button-primary" disabled={busy !== null || !connection.canRead || !selectedFolderId || selectedFolderId === connection.storageFolderId} onClick={() => void save()}>{busy === "save" ? t("common.saving") : t("drive.useThisFolder")}</button>
+          </div>
+        </div>}
         <div className="integration-actions">
           {(!connection?.connected || connection.needsReauthorization) && <button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void connect()}>{busy === "connect" ? t("drive.connecting") : connection?.connected ? t("drive.reauthorize") : t("drive.connectCompany")}</button>}
-          {connection?.connected && <><div className="search-field search-field-drive-folder"><Icon name="search" size={17} /><input value={folderQuery} onChange={(event) => setFolderQuery(event.target.value)} placeholder={t("drive.searchFolders")} aria-label={t("drive.searchFolders")} /></div><button type="button" className="button" disabled={busy !== null || !connection.canRead} onClick={() => void loadFolders()}>{t("drive.chooseDriveFolder")}</button><button type="button" className="button button-primary" disabled={busy !== null || !connection.configured} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></>}
+          {connection?.connected && <><button type="button" className="button button-primary" disabled={busy !== null || !connection.configured} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></>}
         </div>
         {connection?.needsReauthorization && <p className="form-error">{t("drive.reauthorizationRequired")}</p>}
-        {folders.length > 0 && <div className="admin-inline-form"><select value={selectedFolderId} onChange={(event) => setSelectedFolderId(event.target.value)} aria-label={t("drive.chooseDriveFolder")}><option value="">{t("drive.chooseDriveFolder")}</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select><button type="button" className="button button-primary" disabled={busy !== null || !selectedFolderId} onClick={() => void save()}>{busy === "save" ? t("common.saving") : t("common.save")}</button></div>}
       </>}
     </section>
   </>;
+}
+
+function DriveFolderCombobox({
+  enabled,
+  disabled,
+  selectedFolderId,
+  selectedFolderName,
+  onSelect,
+}: {
+  enabled: boolean;
+  disabled: boolean;
+  selectedFolderId: string;
+  selectedFolderName: string;
+  onSelect: (folder: DriveFolderOption) => void;
+}) {
+  const [folders, setFolders] = useState<DriveFolderOption[]>([]);
+  const [query, setQuery] = useState("");
+  const [searchRevision, setSearchRevision] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const requestRevision = useRef(0);
+
+  const loadFolders = useCallback(async (nameQuery: string) => {
+    const revision = ++requestRevision.current;
+    setLoading(true);
+    setError("");
+    try {
+      const nextFolders = await api.listCompanyDriveFolders(nameQuery);
+      if (revision !== requestRevision.current) return;
+      setFolders(nextFolders);
+    } catch (requestError) {
+      if (revision !== requestRevision.current) return;
+      setError(displayError(requestError));
+    } finally {
+      if (revision === requestRevision.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) {
+      requestRevision.current += 1;
+      return;
+    }
+    const timer = window.setTimeout(() => { void loadFolders(""); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [enabled, loadFolders]);
+
+  useEffect(() => {
+    if (!enabled || searchRevision === 0) return;
+    const timer = window.setTimeout(() => { void loadFolders(query); }, 300);
+    return () => window.clearTimeout(timer);
+  }, [enabled, loadFolders, query, searchRevision]);
+
+  useEffect(() => {
+    if (open) input.current?.focus();
+  }, [open]);
+
+  const closePicker = useCallback(() => {
+    requestRevision.current += 1;
+    setOpen(false);
+    setQuery("");
+    setSearchRevision(0);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (!open || !enabled) return;
+    const close = (event: MouseEvent) => {
+      if (!root.current?.contains(event.target as globalThis.Node)) closePicker();
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [closePicker, enabled, open]);
+
+  const visibleFolders = query.trim()
+    ? folders.filter((folder) => folder.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : folders;
+  const selectedName = selectedFolderName || t("drive.chooseStorageFolder");
+  const isOpen = open && enabled;
+
+  function openPicker() {
+    if (disabled) return;
+    setQuery("");
+    setSearchRevision(0);
+    setError("");
+    setOpen(true);
+  }
+
+  return <div ref={root} className="drive-folder-combobox">
+    {isOpen ? <div className="search-field drive-folder-combobox-input">
+      <Icon name="search" size={17} />
+      <input
+        id="drive-storage-folder-trigger"
+        ref={input}
+        role="combobox"
+        aria-controls="drive-storage-folder-options"
+        aria-expanded="true"
+        aria-autocomplete="list"
+        value={query}
+        onChange={(event) => {
+          requestRevision.current += 1;
+          setLoading(true);
+          setError("");
+          setQuery(event.target.value);
+          setSearchRevision((value) => value + 1);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            closePicker();
+          }
+        }}
+        placeholder={t("drive.chooseStorageFolder")}
+        aria-label={t("drive.storageFolder")}
+        disabled={disabled}
+      />
+    </div> : <button
+      id="drive-storage-folder-trigger"
+      type="button"
+      className="search-field drive-folder-combobox-trigger"
+      aria-haspopup="listbox"
+      aria-controls="drive-storage-folder-options"
+      aria-expanded="false"
+      aria-label={t("drive.storageFolder")}
+      onClick={openPicker}
+      disabled={disabled}
+    >
+      <Icon name="search" size={17} />
+      <span className={selectedFolderName ? "drive-folder-combobox-value" : "drive-folder-combobox-value is-placeholder"}>{selectedName}</span>
+      <Icon name="chevron-down" size={15} />
+    </button>}
+    {isOpen && <div id="drive-storage-folder-options" className="drive-folder-combobox-dropdown" role="listbox" aria-label={t("drive.storageFolder")}>
+      {loading && <p className="drive-folder-combobox-status">{t("drive.loadingFolders")}</p>}
+      {error && <p className="drive-folder-combobox-status drive-folder-combobox-error" role="alert">{error}</p>}
+      {!loading && visibleFolders.length === 0 && <p className="drive-folder-combobox-status">{t("drive.noFoldersFound")}</p>}
+      {visibleFolders.map((folder) => <button
+        key={folder.id}
+        type="button"
+        role="option"
+        aria-selected={folder.id === selectedFolderId}
+        className={`drive-folder-combobox-option${folder.id === selectedFolderId ? " is-selected" : ""}`}
+        onClick={() => {
+          onSelect(folder);
+          closePicker();
+        }}
+      >
+        <Icon name="folder" size={17} />
+        <span>{folder.name}</span>
+      </button>)}
+    </div>}
+  </div>;
 }
 
 function AdminUsers() {
