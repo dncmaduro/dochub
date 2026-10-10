@@ -50,12 +50,15 @@ import "./App.css";
 
 const api = new ApiClient();
 type Notice = { tone: "error" | "success" | "info"; message: string; durationMs?: number } | null;
-type AvailablePreview = PreviewSession & { canDownload: boolean };
+type AvailablePreview = PreviewSession & { canDownload: boolean; isDrivePreview?: boolean; openInGoogleUrl?: string | null };
 type UnavailablePreview = {
   unavailable: true;
   nodeId: string;
   filename: string;
   canDownload: boolean;
+  contentUrl?: string;
+  isDrivePreview?: boolean;
+  openInGoogleUrl?: string | null;
 };
 type Preview = AvailablePreview | UnavailablePreview;
 type ActiveEditorSession = EditorSession & {
@@ -248,12 +251,28 @@ async function openFileActivation(
 ) {
   try {
     if (node.backing?.type === "GOOGLE_DRIVE") {
-      if (node.backing.sourceStatus === "UNAVAILABLE" || !node.backing.webViewLink) {
-        onError({ tone: "error", message: t("drive.sourceUnavailable") });
+      void api.recordRecent(node.id).catch(() => undefined);
+      const unavailable = {
+        unavailable: true as const,
+        nodeId: node.id,
+        filename: node.name,
+        canDownload: false,
+        isDrivePreview: true,
+        openInGoogleUrl: node.backing.webViewLink,
+      };
+      if (node.backing.sourceStatus === "UNAVAILABLE") {
+        setPreview(unavailable);
         return;
       }
-      void api.recordRecent(node.id).catch(() => undefined);
-      window.open(node.backing.webViewLink, "_blank", "noopener,noreferrer");
+      try {
+        const session = await api.createDrivePreviewSession(node.id);
+        if (!session) setPreview(unavailable);
+        else if (!session.previewable) setPreview({ ...unavailable, canDownload: hasCapability(node, "DOWNLOAD"), contentUrl: session.contentUrl });
+        else setPreview({ ...session, canDownload: hasCapability(node, "DOWNLOAD"), isDrivePreview: true, openInGoogleUrl: node.backing.webViewLink });
+      } catch (previewError) {
+        setPreview(unavailable);
+        onError({ tone: "error", message: displayError(previewError) });
+      }
       return;
     }
     if (isFilePending(node.id)) {
@@ -281,6 +300,12 @@ async function openFileActivation(
     if (hasCapability(node, "DOWNLOAD")) await api.download(node);
   } catch (error) {
     onError({ tone: "error", message: displayEditorOpenError(error) });
+  }
+}
+
+function openDriveInGoogle(node: Node) {
+  if (node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink) {
+    window.open(node.backing.webViewLink, "_blank", "noopener,noreferrer");
   }
 }
 function formatDate(value: string) {
@@ -1351,7 +1376,7 @@ function GoogleDriveModal({
             </div>
             <div className="drive-import-content" aria-busy={loading}>
               {loading && files.length === 0 ? <div className="drive-import-state">{t("common.loading")}</div> : files.length === 0 ? <div className="drive-import-state">{t("drive.noFiles")}</div> : view === "list" ? (
-                <div className="file-table-wrap drive-import-table-wrap"><table className="file-table drive-import-table"><thead><tr><th>{t("common.name")}</th><th>{t("common.type")}</th><th>{t("common.modified")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{files.map((file) => <DriveBrowserRow key={file.id} file={file} canManage={canManage} adding={addingId === file.driveFileId} onFolder={enterFolder} onSelect={setPickerFile} />)}</tbody></table></div>
+                <div className="file-table-wrap drive-import-table-wrap"><table className="file-table drive-import-table"><colgroup><col className="drive-import-col-name" /><col className="drive-import-col-type" /><col className="drive-import-col-modified" /><col className="drive-import-col-action" /></colgroup><thead><tr><th>{t("common.name")}</th><th>{t("common.type")}</th><th>{t("common.modified")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{files.map((file) => <DriveBrowserRow key={file.id} file={file} canManage={canManage} adding={addingId === file.driveFileId} onFolder={enterFolder} onSelect={setPickerFile} />)}</tbody></table></div>
               ) : <div className="drive-browser-grid">{files.map((file) => <DriveBrowserCard key={file.id} file={file} canManage={canManage} adding={addingId === file.driveFileId} onFolder={enterFolder} onSelect={setPickerFile} />)}</div>}
               {cursor && <button type="button" className="button drive-load-more" onClick={() => void load(cursor)} disabled={loading}>{t("search.loadMore")}</button>}
             </div>
@@ -1417,29 +1442,12 @@ function DocsHubFolderPicker({
   pending: boolean;
 }) {
   const dialog = useDialogFocus();
-  const [parentId, setParentId] = useState<string | null>(null);
-  const [folders, setFolders] = useState<Node[]>([]);
-  const [trail, setTrail] = useState<Array<{ id: string | null; name: string }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const load = useCallback(async (nextParentId: string | null) => {
-    setLoading(true);
-    setError("");
-    try {
-      const page = await api.listNodes(nextParentId);
-      setFolders(page.items.filter((node) => node.type === "FOLDER"));
-      setParentId(nextParentId);
-    } catch (requestError) {
-      setError(displayError(requestError));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-  useEffect(() => {
-    const timer = window.setTimeout(() => void load(null), 0);
-    return () => window.clearTimeout(timer);
-  }, [load]);
-  return <div className="dialog-backdrop" role="presentation"><section ref={dialog} className="dialog confirm-dialog drive-folder-picker" role="dialog" aria-modal="true" aria-labelledby="drive-folder-picker-title"><header className="dialog-header"><div><h2 id="drive-folder-picker-title">{t("drive.chooseDocsHubFolder")}</h2><p>{file.name}</p></div><button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}><Icon name="close" size={16} /></button></header><div className="dialog-body"><div className="drive-folder-picker-trail"><button type="button" className="button" onClick={() => { setTrail([]); void load(null); }}>{t("drive.docsHubRoot")}</button>{trail.map((item, index) => <span key={item.id ?? "root"}> / <button type="button" className="button" onClick={() => { setTrail((current) => current.slice(0, index + 1)); void load(item.id); }}>{item.name}</button></span>)}</div>{loading ? <p className="dialog-loading">{t("common.loading")}</p> : error ? <p className="dialog-error">{error}</p> : folders.length === 0 ? <p>{t("drive.noFolders")}</p> : <div className="drive-folder-picker-list">{folders.map((folder) => <button key={folder.id} type="button" className="button drive-folder-picker-item" onClick={() => { setTrail((current) => [...current, { id: folder.id, name: folder.name }]); void load(folder.id); }}><Icon name="folder" size={17} />{folder.name}</button>)}</div>}</div><footer className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>{t("common.cancel")}</button><button type="button" className="button button-primary" onClick={() => onSelect(parentId)} disabled={pending || loading}>{pending ? t("drive.addingToDocsHub") : t("drive.addHere")}</button></footer></section></div>;
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  return <div className="dialog-backdrop" role="presentation"><section ref={dialog} className="dialog drive-folder-picker" role="dialog" aria-modal="true" aria-labelledby="drive-folder-picker-title">
+    <header className="dialog-header"><div><h2 id="drive-folder-picker-title">{t("drive.chooseDocsHubFolder")}</h2><p>{file.name}</p></div><button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}><Icon name="close" size={16} /></button></header>
+    <div className="dialog-body drive-folder-picker-body"><DocsHubFolderTree selectedFolderId={selectedFolderId} onSelect={setSelectedFolderId} showRoot /></div>
+    <footer className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>{t("common.cancel")}</button><button type="button" className="button button-primary" onClick={() => onSelect(selectedFolderId)} disabled={pending}>{pending ? t("drive.addingToDocsHub") : t("drive.addHere")}</button></footer>
+  </section></div>;
 }
 
 function SignIn() {
@@ -1661,10 +1669,27 @@ function Sidebar({
 }
 
 function FolderTree({ activeFolderId }: { activeFolderId: string | null }) {
+  return <DocsHubFolderTree activeFolderId={activeFolderId} onNavigate={navigate} />;
+}
+
+function DocsHubFolderTree({
+  activeFolderId,
+  selectedFolderId,
+  onNavigate,
+  onSelect,
+  showRoot = false,
+}: {
+  activeFolderId?: string | null;
+  selectedFolderId?: string | null;
+  onNavigate?: (folderId: string) => void;
+  onSelect?: (folderId: string | null) => void;
+  showRoot?: boolean;
+}) {
   const rootKey = "__root__";
   const [children, setChildren] = useState<Record<string, FolderTreeItem[]>>({});
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(showRoot ? [rootKey] : []));
   const [loading, setLoading] = useState<Set<string>>(new Set());
+  const [errors, setErrors] = useState<Record<string, boolean>>({});
   const childrenRef = useRef(children);
   useEffect(() => {
     childrenRef.current = children;
@@ -1674,11 +1699,16 @@ function FolderTree({ activeFolderId }: { activeFolderId: string | null }) {
     const key = parentId ?? rootKey;
     if (!force && Object.prototype.hasOwnProperty.call(childrenRef.current, key)) return;
     setLoading((current) => new Set(current).add(key));
+    setErrors((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
     try {
       const result = await api.listFolderTree(parentId);
       setChildren((current) => ({ ...current, [key]: result.items }));
     } catch {
-      setChildren((current) => ({ ...current, [key]: [] }));
+      setErrors((current) => ({ ...current, [key]: true }));
     } finally {
       setLoading((current) => {
         const next = new Set(current);
@@ -1723,15 +1753,33 @@ function FolderTree({ activeFolderId }: { activeFolderId: string | null }) {
     if (!isOpen) void loadChildren(item.id);
   }
 
+  function toggleRoot() {
+    const isOpen = expanded.has(rootKey);
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (isOpen) next.delete(rootKey);
+      else next.add(rootKey);
+      return next;
+    });
+    if (!isOpen) void loadChildren(null);
+  }
+
+  function selectFolder(folderId: string | null) {
+    if (onSelect) onSelect(folderId);
+    else if (folderId) onNavigate?.(folderId);
+  }
+
   function renderItems(parentId: string | null): ReactNode {
-    const items = children[parentId ?? rootKey] ?? [];
+    const key = parentId ?? rootKey;
+    const items = children[key] ?? [];
     return items.map((item) => {
       const isOpen = expanded.has(item.id);
       const isActive = activeFolderId === item.id;
+      const isSelected = selectedFolderId !== undefined && selectedFolderId === item.id;
       const isLoading = loading.has(item.id);
       return (
         <li key={item.id} className="folder-tree-item" role="treeitem" aria-expanded={isOpen}>
-          <div className={`folder-tree-row${isActive ? " is-active" : ""}`}>
+          <div className={`folder-tree-row${isActive ? " is-active" : ""}${isSelected ? " is-selected" : ""}`}>
             <button
               type="button"
               className={`folder-tree-toggle${isOpen ? " is-open" : ""}`}
@@ -1741,21 +1789,41 @@ function FolderTree({ activeFolderId }: { activeFolderId: string | null }) {
             >
               <Icon name="chevron" size={13} />
             </button>
-            <button type="button" className="folder-tree-link" aria-current={isActive ? "page" : undefined} onClick={() => navigate(item.id)}>
+            <button type="button" className="folder-tree-link" aria-current={isActive ? "page" : undefined} onClick={() => selectFolder(item.id)}>
               <Icon name="folder" size={15} />
               <span>{item.name}</span>
             </button>
           </div>
-          {isOpen && <ul role="group">{renderItems(item.id)}</ul>}
+          {isOpen && <ul role="group">
+            {loading.has(item.id) && !children[item.id] && <li className="folder-tree-state">{t("common.loading")}</li>}
+            {errors[item.id] && <li className="folder-tree-state"><span>{t("errors.generic")}</span><button type="button" className="button" onClick={() => void loadChildren(item.id, true)}>{t("common.retry")}</button></li>}
+            {renderItems(item.id)}
+          </ul>}
         </li>
       );
     });
   }
 
+  const rootOpen = expanded.has(rootKey);
+  const rootSelected = selectedFolderId !== undefined && selectedFolderId === null;
+
   return (
     <section className="folder-tree" aria-label={t("nav.docsHubFolders")}>
-      <div className="folder-tree-heading">{t("nav.docsHubFolders")}</div>
-      <ul role="tree">{renderItems(null)}</ul>
+      {!showRoot && <div className="folder-tree-heading">{t("nav.docsHubFolders")}</div>}
+      <ul role="tree">
+        {showRoot && <li className="folder-tree-item" role="treeitem" aria-expanded={rootOpen}>
+          <div className={`folder-tree-row${rootSelected ? " is-selected" : ""}`}>
+            <button type="button" className={`folder-tree-toggle${rootOpen ? " is-open" : ""}`} aria-label={rootOpen ? t("nav.collapseFolder", { name: t("drive.docsHubRoot") }) : t("nav.expandFolder", { name: t("drive.docsHubRoot") })} onClick={toggleRoot} disabled={loading.has(rootKey)}><Icon name="chevron" size={13} /></button>
+            <button type="button" className="folder-tree-link" onClick={() => selectFolder(null)}><Icon name="folder" size={15} /><span>{t("drive.docsHubRoot")}</span></button>
+          </div>
+          {rootOpen && <ul role="group">
+            {loading.has(rootKey) && !children[rootKey] && <li className="folder-tree-state">{t("common.loading")}</li>}
+            {errors[rootKey] && <li className="folder-tree-state"><span>{t("errors.generic")}</span><button type="button" className="button" onClick={() => void loadChildren(null, true)}>{t("common.retry")}</button></li>}
+            {renderItems(null)}
+          </ul>}
+        </li>}
+        {!showRoot && renderItems(null)}
+      </ul>
     </section>
   );
 }
@@ -2157,7 +2225,13 @@ function DriveApp({
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
           preview={preview}
           onClose={() => setPreview(null)}
-          onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
+          onDownload={() => previewIsUnavailable(preview)
+            ? preview.contentUrl
+              ? api.downloadPreview(preview.contentUrl, preview.filename)
+              : api.downloadNode(preview.nodeId, preview.filename)
+            : preview.isDrivePreview
+              ? api.downloadPreview(preview.contentUrl, preview.filename)
+              : api.downloadNode(preview.nodeId, preview.filename)}
         />
       )}
     </>
@@ -2215,6 +2289,7 @@ function FileList({
   onRemoveDrive,
   onVersions,
   onOpen,
+  onOpenInGoogle = openDriveInGoogle,
   onNotice,
   favoriteIds,
   onFavorite,
@@ -2234,6 +2309,7 @@ function FileList({
   onRemoveDrive?: (node: Node) => void;
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
+  onOpenInGoogle?: (node: Node) => void;
   onNotice: (notice: Notice) => void;
   favoriteIds: ReadonlySet<string>;
   onFavorite: (node: Node) => void;
@@ -2256,6 +2332,7 @@ function FileList({
       onRemoveDrive={onRemoveDrive}
       onVersions={onVersions}
       onOpen={onOpen}
+      onOpenInGoogle={onOpenInGoogle}
       onNotice={onNotice}
       favoriteIds={favoriteIds}
       onFavorite={onFavorite}
@@ -2314,6 +2391,7 @@ function FileList({
               canManageDocuments={canManageDocuments}
               onVersions={onVersions}
               onOpen={onOpen}
+              onOpenInGoogle={onOpenInGoogle}
               onNotice={onNotice}
               isFavorite={favoriteIds.has(node.id)}
               onFavorite={onFavorite}
@@ -2335,6 +2413,7 @@ function FileGrid({
   onRemoveDrive,
   onVersions,
   onOpen,
+  onOpenInGoogle,
   onNotice,
   favoriteIds,
   onFavorite,
@@ -2350,6 +2429,7 @@ function FileGrid({
   onRemoveDrive?: (node: Node) => void;
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
+  onOpenInGoogle: (node: Node) => void;
   onNotice: (notice: Notice) => void;
   favoriteIds: ReadonlySet<string>;
   onFavorite: (node: Node) => void;
@@ -2370,6 +2450,7 @@ function FileGrid({
     onRemoveDrive={onRemoveDrive}
     onVersions={onVersions}
     onOpen={onOpen}
+    onOpenInGoogle={onOpenInGoogle}
     onNotice={onNotice}
     isFavorite={favoriteIds.has(node.id)}
     onFavorite={onFavorite}
@@ -2389,6 +2470,7 @@ function FileTile({
   onRemoveDrive,
   onVersions,
   onOpen,
+  onOpenInGoogle,
   onNotice,
   isFavorite,
   onFavorite,
@@ -2405,6 +2487,7 @@ function FileTile({
   onRemoveDrive?: (node: Node) => void;
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
+  onOpenInGoogle: (node: Node) => void;
   onNotice: (notice: Notice) => void;
   isFavorite: boolean;
   onFavorite: (node: Node) => void;
@@ -2431,6 +2514,7 @@ function FileTile({
       {menuOpen && <RowMenu id={`file-menu-${node.id}`} trigger={trigger} onClose={onCloseMenu}>
         <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onFavorite(node); }}><Icon name="star" size={16} />{isFavorite ? t("files.unfavorite") : t("files.favorite")}</button>
         <button type="button" role="menuitem" disabled={!canOpen} onClick={() => { onCloseMenu(); if (isFolder) onFolder(node.id); else void onOpen(node); }}>{isFolder ? t("files.openFolder") : t("files.open")}</button>
+        {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>{t("drive.openInGoogle")}</button>}
         {!isFolder && hasCapability(node, "DOWNLOAD") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); void download(); }}><Icon name="download" size={16} />{t("common.download")}</button>}
         {hasCapability(node, "RENAME") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onRename(node); }}><Icon name="edit" size={16} />{t("files.rename")}</button>}
         {!isFolder && node.backing?.type !== "GOOGLE_DRIVE" && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onVersions(node); }}>{t("files.versionHistory")}</button>}
@@ -2506,6 +2590,7 @@ function FileRow({
   onRemoveDrive,
   onVersions,
   onOpen,
+  onOpenInGoogle,
   onNotice,
   isFavorite,
   onFavorite,
@@ -2523,6 +2608,7 @@ function FileRow({
   onRemoveDrive?: (node: Node) => void;
   onVersions: (node: Node) => void;
   onOpen: (node: Node) => void;
+  onOpenInGoogle: (node: Node) => void;
   onNotice: (notice: Notice) => void;
   isFavorite: boolean;
   onFavorite: (node: Node) => void;
@@ -2607,14 +2693,17 @@ function FileRow({
             >
               {isFolder
                 ? t("files.openFolder")
-                : node.backing?.type === "GOOGLE_DRIVE"
-                  ? t("drive.openInGoogle")
-                  : isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")
+                : isOnlyOfficeEditableFile(node.name) && hasCapability(node, "PREVIEW")
                   ? t("files.open")
                   : hasCapability(node, "PREVIEW")
                     ? t("files.preview")
                     : t("common.download")}
             </button>
+            {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && (
+              <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>
+                {t("drive.openInGoogle")}
+              </button>
+            )}
             {!isFolder && hasCapability(node, "DOWNLOAD") && (
               <button
                 type="button"
@@ -3309,7 +3398,13 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
           preview={preview}
           onClose={() => setPreview(null)}
-          onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
+          onDownload={() => previewIsUnavailable(preview)
+            ? preview.contentUrl
+              ? api.downloadPreview(preview.contentUrl, preview.filename)
+              : api.downloadNode(preview.nodeId, preview.filename)
+            : preview.isDrivePreview
+              ? api.downloadPreview(preview.contentUrl, preview.filename)
+              : api.downloadNode(preview.nodeId, preview.filename)}
         />
       )}
     </>
@@ -3481,7 +3576,13 @@ function SearchApp({ query }: { query: string }) {
           key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
           preview={preview}
           onClose={() => setPreview(null)}
-          onDownload={() => api.downloadNode(preview.nodeId, preview.filename)}
+          onDownload={() => previewIsUnavailable(preview)
+            ? preview.contentUrl
+              ? api.downloadPreview(preview.contentUrl, preview.filename)
+              : api.downloadNode(preview.nodeId, preview.filename)
+            : preview.isDrivePreview
+              ? api.downloadPreview(preview.contentUrl, preview.filename)
+              : api.downloadNode(preview.nodeId, preview.filename)}
         />
       )}
     </>
@@ -4499,11 +4600,16 @@ function PreviewDialog({
         className="preview-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label={`${t("preview.unavailableTitle")} ${preview.filename}`}
+        aria-label={`${t("preview.title")} ${preview.filename}`}
       >
         <header>
           <span>{preview.filename}</span>
           <div>
+            {preview.openInGoogleUrl && (
+              <button type="button" className="button" onClick={() => window.open(preview.openInGoogleUrl!, "_blank", "noopener,noreferrer")}>
+                {t("drive.openInGoogle")}
+              </button>
+            )}
             {preview.canDownload && (
               <button type="button" className="button" onClick={() => void download()}>
                 {t("common.download")}

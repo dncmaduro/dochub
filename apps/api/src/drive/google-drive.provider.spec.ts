@@ -107,6 +107,43 @@ describe('GoogleDriveApiProvider', () => {
     expect(url.searchParams.has('driveId')).toBe(false);
   });
 
+  it('streams Drive binaries and forwards byte ranges', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(Buffer.from('range-bytes'), {
+        status: 206,
+        headers: {
+          'content-type': 'application/pdf',
+          'content-length': '5',
+          'content-range': 'bytes 2-6/11',
+        },
+      }),
+    );
+    const provider = new GoogleDriveApiProvider(config);
+    const content = await provider.downloadFile('access-token', 'drive-file', 'bytes=2-6');
+    const chunks: Buffer[] = [];
+    for await (const chunk of content.stream) chunks.push(Buffer.from(chunk));
+    const request = fetchMock.mock.calls[0]?.[1];
+    expect(request?.headers).toMatchObject({ Authorization: 'Bearer access-token', Range: 'bytes=2-6' });
+    expect(content.mimeType).toBe('application/pdf');
+    expect(content.range).toEqual({ start: 2, end: 6, total: 11 });
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from('range-bytes'));
+  });
+
+  it('exports native Google files as the requested preview MIME type', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(Buffer.from('pdf-bytes'), {
+        status: 200,
+        headers: { 'content-type': 'application/pdf', 'content-length': '9' },
+      }),
+    );
+    const provider = new GoogleDriveApiProvider(config);
+    await provider.exportFile('access-token', 'native-file', 'application/pdf');
+    const request = fetchMock.mock.calls[0]?.[0];
+    const url = new URL(request instanceof URL ? request.toString() : String(request));
+    expect(url.pathname).toBe('/drive/v3/files/native-file/export');
+    expect(url.searchParams.get('mimeType')).toBe('application/pdf');
+  });
+
   it('normalizes provider authorization failures without exposing response bodies', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('token=secret', { status: 401 }),

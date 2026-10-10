@@ -74,6 +74,10 @@
   background: var(--accent-soft);
   color: #174ea6;
 }
+.folder-tree-row.is-selected {
+  background: var(--accent-soft);
+  color: #174ea6;
+}
 .folder-tree-toggle,
 .folder-tree-link {
   min-height: 30px;
@@ -113,6 +117,20 @@
 .folder-tree-link:hover,
 .folder-tree-toggle:hover:not(:disabled) {
   color: var(--accent);
+}
+.folder-tree-state {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 22px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.folder-tree-state .button {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
 }
 .sidebar-divider {
   height: 1px;
@@ -619,22 +637,6 @@
   color: var(--muted);
   font-size: 12px;
 }
-.drive-folder-picker-trail {
-  margin-bottom: 14px;
-  color: var(--muted);
-}
-.drive-folder-picker-list {
-  display: grid;
-  gap: 8px;
-  max-height: 260px;
-  overflow: auto;
-}
-.drive-folder-picker-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: flex-start;
-}
 .drive-load-more {
   margin-top: 14px;
 }
@@ -690,36 +692,6 @@
 .drive-import-table-wrap {
   min-width: 680px;
   border-radius: 6px;
-}
-.drive-import-table {
-  min-width: 680px;
-  table-layout: fixed;
-}
-.drive-import-table th,
-.drive-import-table td {
-  white-space: nowrap;
-}
-.drive-import-table th:first-child {
-  width: auto;
-}
-.drive-import-table th:nth-child(2) {
-  width: 140px;
-}
-.drive-import-table th:nth-child(3) {
-  width: 160px;
-}
-.drive-import-table th:last-child {
-  width: 170px;
-}
-.drive-import-table td {
-  height: 48px;
-}
-.drive-import-table .drive-external-actions {
-  flex-wrap: nowrap;
-  white-space: nowrap;
-}
-.drive-import-table .button {
-  white-space: nowrap;
 }
 .drive-browser-grid {
   display: grid;
@@ -948,6 +920,23 @@
   background: var(--accent-soft);
   color: #174ea6;
 }
+@media (min-width: 701px) {
+  .dialog.drive-import-dialog .drive-import-toolbar {
+    align-items: center;
+  }
+  .dialog.drive-import-dialog .drive-import-toolbar > .button,
+  .dialog.drive-import-dialog .drive-import-toolbar > .view-toggle {
+    flex: none;
+    height: 34px;
+    min-height: 34px;
+  }
+  .dialog.drive-import-dialog .drive-import-search {
+    flex: 1;
+    min-width: 0;
+    max-width: none;
+    margin: 0;
+  }
+}
 .new-menu {
   position: relative;
 }
@@ -1091,6 +1080,47 @@
 }
 .search-table th:nth-child(4) {
   width: 130px;
+}
+.file-table.drive-import-table {
+  width: 100%;
+  min-width: 680px;
+  table-layout: fixed;
+}
+.file-table.drive-import-table col.drive-import-col-name {
+  width: auto;
+}
+.file-table.drive-import-table col.drive-import-col-type {
+  width: 140px;
+}
+.file-table.drive-import-table col.drive-import-col-modified {
+  width: 150px;
+}
+.file-table.drive-import-table col.drive-import-col-action {
+  width: 170px;
+}
+.file-table.drive-import-table th:first-child {
+  width: auto;
+}
+.file-table.drive-import-table th:nth-child(2) {
+  width: 140px;
+}
+.file-table.drive-import-table th:nth-child(3) {
+  width: 150px;
+}
+.file-table.drive-import-table th:last-child {
+  width: 170px;
+}
+.file-table.drive-import-table th,
+.file-table.drive-import-table td {
+  height: 48px;
+  white-space: nowrap;
+}
+.file-table.drive-import-table .drive-external-actions {
+  flex-wrap: nowrap;
+}
+.file-table.drive-import-table .drive-external-actions,
+.file-table.drive-import-table .button {
+  white-space: nowrap;
 }
 .file-table td {
   height: 44px;
@@ -1406,6 +1436,20 @@
     width: calc(100vw - 16px);
     height: calc(100dvh - 16px);
   }
+}
+.dialog.drive-folder-picker {
+  display: flex;
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(70vh, 720px);
+  flex-direction: column;
+}
+.drive-folder-picker-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.drive-folder-picker-body > .folder-tree {
+  min-height: 0;
 }
 .dialog form {
   padding: 20px;
@@ -2204,6 +2248,10 @@ summary:focus-visible {
   .file-table th:nth-child(2),
   .file-table td:nth-child(2) {
     display: none;
+  }
+  .file-table.drive-import-table th:nth-child(2),
+  .file-table.drive-import-table td:nth-child(2) {
+    display: table-cell;
   }
   .search-table th:nth-child(3),
   .search-table td:nth-child(3) {

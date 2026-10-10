@@ -60,6 +60,7 @@ export interface EditorSession {
   config: Record<string, unknown>;
 }
 export interface PreviewSession { sessionId: string; nodeId: string; contentUrl: string; expiresAt: string; mimeType: string; filename: string; size: string; }
+export interface DrivePreviewSession { previewable: boolean; sessionId: string; nodeId: string; contentUrl: string; expiresAt: string; mimeType: string; filename: string; size: string; }
 export type DocumentRole = "VIEWER" | "EDITOR" | "OWNER";
 export interface SharingState {
   nodeId: string;
@@ -483,6 +484,22 @@ export class ApiClient {
   async createPreviewSession(nodeId: string) {
     const result = await this.request<PreviewSession | { previewable: false }>(`/nodes/${nodeId}/preview-session`, { method: "POST" });
     return "previewable" in result ? null : { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` };
+  }
+  async createDrivePreviewSession(nodeId: string) {
+    const result = await this.request<DrivePreviewSession | { previewable: false }>(`/nodes/${nodeId}/drive-preview-session`, { method: "POST" });
+    return "contentUrl" in result ? { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` } : null;
+  }
+  async downloadPreview(contentUrl: string, name: string) {
+    const response = await fetch(contentUrl, { credentials: "include" });
+    if (!response.ok) throw await this.error(response);
+    const blob = await response.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
   }
   async closeEditorSession(sessionId: string) {
     return this.request<EditorSessionState>(`/editor-sessions/${sessionId}/close`, {

@@ -8,6 +8,7 @@ import { FilesModule } from '../files/files.module.js';
 import { StorageModule } from '../storage/storage.module.js';
 import { DRIVE_CONFIG, loadDriveConfig } from './drive.config.js';
 import { DriveController } from './drive.controller.js';
+import { DrivePreviewController } from './drive-preview.controller.js';
 import { DriveCreationTargetService } from './drive-creation-target.service.js';
 import { DriveOrganizationService } from './drive-organization.service.js';
 import { DriveOAuthStateService } from './drive-oauth-state.service.js';
@@ -15,6 +16,7 @@ import { DriveService } from './drive.service.js';
 import { DriveFileMigrationService } from './drive-file-migration.service.js';
 import { DriveUploadService } from './drive-upload.service.js';
 import { DriveTokenCryptoService } from './drive-token-crypto.service.js';
+import { DrivePreviewService } from './drive-preview.service.js';
 import {
   DRIVE_PROVIDER,
   GoogleDriveApiProvider,
@@ -29,7 +31,7 @@ import {
     FilesModule,
     StorageModule,
   ],
-  controllers: [DriveController],
+  controllers: [DriveController, DrivePreviewController],
   providers: [
     {
       provide: DRIVE_CONFIG,
@@ -47,6 +49,7 @@ import {
     DriveFileMigrationService,
     DriveUploadService,
     DriveOrganizationService,
+    DrivePreviewService,
   ],
   exports: [DriveService, DriveOrganizationService, DriveFileMigrationService],
 })

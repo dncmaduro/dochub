@@ -28,4 +28,22 @@ describe('AuthCookieService', () => {
   it('does not set a domain unless an operator explicitly configures one', () => {
     expect(new AuthCookieService(config).refreshOptions()).not.toHaveProperty('domain');
   });
+
+  it('keeps preview capability cookies short-lived and scoped to their content routes', () => {
+    const service = new AuthCookieService(config);
+    expect(service.previewOptions('legacy-session')).toEqual({
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/preview/legacy-session/content',
+      maxAge: 5 * 60 * 1000,
+    });
+    expect(service.drivePreviewOptions('drive-session')).toEqual({
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/drive-preview/drive-session/content',
+      maxAge: 5 * 60 * 1000,
+    });
+  });
 });

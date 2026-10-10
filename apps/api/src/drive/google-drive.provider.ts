@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Readable } from 'node:stream';
+import { Readable } from 'node:stream';
 import { DRIVE_CONFIG, type DriveConfig } from './drive.config.js';
 
 export const DRIVE_PROVIDER = Symbol('DRIVE_PROVIDER');
@@ -69,6 +69,13 @@ export interface DriveFilePage {
   nextPageToken?: string;
 }
 
+export interface DriveContent {
+  stream: Readable;
+  mimeType: string;
+  sizeBytes: bigint | null;
+  range: { start: number; end: number; total: number } | null;
+}
+
 export interface DriveListOptions {
   pageToken?: string;
   pageSize: number;
@@ -103,6 +110,16 @@ export interface DriveProvider {
     nameQuery?: string,
   ): Promise<DriveFolderPage>;
   getFile(accessToken: string, driveFileId: string): Promise<DriveApiFile>;
+  downloadFile(
+    accessToken: string,
+    driveFileId: string,
+    rangeHeader?: string,
+  ): Promise<DriveContent>;
+  exportFile(
+    accessToken: string,
+    driveFileId: string,
+    mimeType: string,
+  ): Promise<DriveContent>;
   createNativeFile(
     accessToken: string,
     request: DriveNativeFileCreateRequest,
@@ -159,6 +176,17 @@ function escapeDriveQuery(value: string): string {
 
 function expiresAt(expiresIn: number): Date {
   return new Date(Date.now() + Math.max(1, expiresIn) * 1000);
+}
+
+function parseContentRange(value: string | null): { start: number; end: number; total: number } | null {
+  if (!value) return null;
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  const total = Number(match[3]);
+  if (![start, end, total].every(Number.isSafeInteger) || start > end || end >= total) return null;
+  return { start, end, total };
 }
 
 @Injectable()
@@ -285,6 +313,31 @@ export class GoogleDriveApiProvider implements DriveProvider {
     );
   }
 
+  downloadFile(
+    accessToken: string,
+    driveFileId: string,
+    rangeHeader?: string,
+  ): Promise<DriveContent> {
+    return this.driveContentRequest(
+      `/files/${encodeURIComponent(driveFileId)}`,
+      accessToken,
+      { alt: 'media' },
+      rangeHeader,
+    );
+  }
+
+  exportFile(
+    accessToken: string,
+    driveFileId: string,
+    mimeType: string,
+  ): Promise<DriveContent> {
+    return this.driveContentRequest(
+      `/files/${encodeURIComponent(driveFileId)}/export`,
+      accessToken,
+      { mimeType },
+    );
+  }
+
   private async postToken(
     parameters: Record<string, string>,
   ): Promise<unknown> {
@@ -349,6 +402,38 @@ export class GoogleDriveApiProvider implements DriveProvider {
     } catch {
       throw new DriveProviderError('provider', response.status);
     }
+  }
+
+  private async driveContentRequest(
+    path: string,
+    accessToken: string,
+    parameters: Record<string, string>,
+    rangeHeader?: string,
+  ): Promise<DriveContent> {
+    const url = new URL(`${DRIVE_API_ENDPOINT}${path}`);
+    url.search = new URLSearchParams(parameters).toString();
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          ...(rangeHeader ? { Range: rangeHeader } : {}),
+        },
+      });
+    } catch {
+      throw new DriveProviderError('network');
+    }
+    if (!response.ok) throw this.providerError(response.status);
+    if (!response.body) throw new DriveProviderError('provider', response.status);
+    const range = parseContentRange(response.headers.get('content-range'));
+    const contentLength = Number(response.headers.get('content-length'));
+    const sizeBytes = range ? BigInt(range.total) : Number.isSafeInteger(contentLength) ? BigInt(contentLength) : null;
+    return {
+      stream: Readable.fromWeb(response.body as unknown as Parameters<typeof Readable.fromWeb>[0]),
+      mimeType: response.headers.get('content-type')?.split(';', 1)[0]?.trim() || 'application/octet-stream',
+      sizeBytes,
+      range,
+    };
   }
 
   async createNativeFile(

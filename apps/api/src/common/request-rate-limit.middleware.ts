@@ -37,6 +37,7 @@ const SENSITIVE_ROUTES: ReadonlyArray<{
       /^\/nodes\/[^/]+\/(?:preview-session|editor-sessions|sharing)$/.test(
         r.path,
       ) ||
+      /^\/nodes\/[^/]+\/drive-preview-session$/.test(r.path) ||
       r.path === '/files' ||
       /^\/nodes\/[^/]+\/versions$/.test(r.path),
     limit: { windowMs: MINUTE, max: 30 },

@@ -380,6 +380,7 @@ const en = {
     tryAgainSoon: "Please try again in a moment.",
   },
   preview: {
+    title: "Preview",
     unavailableTitle: "Preview unavailable",
     unavailableMessage: "This file type can’t be previewed here.",
     failedTitle: "Preview is unavailable",

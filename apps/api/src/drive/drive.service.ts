@@ -34,6 +34,7 @@ import {
   GOOGLE_DRIVE_READONLY_SCOPE,
   DriveProviderError,
   type DriveApiFile,
+  type DriveContent,
   type DriveFilePage,
   type DriveOAuthTokens,
   type DriveProvider,
@@ -1027,6 +1028,31 @@ export class DriveService {
     driveFileId: string,
   ): Promise<DriveApiFile> {
     return this.provider.getFile(context.accessToken, driveFileId);
+  }
+
+  async assertReadableDrive(): Promise<void> {
+    this.assertEnabled();
+    await this.requireReadableConnected('system', { requireStorageFolder: false });
+  }
+
+  async openPreviewContent(
+    driveFileId: string,
+    exportMimeType: string | null,
+    rangeHeader?: string,
+  ): Promise<DriveContent> {
+    this.assertEnabled();
+    const connection = await this.requireReadableConnected('system', {
+      requireStorageFolder: false,
+    });
+    try {
+      return await this.withAccessToken(connection, (accessToken) =>
+        exportMimeType
+          ? this.provider.exportFile(accessToken, driveFileId, exportMimeType)
+          : this.provider.downloadFile(accessToken, driveFileId, rangeHeader),
+      );
+    } catch (error) {
+      throw this.liveDriveBrowserError(error);
+    }
   }
 
   private async beginCreationOperation(
