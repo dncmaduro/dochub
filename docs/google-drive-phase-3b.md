@@ -65,10 +65,12 @@ denied. This upload path uses the system role and does not consult legacy
 `PermissionEntry` ACLs. The UI hides Upload for viewers.
 
 A connected company integration must include the existing `drive.file` write
-grant. Metadata-only integrations receive a typed
-`GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED` response; the UI offers the existing
-bounded Admin reauthorization flow. The upload does not broaden OAuth scopes
-beyond `drive.metadata.readonly` plus `drive.file`.
+grant and `drive.readonly` for Shared Drive discovery. Integrations missing
+the read grant receive a typed
+`GOOGLE_DRIVE_READ_AUTHORIZATION_REQUIRED` response, while integrations missing
+the write grant receive `GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED`. The UI
+offers the existing bounded Admin reauthorization flow. The upload does not
+broaden OAuth scopes beyond `drive.readonly` plus `drive.file`.
 
 ## Physical and logical placement
 

@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   ConflictException,
   ForbiddenException,
   BadRequestException,
@@ -30,7 +31,7 @@ import {
 import {
   DRIVE_PROVIDER,
   GOOGLE_DRIVE_FILE_SCOPE,
-  GOOGLE_DRIVE_METADATA_READONLY_SCOPE,
+  GOOGLE_DRIVE_READONLY_SCOPE,
   DriveProviderError,
   type DriveApiFile,
   type DriveFilePage,
@@ -105,7 +106,9 @@ export interface DriveIntegrationView {
   lastSyncError?: string | null;
   revokedAt?: Date | null;
   authorizedScopes: string[];
+  canRead: boolean;
   canWrite: boolean;
+  needsReauthorization: boolean;
   sharedDriveId?: string | null;
   sharedDriveName?: string | null;
   storageFolderId?: string | null;
@@ -192,8 +195,8 @@ export class DriveService {
         codeChallenge,
         scopes:
           mode === 'WRITE'
-            ? [GOOGLE_DRIVE_METADATA_READONLY_SCOPE, GOOGLE_DRIVE_FILE_SCOPE]
-            : [GOOGLE_DRIVE_METADATA_READONLY_SCOPE],
+            ? [GOOGLE_DRIVE_READONLY_SCOPE, GOOGLE_DRIVE_FILE_SCOPE]
+            : [GOOGLE_DRIVE_READONLY_SCOPE],
       }),
       cookieValue: state.cookieValue,
     };
@@ -245,7 +248,7 @@ export class DriveService {
         ? exchanged.scopes
         : current?.authorizedScopes?.length
           ? current.authorizedScopes
-          : [GOOGLE_DRIVE_METADATA_READONLY_SCOPE],
+          : [GOOGLE_DRIVE_READONLY_SCOPE],
     };
     const connection = await this.database.prisma.googleDriveIntegration.upsert({
       where: { singletonKey: 'company' },
@@ -297,10 +300,18 @@ export class DriveService {
         connected: false,
         syncStatus: DriveSyncStatus.NEVER_SYNCED,
         authorizedScopes: [],
+        canRead: false,
         canWrite: false,
+        needsReauthorization: false,
         configured: false,
       };
     }
+    const connected =
+      connection.revokedAt === null && Boolean(connection.refreshTokenEncrypted);
+    const canRead =
+      connected && connection.authorizedScopes.includes(GOOGLE_DRIVE_READONLY_SCOPE);
+    const canWrite =
+      connected && connection.authorizedScopes.includes(GOOGLE_DRIVE_FILE_SCOPE);
     return {
       id: connection.id,
       googleAccountId: connection.googleAccountId,
@@ -317,13 +328,11 @@ export class DriveService {
       sharedDriveName: connection.sharedDriveName,
       storageFolderId: connection.storageFolderId,
       storageFolderName: connection.storageFolderName,
-      connected:
-        connection.revokedAt === null && Boolean(connection.refreshTokenEncrypted),
-      canWrite:
-        connection.revokedAt === null &&
-        Boolean(connection.refreshTokenEncrypted) &&
-        connection.authorizedScopes.includes(GOOGLE_DRIVE_FILE_SCOPE),
-      configured: Boolean(connection.sharedDriveId),
+      connected,
+      canRead,
+      canWrite,
+      needsReauthorization: connected && (!canRead || !canWrite),
+      configured: Boolean(connection.sharedDriveId) && canRead,
     };
   }
 
@@ -334,12 +343,10 @@ export class DriveService {
   ): Promise<DriveIntegrationView> {
     this.assertEnabled();
     await this.assertAdmin(adminUserId);
-    const integration = await this.requireConnected(adminUserId, {
+    const integration = await this.requireReadableConnected(adminUserId, {
       requireSharedDrive: false,
     });
-    const sharedDrives = await this.withAccessToken(integration, (accessToken) =>
-      this.listAllSharedDrives(accessToken),
-    );
+    const sharedDrives = await this.listSharedDrivesWithSafeErrors(integration);
     const sharedDrive = sharedDrives.find((item) => item.id === sharedDriveId);
     if (!sharedDrive) {
       throw new NotFoundException('The selected Shared Drive is not available.');
@@ -384,12 +391,10 @@ export class DriveService {
   async listSharedDrives(adminUserId: string) {
     this.assertEnabled();
     await this.assertAdmin(adminUserId);
-    const integration = await this.requireConnected(adminUserId, {
+    const integration = await this.requireReadableConnected(adminUserId, {
       requireSharedDrive: false,
     });
-    return this.withAccessToken(integration, (accessToken) =>
-      this.listAllSharedDrives(accessToken),
-    );
+    return this.listSharedDrivesWithSafeErrors(integration);
   }
 
   async disconnect(userId: string): Promise<DriveIntegrationView> {
@@ -432,7 +437,7 @@ export class DriveService {
   async sync(userId: string): Promise<DriveIntegrationView> {
     this.assertEnabled();
     await this.assertAdmin(userId);
-    const connection = await this.requireConnected(userId);
+    const connection = await this.requireReadableConnected(userId);
     const now = new Date();
     const claimed = await this.database.prisma.googleDriveIntegration.updateMany({
       where: {
@@ -531,7 +536,7 @@ export class DriveService {
     userId: string,
     options: DriveFileListOptions,
   ): Promise<DriveFileListView> {
-    const connection = await this.requireConnected(userId);
+    const connection = await this.requireReadableConnected(userId);
     const limit = Math.min(Math.max(options.limit ?? 50, 1), MAX_API_PAGE_SIZE);
     const cursor = options.cursor ? this.decodeCursor(options.cursor) : null;
     const query = options.q?.trim();
@@ -1287,6 +1292,17 @@ export class DriveService {
     return connection;
   }
 
+  private async requireReadableConnected(
+    userId: string,
+    options: { requireSharedDrive?: boolean } = {},
+  ) {
+    const connection = await this.requireConnected(userId, options);
+    if (!connection.authorizedScopes.includes(GOOGLE_DRIVE_READONLY_SCOPE)) {
+      throw this.readAuthorizationRequired();
+    }
+    return connection;
+  }
+
   private async requireWritableConnected(userId: string) {
     const connection = await this.requireConnected(userId);
     if (!connection.authorizedScopes.includes(GOOGLE_DRIVE_FILE_SCOPE)) {
@@ -1300,6 +1316,14 @@ export class DriveService {
       statusCode: 403,
       code: 'GOOGLE_DRIVE_WRITE_AUTHORIZATION_REQUIRED',
       message: 'Google Drive write access authorization is required.',
+    });
+  }
+
+  private readAuthorizationRequired(): ForbiddenException {
+    return new ForbiddenException({
+      statusCode: 403,
+      code: 'GOOGLE_DRIVE_READ_AUTHORIZATION_REQUIRED',
+      message: 'Google Drive read authorization is required.',
     });
   }
 
@@ -1382,6 +1406,53 @@ export class DriveService {
       return 'Google Drive returned an unexpected error. Try again later.';
     }
     return 'Google Drive metadata sync failed. Previously synchronized metadata was preserved.';
+  }
+
+  private async listSharedDrivesWithSafeErrors(connection: {
+    id: string;
+    accessTokenEncrypted: string | null;
+    accessTokenExpiresAt: Date | null;
+    refreshTokenEncrypted: string | null;
+  }) {
+    try {
+      return await this.withAccessToken(connection, (accessToken) =>
+        this.listAllSharedDrives(accessToken),
+      );
+    } catch (error) {
+      throw this.sharedDriveDiscoveryError(error);
+    }
+  }
+
+  private sharedDriveDiscoveryError(error: unknown): Error {
+    if (error instanceof DriveProviderError) {
+      if (error.kind === 'unauthorized' || error.kind === 'forbidden') {
+        return this.readAuthorizationRequired();
+      }
+      if (error.kind === 'rate_limited') {
+        return new ServiceUnavailableException({
+          statusCode: 503,
+          code: 'GOOGLE_DRIVE_RATE_LIMITED',
+          message: 'Google Drive is temporarily rate-limiting requests. Try again later.',
+        });
+      }
+      if (error.kind === 'network') {
+        return new ServiceUnavailableException({
+          statusCode: 503,
+          code: 'GOOGLE_DRIVE_UNAVAILABLE',
+          message: 'Google Drive could not be reached. Try again later.',
+        });
+      }
+      return new BadGatewayException({
+        statusCode: 502,
+        code: 'GOOGLE_DRIVE_PROVIDER_ERROR',
+        message: 'Google Drive returned an unexpected error. Try again later.',
+      });
+    }
+    return new ServiceUnavailableException({
+      statusCode: 503,
+      code: 'GOOGLE_DRIVE_UNAVAILABLE',
+      message: 'Google Drive could not be reached. Try again later.',
+    });
   }
 
   private async listAllSharedDrives(accessToken: string) {

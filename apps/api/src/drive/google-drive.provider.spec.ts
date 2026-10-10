@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import {
   GOOGLE_DRIVE_FILE_SCOPE,
-  GOOGLE_DRIVE_METADATA_READONLY_SCOPE,
+  GOOGLE_DRIVE_READONLY_SCOPE,
   DriveProviderError,
   GoogleDriveApiProvider,
 } from './google-drive.provider.js';
@@ -18,30 +18,30 @@ const config = {
 afterEach(() => vi.restoreAllMocks());
 
 describe('GoogleDriveApiProvider', () => {
-  it('uses the metadata-only scope and PKCE authorization parameters', () => {
+  it('uses the Drive read scope and PKCE authorization parameters', () => {
     const provider = new GoogleDriveApiProvider(config);
     const url = new URL(
       provider.authorizationUrl({ state: 'state', codeChallenge: 'challenge' }),
     );
     expect(url.searchParams.get('scope')).toBe(
-      GOOGLE_DRIVE_METADATA_READONLY_SCOPE,
+      GOOGLE_DRIVE_READONLY_SCOPE,
     );
     expect(url.searchParams.get('code_challenge')).toBe('challenge');
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('access_type')).toBe('offline');
   });
 
-  it('adds only the drive.file scope for explicit write authorization', () => {
+  it('adds drive.file to the Drive read scope for explicit write authorization', () => {
     const provider = new GoogleDriveApiProvider(config);
     const url = new URL(
       provider.authorizationUrl({
         state: 'state',
         codeChallenge: 'challenge',
-        scopes: [GOOGLE_DRIVE_METADATA_READONLY_SCOPE, GOOGLE_DRIVE_FILE_SCOPE],
+        scopes: [GOOGLE_DRIVE_READONLY_SCOPE, GOOGLE_DRIVE_FILE_SCOPE],
       }),
     );
     expect(url.searchParams.get('scope')).toBe(
-      `${GOOGLE_DRIVE_METADATA_READONLY_SCOPE} ${GOOGLE_DRIVE_FILE_SCOPE}`,
+      `${GOOGLE_DRIVE_READONLY_SCOPE} ${GOOGLE_DRIVE_FILE_SCOPE}`,
     );
   });
 

@@ -4,8 +4,8 @@ import { DRIVE_CONFIG, type DriveConfig } from './drive.config.js';
 
 export const DRIVE_PROVIDER = Symbol('DRIVE_PROVIDER');
 
-export const GOOGLE_DRIVE_METADATA_READONLY_SCOPE =
-  'https://www.googleapis.com/auth/drive.metadata.readonly';
+export const GOOGLE_DRIVE_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/drive.readonly';
 export const GOOGLE_DRIVE_FILE_SCOPE =
   'https://www.googleapis.com/auth/drive.file';
 
@@ -166,7 +166,7 @@ export class GoogleDriveApiProvider implements DriveProvider {
       client_id: this.config.clientId!,
       redirect_uri: this.config.redirectUri!,
       response_type: 'code',
-      scope: (parameters.scopes ?? [GOOGLE_DRIVE_METADATA_READONLY_SCOPE]).join(
+      scope: (parameters.scopes ?? [GOOGLE_DRIVE_READONLY_SCOPE]).join(
         ' ',
       ),
       access_type: 'offline',

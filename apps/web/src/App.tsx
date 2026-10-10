@@ -838,15 +838,18 @@ function AdminDriveIntegration() {
     <section className="integration-section" aria-label={t("admin.drive")}>
       {busy === "load" && !connection ? <p className="integration-state">{t("common.loading")}</p> : <>
         <dl className="profile-details">
-          <div><dt>{t("drive.status")}</dt><dd>{connection?.connected ? t("drive.connected") : t("drive.notConnected")}</dd></div>
+          <div><dt>{t("drive.status")}</dt><dd>{connection?.connected ? connection.needsReauthorization ? t("drive.reauthorizationRequired") : t("drive.connected") : t("drive.notConnected")}</dd></div>
+          <div><dt>{t("drive.access")}</dt><dd>{connection?.canRead ? t("drive.readEnabled") : connection?.connected ? t("drive.readAuthorizationRequired") : t("drive.notConfigured")}</dd></div>
+          <div><dt>{t("drive.writeAccess")}</dt><dd>{connection?.canWrite ? t("drive.writeEnabled") : connection?.connected ? t("drive.writeAuthorizationRequired") : t("drive.notConfigured")}</dd></div>
           <div><dt>{t("drive.sharedDrive")}</dt><dd>{connection?.sharedDriveName ?? connection?.sharedDriveId ?? t("drive.notConfigured")}</dd></div>
           <div><dt>{t("drive.storageFolder")}</dt><dd>{connection?.storageFolderName ?? connection?.storageFolderId ?? t("drive.sharedDriveRoot")}</dd></div>
           <div><dt>{t("drive.lastSynced")}</dt><dd>{connection?.lastSyncCompletedAt ? formatDate(connection.lastSyncCompletedAt) : t("drive.neverSynced")}</dd></div>
         </dl>
         <div className="integration-actions">
-          {!connection?.connected && <button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void connect()}>{busy === "connect" ? t("drive.connecting") : t("drive.connectCompany")}</button>}
-          {connection?.connected && <><button type="button" className="button" disabled={busy !== null} onClick={() => void loadSharedDrives()}>{t("drive.chooseSharedDrive")}</button><button type="button" className="button button-primary" disabled={busy !== null || !connection.configured} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></>}
+          {(!connection?.connected || connection.needsReauthorization) && <button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void connect()}>{busy === "connect" ? t("drive.connecting") : connection?.connected ? t("drive.reauthorize") : t("drive.connectCompany")}</button>}
+          {connection?.connected && <><button type="button" className="button" disabled={busy !== null || !connection.canRead} onClick={() => void loadSharedDrives()}>{t("drive.chooseSharedDrive")}</button><button type="button" className="button button-primary" disabled={busy !== null || !connection.configured} onClick={() => void sync()}>{busy === "sync" ? t("drive.syncing") : t("drive.syncNow")}</button><button type="button" className="button button-danger" disabled={busy !== null} onClick={() => void disconnect()}>{busy === "disconnect" ? t("drive.disconnecting") : t("drive.disconnect")}</button></>}
         </div>
+        {connection?.needsReauthorization && <p className="form-error">{t("drive.reauthorizationRequired")}</p>}
         {sharedDrives.length > 0 && <div className="admin-inline-form"><select value={selectedDriveId} onChange={(event) => setSelectedDriveId(event.target.value)} aria-label={t("drive.chooseSharedDrive")}><option value="">{t("drive.chooseSharedDrive")}</option>{sharedDrives.map((drive) => <option key={drive.id} value={drive.id}>{drive.name ?? drive.id}</option>)}</select><input value={storageFolderId} onChange={(event) => setStorageFolderId(event.target.value)} placeholder={t("drive.storageFolderId")} aria-label={t("drive.storageFolderId")} /><button type="button" className="button button-primary" disabled={busy !== null || !selectedDriveId} onClick={() => void save()}>{busy === "save" ? t("common.saving") : t("common.save")}</button></div>}
       </>}
     </section>

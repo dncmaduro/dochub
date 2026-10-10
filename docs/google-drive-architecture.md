@@ -21,6 +21,23 @@ the optional physical storage folder, and start metadata sync. The Admin
 Google Drive section is the only Drive integration configuration UI. Profile
 contains account/Google sign-in information only.
 
+## Company OAuth scopes and reauthorization
+
+The company integration's WRITE authorization requests both
+`https://www.googleapis.com/auth/drive.readonly` and
+`https://www.googleapis.com/auth/drive.file`. `drive.readonly` is required to
+discover Shared Drives with `drives.list` and to read the existing company
+Drive corpus. `drive.file` remains required for files that Docs Hub creates or
+opens/manages. The broader full `drive` scope is not required.
+
+`drives.list` cannot be authorized by `drive.metadata.readonly` or
+`drive.file` alone. Existing connections retain their stored
+`authorizedScopes` unchanged; if `drive.readonly` is missing, the API reports
+that Shared Drive read authorization is required and the Admin UI asks the
+administrator to reconnect. The integration state separately exposes whether
+it can discover/read Drive content and whether it can write Docs Hub-managed
+files.
+
 ## Physical target and API boundary
 
 The selected Shared Drive is the only synchronized source. Drive list requests

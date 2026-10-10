@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { ForbiddenException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import { DriveCreationOperationStatus, DriveFileType, DriveSyncStatus, UserStatus } from '@dochub/database';
 import { DriveService } from './drive.service.js';
-import { DriveProviderError, GOOGLE_DRIVE_FILE_SCOPE, GOOGLE_DRIVE_METADATA_READONLY_SCOPE, type DriveProvider } from './google-drive.provider.js';
+import { DriveProviderError, GOOGLE_DRIVE_FILE_SCOPE, GOOGLE_DRIVE_READONLY_SCOPE, type DriveProvider } from './google-drive.provider.js';
+
+const LEGACY_METADATA_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/drive.metadata.readonly';
 
 function harness() {
   const userId = randomUUID();
@@ -28,7 +32,7 @@ function harness() {
     lastSyncCompletedAt: null,
     lastSyncError: null,
     revokedAt: null,
-    authorizedScopes: [GOOGLE_DRIVE_FILE_SCOPE],
+    authorizedScopes: [GOOGLE_DRIVE_READONLY_SCOPE, GOOGLE_DRIVE_FILE_SCOPE],
     sharedDriveId: 'company-drive',
     sharedDriveName: 'Company Shared Drive',
     storageFolderId: null,
@@ -250,17 +254,68 @@ describe('DriveService', () => {
     await expect(h.service.listFiles(randomUUID(), {})).rejects.toThrow(/not connected/i);
   });
 
-  it('requests incremental write scope only through the explicit write flow', async () => {
+  it('requests Drive read access for discovery and adds drive.file for write authorization', async () => {
     const h = harness();
     await h.service.beginAuthorization(h.userId, 'READ');
     expect(vi.mocked(h.provider.authorizationUrl).mock.calls[0]?.[0].scopes).toEqual([
-      GOOGLE_DRIVE_METADATA_READONLY_SCOPE,
+      GOOGLE_DRIVE_READONLY_SCOPE,
     ]);
     await h.service.beginAuthorization(h.userId, 'WRITE');
     expect(vi.mocked(h.provider.authorizationUrl).mock.calls[1]?.[0].scopes).toEqual([
-      GOOGLE_DRIVE_METADATA_READONLY_SCOPE,
+      GOOGLE_DRIVE_READONLY_SCOPE,
       GOOGLE_DRIVE_FILE_SCOPE,
     ]);
+  });
+
+  it('reports read, write, and reauthorization state for a legacy connection', async () => {
+    const h = harness();
+    h.connection.authorizedScopes = [
+      LEGACY_METADATA_READONLY_SCOPE,
+      GOOGLE_DRIVE_FILE_SCOPE,
+    ];
+    await expect(h.service.listSharedDrives(h.userId)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    await expect(h.service.listSharedDrives(h.userId)).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'GOOGLE_DRIVE_READ_AUTHORIZATION_REQUIRED',
+      }),
+    });
+    await expect(h.service.getIntegration(h.userId)).resolves.toMatchObject({
+      connected: true,
+      canRead: false,
+      canWrite: true,
+      needsReauthorization: true,
+      configured: false,
+    });
+  });
+
+  it('discovers Shared Drives with the Drive read scope', async () => {
+    const h = harness();
+    vi.mocked(h.provider.listSharedDrives).mockResolvedValueOnce({
+      drives: [{ id: 'drive-1', name: 'Company Shared Drive' }],
+    });
+    await expect(h.service.listSharedDrives(h.userId)).resolves.toEqual([
+      { id: 'drive-1', name: 'Company Shared Drive' },
+    ]);
+  });
+
+  it('maps a Shared Drive discovery 403 to a safe read authorization error', async () => {
+    const h = harness();
+    vi.mocked(h.provider.listSharedDrives).mockRejectedValueOnce(
+      new DriveProviderError('forbidden', 403),
+    );
+    await expect(h.service.listSharedDrives(h.userId)).rejects.toMatchObject({
+      response: {
+        statusCode: 403,
+        code: 'GOOGLE_DRIVE_READ_AUTHORIZATION_REQUIRED',
+        message: 'Google Drive read authorization is required.',
+      },
+    });
+    expect(h.provider.listSharedDrives).toHaveBeenCalledWith(
+      'access',
+      undefined,
+    );
   });
 
   it('allows only an active administrator to start the company integration flow', async () => {
@@ -387,7 +442,7 @@ describe('DriveService', () => {
 
   it('rejects native creation for a read-only Drive connection', async () => {
     const h = harness();
-    h.connection.authorizedScopes = [GOOGLE_DRIVE_METADATA_READONLY_SCOPE];
+    h.connection.authorizedScopes = [GOOGLE_DRIVE_READONLY_SCOPE];
     await expect(
       h.service.createNativeDocument(h.userId, { kind: 'DOCUMENT' } as any, 'read-only-key'),
     ).rejects.toThrow(/write access/i);

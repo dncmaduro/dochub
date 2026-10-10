@@ -17,15 +17,16 @@ optional physical storage folder, and creation requests use
 
 ## Authorization and capability
 
-Initial connection remains metadata read-only:
-`https://www.googleapis.com/auth/drive.metadata.readonly`.
+The company connection requires Shared Drive discovery/read access through:
+`https://www.googleapis.com/auth/drive.readonly`.
 
-Document managers and administrators can request incremental write capability
-with the least-privilege `https://www.googleapis.com/auth/drive.file` scope.
-Existing connections remain read-only until that explicit reauthorization is
-completed. `GoogleDriveIntegration.authorizedScopes` is persisted and the API
-exposes `canWrite`; only an administrator configures or reauthorizes the
-company integration, while viewers cannot create native documents.
+The WRITE authorization flow requests the additional least-privilege
+`https://www.googleapis.com/auth/drive.file` scope. Existing connections that
+only have the former metadata-read scope must be explicitly reauthorized;
+`GoogleDriveIntegration.authorizedScopes` is persisted and never mutated by
+the deployment. The API exposes separate read/discovery and write capability
+state; only an administrator configures or reauthorizes the company
+integration, while viewers cannot create native documents.
 
 Imported Drive files remain metadata-backed and read-only in Docs Hub. Native
 creation does not inherit local folder ACL restrictions, while legacy local

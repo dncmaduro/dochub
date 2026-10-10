@@ -180,7 +180,9 @@ export interface DriveIntegration {
   lastSyncError?: string | null;
   revokedAt?: string | null;
   authorizedScopes: string[];
+  canRead: boolean;
   canWrite: boolean;
+  needsReauthorization: boolean;
   sharedDriveId?: string | null;
   sharedDriveName?: string | null;
   storageFolderId?: string | null;
