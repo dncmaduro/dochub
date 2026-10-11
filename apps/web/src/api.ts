@@ -135,7 +135,6 @@ interface UploadResponse {
   node: Node;
 }
 export type SystemRole = "ADMIN" | "DOCUMENT_MANAGER" | "VIEWER";
-export type NativeDocumentKind = "DOCUMENT" | "SPREADSHEET" | "PRESENTATION";
 export type UserStatus = "INVITED" | "PENDING_APPROVAL" | "ACTIVE" | "SUSPENDED";
 export interface CurrentUser {
   displayName: string;
@@ -173,17 +172,6 @@ export interface DriveFolderOption {
   id: string;
   name: string;
   parentIds: string[];
-}
-export interface NativeDocumentCreation {
-  operationId: string;
-  kind: NativeDocumentKind;
-  nodeId: string;
-  fileId: string;
-  driveFileId: string;
-  parentId: string | null;
-  name: string;
-  webViewLink: string | null;
-  driveModifiedTime: string | null;
 }
 export interface DriveFile {
   id: string;
@@ -295,19 +283,6 @@ export class ApiClient {
     return this.request<DriveIntegration>("/drive/integration/storage-folder", {
       method: "POST",
       body: JSON.stringify({ storageFolderId }),
-    });
-  }
-
-  async createNativeDocument(
-    kind: NativeDocumentKind,
-    parentId: string | null,
-    locale: "en" | "vi",
-    idempotencyKey: string,
-  ) {
-    return this.request<NativeDocumentCreation>("/drive/documents", {
-      method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({ kind, parentId, locale }),
     });
   }
 

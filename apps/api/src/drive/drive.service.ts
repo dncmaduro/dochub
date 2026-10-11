@@ -1052,6 +1052,26 @@ export class DriveService {
     }
   }
 
+  async openPreviewExport(
+    driveFileId: string,
+    mimeType: string,
+  ): Promise<DriveContent> {
+    this.assertEnabled();
+    const connection = await this.requireReadableConnected('system', {
+      requireStorageFolder: false,
+    });
+    if (!this.provider.exportFile) {
+      throw new ServiceUnavailableException('Google Drive export is unavailable.');
+    }
+    try {
+      return await this.withAccessToken(connection, (accessToken) =>
+        this.provider.exportFile!(accessToken, driveFileId, mimeType),
+      );
+    } catch (error) {
+      throw this.liveDriveBrowserError(error);
+    }
+  }
+
   private async beginCreationOperation(
     userId: string,
     idempotencyKey: string,

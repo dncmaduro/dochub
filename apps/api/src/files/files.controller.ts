@@ -47,7 +47,7 @@ export class FilesController {
 
   @Post('files/create')
   @HttpCode(201)
-  /** @deprecated Phase 3A uses POST /drive/documents for the normal New menu. */
+  /** @deprecated Legacy local-backed creation retained for staged migration. */
   createOffice(
     @CurrentAuth() auth: AuthPrincipal,
     @Body() dto: CreateOfficeFileDto,

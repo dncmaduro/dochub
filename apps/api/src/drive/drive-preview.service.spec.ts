@@ -23,7 +23,7 @@ function serviceFor({
   const authorization = { resolveCapabilities: vi.fn().mockResolvedValue({ capabilities }) };
   const database = { prisma: { node: { findFirst: vi.fn().mockResolvedValue(node) }, user: { findUnique: vi.fn() } } };
   const jwt = { signAsync: vi.fn().mockResolvedValue('signed-drive-preview'), verifyAsync: vi.fn() };
-  const drive = { assertReadableDrive: vi.fn().mockResolvedValue(undefined), openPreviewContent: vi.fn() };
+  const drive = { assertReadableDrive: vi.fn().mockResolvedValue(undefined), openPreviewContent: vi.fn(), openPreviewExport: vi.fn() };
   return {
     service: new DrivePreviewService(database as never, authorization as never, jwt as never, drive as never),
     authorization,
@@ -34,14 +34,14 @@ function serviceFor({
 }
 
 describe('DrivePreviewService', () => {
-  it('does not turn native Google files into a Docs Hub preview', async () => {
+  it('exports Google-native files as PDF previews', async () => {
     const { service, drive, jwt, database } = serviceFor();
     const preview = await service.create('user', 'node');
     expect(preview).toMatchObject({
-      previewable: false,
+      previewable: true,
       nodeId: 'node',
       contentUrl: expect.stringMatching(/^\/drive-preview\//),
-      mimeType: 'application/vnd.google-apps.document',
+      mimeType: 'application/pdf',
       filename: 'Quarterly report',
     });
     expect(preview).toHaveProperty('token', 'signed-drive-preview');
@@ -111,17 +111,24 @@ describe('DrivePreviewService', () => {
     await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: false });
   });
 
-  it('keeps unsupported Drive binaries unavailable while allowing authorized download', async () => {
+  it.each([
+    ['application/msword', 'report.doc'],
+    ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'report.docx'],
+    ['application/vnd.ms-excel', 'report.xls'],
+    ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'report.xlsx'],
+    ['application/vnd.ms-powerpoint', 'report.ppt'],
+    ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'report.pptx'],
+  ])('plans %s for LibreOffice PDF preview', async (mimeType, filename) => {
     const { service, drive } = serviceFor({
       node: {
         id: 'node',
-        name: 'Legacy.docx',
+        name: filename,
         type: 'FILE',
         file: {
           backingType: 'GOOGLE_DRIVE',
           driveFile: {
             driveFileId: 'drive-file',
-            mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            mimeType,
             sizeBytes: 24n,
             sourceStatus: 'CONNECTED',
             trashed: false,
@@ -129,7 +136,51 @@ describe('DrivePreviewService', () => {
         },
       },
     });
-    await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: false, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: true, mimeType: 'application/pdf' });
+    expect(drive.assertReadableDrive).toHaveBeenCalledOnce();
+  });
+
+  it('uses Google export before extension fallback', async () => {
+    const { service, jwt } = serviceFor({
+      node: {
+        id: 'node',
+        name: 'Google report.docx',
+        type: 'FILE',
+        file: {
+          backingType: 'GOOGLE_DRIVE',
+          driveFile: {
+            driveFileId: 'drive-file',
+            mimeType: 'application/vnd.google-apps.document',
+            sizeBytes: 24n,
+            sourceStatus: 'CONNECTED',
+            trashed: false,
+          },
+        },
+      },
+    });
+    await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: true, mimeType: 'application/pdf' });
+    expect(jwt.signAsync).toHaveBeenCalledWith(expect.objectContaining({ kind: 'google-export' }), expect.anything());
+  });
+
+  it('keeps unsupported Drive binaries unavailable while allowing authorized download', async () => {
+    const { service, drive } = serviceFor({
+      node: {
+        id: 'node',
+        name: 'archive.bin',
+        type: 'FILE',
+        file: {
+          backingType: 'GOOGLE_DRIVE',
+          driveFile: {
+            driveFileId: 'drive-file',
+            mimeType: 'application/octet-stream',
+            sizeBytes: 24n,
+            sourceStatus: 'CONNECTED',
+            trashed: false,
+          },
+        },
+      },
+    });
+    await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: false, mimeType: 'application/octet-stream' });
     expect(drive.assertReadableDrive).toHaveBeenCalledOnce();
   });
 
@@ -154,5 +205,23 @@ describe('DrivePreviewService', () => {
     };
     await expect(service.openContent(preview, 'bytes=0-4')).resolves.toBe(content);
     expect(drive.openPreviewContent).toHaveBeenCalledWith('drive-file', 'bytes=0-4');
+  });
+
+  it('uses Drive export for a Google-native preview session', async () => {
+    const { service, drive } = serviceFor();
+    const content = { stream: {} };
+    drive.openPreviewExport.mockResolvedValue(content);
+    const preview = {
+      typ: 'drive-preview' as const,
+      sid: 'session',
+      sub: 'user',
+      nid: 'node',
+      did: 'drive-file',
+      kind: 'google-export' as const,
+      mimeType: 'application/pdf',
+      filename: 'Quarterly report',
+    };
+    await expect(service.openContent(preview)).resolves.toBe(content);
+    expect(drive.openPreviewExport).toHaveBeenCalledWith('drive-file', 'application/pdf');
   });
 });

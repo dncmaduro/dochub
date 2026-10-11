@@ -37,7 +37,6 @@ import {
   type SharingState,
   type SystemRole,
   type TrashItem,
-  type NativeDocumentKind,
 } from "./api";
 import { changeLocale, getLocale, translate as t, type Locale } from "./i18n";
 import { canAdministerAccounts, canManageDocuments } from "./system-role-policy";
@@ -45,7 +44,16 @@ import "./App.css";
 
 const api = new ApiClient();
 type Notice = { tone: "error" | "success" | "info"; message: string; durationMs?: number } | null;
-type AvailablePreview = PreviewSession & { canDownload: boolean; isDrivePreview?: boolean; openInGoogleUrl?: string | null };
+type LoadingPreview = {
+  loading: true;
+  nodeId: string;
+  filename: string;
+  canDownload: boolean;
+  isDrivePreview?: boolean;
+  openInGoogleUrl?: string | null;
+  canEditInGoogle?: boolean;
+};
+type AvailablePreview = PreviewSession & { canDownload: boolean; isDrivePreview?: boolean; openInGoogleUrl?: string | null; canEditInGoogle?: boolean };
 type UnavailablePreview = {
   unavailable: true;
   nodeId: string;
@@ -54,11 +62,15 @@ type UnavailablePreview = {
   contentUrl?: string;
   isDrivePreview?: boolean;
   openInGoogleUrl?: string | null;
+  canEditInGoogle?: boolean;
 };
-type Preview = AvailablePreview | UnavailablePreview;
+type Preview = LoadingPreview | AvailablePreview | UnavailablePreview;
 
 function previewIsUnavailable(preview: Preview): preview is UnavailablePreview {
   return "unavailable" in preview;
+}
+function previewIsLoading(preview: Preview): preview is LoadingPreview {
+  return "loading" in preview;
 }
 
 function currentFolderId() {
@@ -201,13 +213,11 @@ function isDriveGoogleEditableFile(node: Node) {
 }
 function canOpenNode(node: Node) {
   return node.type === "FOLDER" ||
-    (node.backing?.type === "GOOGLE_DRIVE" && isDriveGoogleEditableFile(node) && Boolean(node.backing.webViewLink)) ||
     hasCapability(node, "PREVIEW") ||
     hasCapability(node, "DOWNLOAD");
 }
 function openActionLabel(node: Node) {
   if (node.type === "FOLDER") return t("files.openFolder");
-  if (node.backing?.type === "GOOGLE_DRIVE" && isDriveGoogleEditableFile(node) && node.backing.webViewLink) return t("files.open");
   return hasCapability(node, "PREVIEW") ? t("files.preview") : t("common.download");
 }
 async function openFileActivation(
@@ -216,6 +226,18 @@ async function openFileActivation(
   onError: (notice: Notice) => void,
 ) {
   try {
+    const isDriveFile = node.backing?.type === "GOOGLE_DRIVE";
+    const canEditInGoogle = isDriveFile && isDriveGoogleEditableFile(node);
+    const openInGoogleUrl = node.backing?.type === "GOOGLE_DRIVE" ? node.backing.webViewLink : undefined;
+    setPreview({
+      loading: true,
+      nodeId: node.id,
+      filename: node.name,
+      canDownload: hasCapability(node, "DOWNLOAD"),
+      isDrivePreview: isDriveFile,
+      openInGoogleUrl,
+      canEditInGoogle,
+    });
     if (node.backing?.type === "GOOGLE_DRIVE") {
       try {
         await api.recordRecent(node.id);
@@ -229,24 +251,17 @@ async function openFileActivation(
         canDownload: false,
         isDrivePreview: true,
         openInGoogleUrl: node.backing.webViewLink,
+        canEditInGoogle,
       };
       if (node.backing.sourceStatus === "UNAVAILABLE") {
         setPreview(unavailable);
-        return;
-      }
-      if (isDriveGoogleEditableFile(node)) {
-        if (node.backing.webViewLink) {
-          window.location.assign(node.backing.webViewLink);
-        } else {
-          setPreview({ ...unavailable, canDownload: hasCapability(node, "DOWNLOAD") });
-        }
         return;
       }
       try {
         const session = await api.createDrivePreviewSession(node.id);
         if (!session) setPreview(unavailable);
         else if (!session.previewable) setPreview({ ...unavailable, canDownload: hasCapability(node, "DOWNLOAD"), contentUrl: session.contentUrl });
-        else setPreview({ ...session, canDownload: hasCapability(node, "DOWNLOAD"), isDrivePreview: true, openInGoogleUrl: node.backing.webViewLink });
+        else setPreview({ ...session, canDownload: hasCapability(node, "DOWNLOAD"), isDrivePreview: true, openInGoogleUrl: node.backing.webViewLink, canEditInGoogle });
       } catch (previewError) {
         setPreview(unavailable);
         onError({ tone: "error", message: displayError(previewError) });
@@ -274,6 +289,7 @@ async function openFileActivation(
 }
 
 function downloadPreview(preview: Preview) {
+  if (previewIsLoading(preview)) return Promise.resolve();
   if (preview.contentUrl) return api.downloadPreview(preview.contentUrl, preview.filename);
   return api.downloadNode(preview.nodeId, preview.filename);
 }
@@ -551,7 +567,6 @@ function App() {
   const [createNewOpen, setCreateNewOpen] = useState(false);
   const [driveImportOpen, setDriveImportOpen] = useState(false);
   const [folderCreationParentId, setFolderCreationParentId] = useState<string | null>(null);
-  const [creatingNative, setCreatingNative] = useState<NativeDocumentKind | null>(null);
   const [uploadingFromMenu, setUploadingFromMenu] = useState(false);
   const [creationNotice, setCreationNotice] = useState<Notice>(null);
   const menuUploadInput = useRef<HTMLInputElement>(null);
@@ -644,43 +659,6 @@ function App() {
     window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: folderCreationParentId } }));
     setCreationNotice({ tone: "success", message: t("files.created", { name: node.name }) });
   }
-  async function createNativeDocument(kind: NativeDocumentKind) {
-    setCreateNewOpen(false);
-    const editorTab = window.open("about:blank", "_blank");
-    if (editorTab) {
-      try {
-        editorTab.opener = null;
-      } catch {
-        // Some browsers expose opener as read-only for a temporary tab.
-      }
-    }
-    try {
-      setCreatingNative(kind);
-      setCreationNotice(null);
-      const result = await api.createNativeDocument(
-        kind,
-        creationParentId,
-        getLocale(),
-        crypto.randomUUID(),
-      );
-      window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: creationParentId } }));
-      setCreationNotice({ tone: "success", message: t("files.created", { name: result.name }) });
-      if (result.webViewLink) {
-        if (editorTab && !editorTab.closed) editorTab.location.href = result.webViewLink;
-        else window.location.assign(result.webViewLink);
-      } else if (editorTab && !editorTab.closed) {
-        editorTab.close();
-        navigate(creationParentId);
-      } else {
-        navigate(creationParentId);
-      }
-    } catch (requestError) {
-      if (editorTab && !editorTab.closed) editorTab.close();
-      setCreationNotice({ tone: "error", message: displayError(requestError) });
-    } finally {
-      setCreatingNative(null);
-    }
-  }
   async function uploadFromMenu(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -738,7 +716,6 @@ function App() {
         profile={profile}
         active={active}
         canManageDocuments={canManage}
-        creatingNative={creatingNative !== null}
         uploadingFromMenu={uploadingFromMenu}
         activeFolderId={location.route === "drive" ? creationParentId : null}
         onOpenDriveImport={() => setDriveImportOpen(true)}
@@ -771,11 +748,10 @@ function App() {
       )}
       {createNewOpen && (
         <CreateNewDialog
-          pending={creatingNative !== null || uploadingFromMenu}
+          pending={uploadingFromMenu}
           folderDisabled={!canCreate}
           onClose={() => setCreateNewOpen(false)}
           onFolder={beginCreateFolder}
-          onNativeDocument={(kind) => void createNativeDocument(kind)}
           onUpload={() => menuUploadInput.current?.click()}
         />
       )}
@@ -1464,8 +1440,7 @@ function AppShell({
   active,
   profile,
   canManageDocuments,
-  creatingNative,
-  uploadingFromMenu,
+    uploadingFromMenu,
   activeFolderId,
   onOpenDriveImport,
   onOpenCreateNew,
@@ -1475,8 +1450,7 @@ function AppShell({
   active: SidebarRoute;
   profile: CurrentUser;
   canManageDocuments: boolean;
-  creatingNative: boolean;
-  uploadingFromMenu: boolean;
+    uploadingFromMenu: boolean;
   activeFolderId: string | null;
   onOpenDriveImport: () => void;
   onOpenCreateNew: () => void;
@@ -1488,7 +1462,6 @@ function AppShell({
       active={active}
       profile={profile}
       canManageDocuments={canManageDocuments}
-      creatingNative={creatingNative}
       uploadingFromMenu={uploadingFromMenu}
       activeFolderId={activeFolderId}
       onOpenDriveImport={onOpenDriveImport}
@@ -1503,7 +1476,6 @@ function Sidebar({
   active,
   profile,
   canManageDocuments,
-  creatingNative,
   uploadingFromMenu,
   activeFolderId,
   onOpenDriveImport,
@@ -1513,7 +1485,6 @@ function Sidebar({
   active: SidebarRoute;
   profile: CurrentUser;
   canManageDocuments: boolean;
-  creatingNative: boolean;
   uploadingFromMenu: boolean;
   activeFolderId: string | null;
   onOpenDriveImport: () => void;
@@ -1529,7 +1500,7 @@ function Sidebar({
       </div>
       {canManageDocuments && (
         <AddDriveMenu
-          pending={creatingNative || uploadingFromMenu}
+          pending={uploadingFromMenu}
           onOpenDrive={onOpenDriveImport}
           onOpenCreateNew={onOpenCreateNew}
         />
@@ -1865,6 +1836,7 @@ function DriveApp({
   const [notice, setNotice] = useState<Notice>(null);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const previewActivation = useRef(0);
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
   const [removeDriveNode, setRemoveDriveNode] = useState<Node | null>(null);
@@ -1977,7 +1949,16 @@ function DriveApp({
     persistViewMode("dochub.drive-view", next);
   }
   async function openFile(node: Node) {
-    await openFileActivation(node, setPreview, setNotice);
+    const activation = ++previewActivation.current;
+    await openFileActivation(
+      node,
+      (nextPreview) => { if (activation === previewActivation.current) setPreview(nextPreview); },
+      (notice) => { if (activation === previewActivation.current) setNotice(notice); },
+    );
+  }
+  function closePreview() {
+    previewActivation.current += 1;
+    setPreview(null);
   }
   async function moveToTrash(node: Node) {
     await api.moveToTrash(node.id);
@@ -2127,9 +2108,9 @@ function DriveApp({
       )}
       {preview && (
         <PreviewDialog
-          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
+          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : previewIsLoading(preview) ? `loading-${preview.nodeId}` : preview.sessionId}
           preview={preview}
-          onClose={() => setPreview(null)}
+          onClose={closePreview}
           onDownload={() => downloadPreview(preview)}
         />
       )}
@@ -2413,7 +2394,7 @@ function FileTile({
       {menuOpen && <RowMenu id={`file-menu-${node.id}`} trigger={trigger} onClose={onCloseMenu}>
         <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onFavorite(node); }}><Icon name="star" size={16} />{isFavorite ? t("files.unfavorite") : t("files.favorite")}</button>
         <button type="button" role="menuitem" disabled={!canOpen} onClick={() => { onCloseMenu(); if (isFolder) onFolder(node.id); else void onOpen(node); }}>{openActionLabel(node)}</button>
-        {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>{t("drive.openInGoogle")}</button>}
+        {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>{isDriveGoogleEditableFile(node) ? t("drive.editInGoogle") : t("drive.openInGoogle")}</button>}
         {!isFolder && hasCapability(node, "DOWNLOAD") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); void download(); }}><Icon name="download" size={16} />{t("common.download")}</button>}
         {hasCapability(node, "RENAME") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onRename(node); }}><Icon name="edit" size={16} />{t("files.rename")}</button>}
         {!isFolder && node.backing?.type !== "GOOGLE_DRIVE" && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onVersions(node); }}>{t("files.versionHistory")}</button>}
@@ -2592,7 +2573,7 @@ function FileRow({
             </button>
             {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && (
               <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>
-                {t("drive.openInGoogle")}
+                {isDriveGoogleEditableFile(node) ? t("drive.editInGoogle") : t("drive.openInGoogle")}
               </button>
             )}
             {!isFolder && hasCapability(node, "DOWNLOAD") && (
@@ -3188,6 +3169,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const previewActivation = useRef(0);
   const [renameNode, setRenameNode] = useState<Node | null>(null);
   const [shareNode, setShareNode] = useState<Node | null>(null);
   const [trashNode, setTrashNode] = useState<Node | null>(null);
@@ -3216,7 +3198,17 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   }, [load]);
 
   async function openFile(node: Node) {
-    await openFileActivation(node, setPreview, setNotice);
+    const activation = ++previewActivation.current;
+    await openFileActivation(
+      node,
+      (nextPreview) => { if (activation === previewActivation.current) setPreview(nextPreview); },
+      (notice) => { if (activation === previewActivation.current) setNotice(notice); },
+    );
+  }
+
+  function closePreview() {
+    previewActivation.current += 1;
+    setPreview(null);
   }
 
   async function rename(node: Node, name: string) {
@@ -3280,9 +3272,9 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
       {preview && (
         <PreviewDialog
-          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
+          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : previewIsLoading(preview) ? `loading-${preview.nodeId}` : preview.sessionId}
           preview={preview}
-          onClose={() => setPreview(null)}
+          onClose={closePreview}
           onDownload={() => downloadPreview(preview)}
         />
       )}
@@ -3303,6 +3295,7 @@ function SearchApp({ query }: { query: string }) {
   const [error, setError] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+  const previewActivation = useRef(0);
   const [preview, setPreview] = useState<Preview | null>(null);
   const requestId = useRef(0);
 
@@ -3415,12 +3408,22 @@ function SearchApp({ query }: { query: string }) {
       navigate(item.id);
       return;
     }
+    const activation = ++previewActivation.current;
     try {
       const node = await api.getNode(item.id);
-      await openFileActivation(node, setPreview, setNotice);
+      await openFileActivation(
+        node,
+        (nextPreview) => { if (activation === previewActivation.current) setPreview(nextPreview); },
+        (notice) => { if (activation === previewActivation.current) setNotice(notice); },
+      );
     } catch (requestError) {
       setNotice({ tone: "error", message: displayError(requestError) });
     }
+  }
+
+  function closePreview() {
+    previewActivation.current += 1;
+    setPreview(null);
   }
 
   return (
@@ -3446,9 +3449,9 @@ function SearchApp({ query }: { query: string }) {
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
       {preview && (
         <PreviewDialog
-          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : preview.sessionId}
+          key={previewIsUnavailable(preview) ? `unavailable-${preview.nodeId}` : previewIsLoading(preview) ? `loading-${preview.nodeId}` : preview.sessionId}
           preview={preview}
-          onClose={() => setPreview(null)}
+          onClose={closePreview}
           onDownload={() => downloadPreview(preview)}
         />
       )}
@@ -4017,14 +4020,12 @@ function CreateNewDialog({
   folderDisabled,
   onClose,
   onFolder,
-  onNativeDocument,
   onUpload,
 }: {
   pending: boolean;
   folderDisabled: boolean;
   onClose: () => void;
   onFolder: () => void;
-  onNativeDocument: (kind: NativeDocumentKind) => void;
   onUpload: () => void;
 }) {
   const dialog = useDialogFocus();
@@ -4039,9 +4040,6 @@ function CreateNewDialog({
         </header>
         <div className="create-new-options">
           <button type="button" className="button" disabled={pending || folderDisabled} onClick={onFolder}><Icon name="folder" />{t("files.newFolder")}</button>
-          <button type="button" className="button" disabled={pending} onClick={() => onNativeDocument("DOCUMENT")}><Icon name="file" />{t("files.document")}</button>
-          <button type="button" className="button" disabled={pending} onClick={() => onNativeDocument("SPREADSHEET")}><Icon name="file" />{t("files.spreadsheet")}</button>
-          <button type="button" className="button" disabled={pending} onClick={() => onNativeDocument("PRESENTATION")}><Icon name="file" />{t("files.presentation")}</button>
           <button type="button" className="button" disabled={pending} onClick={onUpload}><Icon name="upload" />{t("files.upload")}</button>
         </div>
       </section>
@@ -4117,7 +4115,8 @@ function PreviewDialog({
     return () => document.removeEventListener("keydown", escape);
   }, [onClose]);
   const unavailable = previewIsUnavailable(preview);
-  const session = unavailable ? null : preview;
+  const loading = previewIsLoading(preview);
+  const session = unavailable || loading ? null : preview;
   const type = session?.mimeType.toLowerCase();
   const previewLoading = state === "loading";
   const retry = () => {
@@ -4146,10 +4145,10 @@ function PreviewDialog({
           <div>
             {preview.openInGoogleUrl && (
               <button type="button" className="button" onClick={() => window.open(preview.openInGoogleUrl!, "_blank", "noopener,noreferrer")}>
-                {t("drive.openInGoogle")}
+                {preview.canEditInGoogle ? t("drive.editInGoogle") : t("drive.openInGoogle")}
               </button>
             )}
-            {preview.canDownload && (
+            {preview.canDownload && !loading && (
               <button type="button" className="button" onClick={() => void download()}>
                 {t("common.download")}
               </button>
@@ -4165,7 +4164,13 @@ function PreviewDialog({
           </div>
         </header>
         <div className="preview-content" aria-busy={previewLoading}>
-          {unavailable ? (
+          {loading ? (
+            <PreviewState
+              title={t("preview.loading")}
+              message={t("preview.loadingMessage")}
+              downloadError={downloadError}
+            />
+          ) : unavailable ? (
             <PreviewState
               title={t("preview.unavailableTitle")}
               message={t("preview.unavailableMessage")}

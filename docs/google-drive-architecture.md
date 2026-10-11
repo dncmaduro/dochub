@@ -1,4 +1,9 @@
-# Docs Hub Google Drive architecture
+# Docs Hub Google Drive implementation notes
+
+> Canonical product direction: [Docs Hub file, storage, and engine architecture](file-storage-and-engine-architecture.md).
+> This document records the current Google-specific integration and its
+> transitional behavior. Google Drive is a storage backend, not the Docs Hub
+> product document model.
 
 ## One company Google Drive integration
 
@@ -47,17 +52,20 @@ returned as a safe typed error.
 
 ## Physical target and sync boundary
 
-The physical target is `{ type: 'DRIVE_FOLDER', parentFolderId }`. New native
-Docs/Sheets/Slides, binary uploads, and Phase 4A migration uploads always send
+The physical target is `{ type: 'DRIVE_FOLDER', parentFolderId }`. Binary
+uploads and Phase 4A migration uploads currently send
 `parents: [storageFolderId]`. No creation path derives a Google parent from a
-Docs Hub folder or falls back to the acting user's My Drive.
+Docs Hub folder or falls back to the acting user's My Drive. The legacy native
+Docs/Sheets/Slides endpoint is retained only for staged migration and is no
+longer called by the normal Docs Hub UI.
 
-The primary browser is provider-backed and reads the configured folder's
-subtree live. It lists direct children with `'<folderId>' in parents`, traverses
-nested folders, and ignores unrelated My Drive files and files outside the
-subtree. The modal's search is scoped to the currently open physical folder's
-direct children, so it never silently broadens a search to unrelated My Drive
-files. Search and import therefore do not require a prior metadata sync.
+The optional transitional Drive browser is provider-backed and reads the
+configured folder's subtree live. It lists direct children with
+`'<folderId>' in parents`, traverses nested folders, and ignores unrelated My
+Drive files and files outside the subtree. Its search is scoped to the
+currently open physical folder's direct children. This browser is an import
+utility, not the primary Docs Hub product experience; Docs Hub search is the
+long-term document search surface.
 The browser does not use Shared Drive discovery, `corpora=drive`, or a `driveId`
 filter.
 
@@ -84,16 +92,21 @@ reference to a Drive file without relocating the source file.
   through the configured company integration.
 - `VIEWER`: viewing/browsing only.
 
-Docs Hub roles and Google permissions remain separate. A `webViewLink` still
-requires the viewer's actual Google access to the source file.
+Docs Hub roles and Google permissions remain separate. Docs Hub authorization
+is the normal product-level access authority; company Drive credentials are
+infrastructure. A `webViewLink` is retained only for an explicit transitional
+Edit in Google action and is not the normal open path.
 
 ## Editing, preview, and legacy local files
 
-Google Drive is the source of truth for new and migrated files. Native Google
-Docs, Sheets, and Slides, plus Microsoft Office files stored in Drive, open
-through their Drive `webViewLink` in a separate browser tab. Docs Hub provides
-organization and a narrow PreviewDialog for supported PDF, image, video, and
-text/media content; it does not run an embedded office editor.
+For Drive-backed content, Google Drive currently stores the physical bytes.
+Every primary file activation stays in Docs Hub and opens its PreviewDialog.
+Native Google Docs, Sheets, and Slides are exported by Drive as PDF for
+transitional preview. Microsoft Office files are downloaded to an isolated
+temporary API directory, converted to PDF by headless LibreOffice, streamed
+into the dialog, and removed after the response. The Drive `webViewLink` is
+used only by an explicit Edit in Google action; Docs Hub does not run an
+embedded office editor.
 
 `StorageService` and `FileVersion` remain for existing `LOCAL` files and for
 the controlled migration/restore procedures. Historical `EditorSession` data
@@ -105,8 +118,10 @@ storage folder; it does not start migration during boot or a Prisma migration.
 Audit records use the operator when one exists and `SYSTEM` for unattended
 work.
 
-Production acceptance is: connect the company account, choose and validate a
-storage folder, browse and import a live file without syncing first, run a
-metadata reconciliation, create one native document, upload one tiny binary,
-and verify that both are under that folder before resuming the existing
-one-file legacy migration procedure.
+The historical production acceptance sequence may still be used to validate
+the integration, but native Google creation is not current product direction.
+The current target acceptance is to connect the company account, choose and
+validate a storage folder, upload a physical file through Docs Hub, preview it
+inside Docs Hub, and verify the logical `Node.parentId` independently of the
+physical Drive parent before resuming the existing one-file legacy migration
+procedure.

@@ -1,5 +1,9 @@
 # Google Drive Phase 3A: native document creation
 
+> Historical transitional phase. Google-native creation is no longer the
+> target Docs Hub architecture; the endpoint and records are retained only for
+> staged migration. See [the canonical file/storage architecture](file-storage-and-engine-architecture.md).
+
 > Native creation uses the company `GoogleDriveIntegration` and its configured
 > Google Drive storage-folder target. It never falls back to the acting user's
 > My Drive.

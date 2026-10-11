@@ -94,9 +94,11 @@ Drive object.
 
 ## Runtime and rollback
 
-After cutover, normal runtime opens the Drive `webViewLink`. Local versioned
-bytes remain available to the controlled legacy/migration procedures, but the
-normal UI does not expose an office editor for them. Legacy FileVersion history
+After cutover, normal runtime previews Drive-backed content in Docs Hub. Native
+Google files use Drive PDF export; Office files use request-scoped, headless
+LibreOffice conversion. The Drive `webViewLink` is opened only by an explicit
+Edit in Google action. Local versioned bytes remain available to the controlled
+legacy/migration procedures, but the normal UI does not expose an office editor. Legacy FileVersion history
 is retained as a separate pre-migration archive and is not represented as
 Google revision history. Migrated files keep the existing Docs Hub identifiers
 and logical hierarchy; legacy version restore is hidden by the existing

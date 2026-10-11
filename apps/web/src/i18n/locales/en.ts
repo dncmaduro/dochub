@@ -185,6 +185,7 @@ const en = {
     noFiles: "No Drive files found.",
     location: "Location",
     openInGoogle: "Open in Google",
+    editInGoogle: "Edit in Google",
     alreadyInDocsHub: "Already in Docs Hub",
     addToDocsHub: "Add to Docs Hub",
     addingToDocsHub: "Adding…",
@@ -386,6 +387,7 @@ const en = {
     failedTitle: "Preview is unavailable",
     failedMessage: "The file could not be loaded for preview.",
     loading: "Loading preview…",
+    loadingMessage: "Opening preview…",
     close: "Close preview",
   },
   errors: {

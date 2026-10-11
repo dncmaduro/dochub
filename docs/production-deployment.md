@@ -13,6 +13,12 @@ api, worker -> postgres:5432 (internal Docker network)
 worker      -> tika:9998     (internal Docker network)
 ```
 
+The API image includes LibreOffice Writer, Calc, and Impress runtime packages
+for server-side, headless Office-to-PDF previews. LibreOffice is converter-only:
+each request uses an isolated temporary directory inside the API container and
+removes it after the response; no converted document is stored or exposed as a
+separate service.
+
 Only `web` has a host binding, explicitly loopback-only. API, worker,
 PostgreSQL, Tika, storage, and uploads have no public route. `TIKA_URL=http://tika:9998`
 uses Docker service DNS; never use `host.docker.internal`.
@@ -38,9 +44,11 @@ of a populated directory.
 
 Document share records use the immutable Node UUID at `/document/<uuid>`, but
 that legacy editor URL now renders a safe unavailable state rather than
-starting an editor. Drive-backed files should be opened from Docs Hub so their
-Google `webViewLink` is used. Access is still resolved from the current ACL
-and General Access setting for sharing APIs. The canonical URL migration
+starting an editor. Drive-backed files should be opened in the Docs Hub
+preview modal. A Google `webViewLink` is used only by an explicit transitional
+Edit in Google action. Access is resolved by Docs Hub authorization for normal
+product access; company Drive credentials are infrastructure for storage and
+fallback preview. The canonical URL migration
 removes the legacy `ShareLink` table, so existing `/s/<token>` URLs stop
 working; copy the document URL again from the Share dialog.
 

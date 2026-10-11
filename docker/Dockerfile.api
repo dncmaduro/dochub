@@ -31,7 +31,12 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssl \
+    && apt-get install -y --no-install-recommends \
+      libreoffice-core \
+      libreoffice-writer \
+      libreoffice-calc \
+      libreoffice-impress \
+      openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/api /app

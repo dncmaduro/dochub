@@ -129,6 +129,25 @@ describe('GoogleDriveApiProvider', () => {
     expect(Buffer.concat(chunks)).toEqual(Buffer.from('range-bytes'));
   });
 
+  it('exports Google-native files as PDF without exposing the access token in the URL', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(Buffer.from('%PDF-1.7 test'), {
+        status: 200,
+        headers: { 'content-type': 'application/pdf', 'content-length': '13' },
+      }),
+    );
+    const provider = new GoogleDriveApiProvider(config);
+    const content = await provider.exportFile!('access-token', 'drive-file', 'application/pdf');
+    const request = fetchMock.mock.calls[0];
+    const url = String(request?.[0]);
+    expect(url).toContain('/drive/v3/files/drive-file/export');
+    expect(url).toContain('mimeType=application%2Fpdf');
+    expect(url).not.toContain('access-token');
+    expect(request?.[1]?.headers).toMatchObject({ Authorization: 'Bearer access-token' });
+    expect(content.mimeType).toBe('application/pdf');
+    expect(content.sizeBytes).toBe(13n);
+  });
+
   it('normalizes provider authorization failures without exposing response bodies', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('token=secret', { status: 401 }),

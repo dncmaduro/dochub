@@ -66,6 +66,7 @@ export class DriveController {
 
   @Post('documents')
   @UseGuards(AccessTokenGuard)
+  /** Legacy Google-native creation endpoint retained for staged migration; the Docs Hub UI no longer calls it. */
   createNativeDocument(
     @CurrentAuth() auth: AuthPrincipal,
     @Headers('idempotency-key') idempotencyKey: string | undefined,

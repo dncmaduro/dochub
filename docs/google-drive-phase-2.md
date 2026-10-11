@@ -1,5 +1,9 @@
 # Google Drive pivot — Phase 2
 
+> Historical transitional phase. Its Drive-browser and Google-native open
+> behavior is not the current product contract. See [the canonical file/storage
+> architecture](file-storage-and-engine-architecture.md).
+
 > The source corpus is the configured subtree of the one company Google Drive
 > integration, not a per-user Docs Hub connection. See [Google Drive architecture](google-drive-architecture.md).
 

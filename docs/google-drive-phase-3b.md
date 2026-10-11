@@ -92,7 +92,8 @@ The transaction creates no `FileVersion`, `storageKey`, local storage object,
 processing task, or `EditorSession`. Search discovers the Node by filename and
 its file type comes from `DriveFile` metadata; binary content is not indexed.
 Favorites and Recent continue to use the Docs Hub Node. Opening a Drive-backed
-upload uses its Google `webViewLink`, including DOCX/XLSX/PPTX. Version history
+upload uses the Docs Hub PreviewDialog, including DOCX/XLSX/PPTX; the Google
+`webViewLink` is reserved for an explicit Edit in Google action. Version history
 and Docs Hub sharing controls remain hidden for Drive-backed files.
 
 ## Idempotency and failures
