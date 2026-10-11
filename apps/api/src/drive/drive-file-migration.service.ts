@@ -628,6 +628,9 @@ export class DriveFileMigrationService {
   }
 
   private async hasActiveEditing(fileId: string): Promise<boolean> {
+    // EditorSession is retained as historical schema compatibility. No active
+    // runtime creates sessions now, but old rows must still block a risky
+    // local-file cutover until an operator has resolved them.
     const session = await this.database.prisma.editorSession.findFirst({
       where: {
         fileId,
@@ -840,6 +843,9 @@ export class DriveFileMigrationService {
         });
         return DriveFileMigrationStatus.STALE;
       }
+      // Keep the historical-session guard during migration cutover. Removing
+      // the editor runtime does not make pre-existing active rows safe to
+      // ignore.
       const activeEditor = await tx.editorSession.findFirst({
         where: {
           fileId: migration.fileId,

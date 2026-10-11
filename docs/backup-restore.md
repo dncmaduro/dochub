@@ -20,12 +20,11 @@ systemd templates only after a manual backup and restore drill pass:
 `dochub-backup.timer` runs at 02:30 in the audited `Asia/Ho_Chi_Minh` VPS
 timezone and uses `Persistent=true`. Leave it disabled until restic, an offsite
 backend, a manual backup, verification, and an isolated restore drill have all
-succeeded. The lock prevents overlap; the script exits 75 when active EDIT
-sessions exist rather than terminating users' editing sessions.
+succeeded. The lock prevents overlap.
 
-For the backup window, PostgreSQL remains running for `pg_dump`; `api`,
-`worker`, and `onlyoffice` stop because they can respectively accept writes,
-purge/process mutable state, and submit editor callbacks. The static `web`
+For the backup window, PostgreSQL remains running for `pg_dump`; `api` and
+`worker` stop because they can respectively accept writes and purge/process
+mutable state. The static `web`
 gateway also stops so it presents a short maintenance outage rather than broken
 write routes. Tika is stateless and remains running. This leaves no process
 able to mutate database metadata or immutable storage between dump and snapshot.
@@ -34,7 +33,7 @@ able to mutate database metadata or immutable storage between dump and snapshot.
 
 Run `scripts/production-status.sh` for service state, public health, disk/RAM,
 storage and PostgreSQL size, snapshot status, migration timestamp, and TLS
-expiry. Logs: `docker compose ... logs api`, `worker`, `tika`, or `onlyoffice`;
+expiry. Logs: `docker compose ... logs api`, `worker`, or `tika`;
 backup logs: `journalctl -u dochub-backup.service`; host proxy errors:
 `journalctl -u nginx` (or the distribution's Nginx error log).
 
@@ -55,9 +54,9 @@ runs after a successful snapshot. Retention defaults are 7 daily, 4 weekly,
 and 6 monthly snapshots. `scripts/verify-production-backup.sh` checks age,
 required content, and repository access; `--full` adds the expensive integrity
 check. The status command reports `backup=not_configured` until this setup
-exists. The host's Certbot timer is enabled; the audited SAN certificate covers
-`docshub.space` and `office.docshub.space` and was valid through 2027-01-01 at
-audit time, not as a future guarantee. Check current state with `systemctl
+exists. The host's Certbot timer is enabled; the audited certificate covers
+`docshub.space` and was valid through 2027-01-01 at audit time, not as a future
+guarantee. Check current state with `systemctl
 status certbot.timer --no-pager`, `systemctl list-timers | grep -i certbot`,
 and `certbot certificates`; test renewal only with an explicitly approved
 `certbot renew --dry-run`. Certificate paths are under
@@ -79,7 +78,7 @@ initialize PostgreSQL, restore the logical dump and storage, verify
 FileVersion/storage integrity, run `migrate deploy` only when moving an older
 snapshot to a newer app schema, start services, reissue TLS, verify OAuth
 redirects, then perform acceptance smoke tests. Preserve outside the VPS:
-Google OAuth credentials, application/ONLYOFFICE secrets, database credentials,
+Google OAuth credentials, application secrets, database credentials,
 restic repository/password/backend credentials, DNS access, and GitHub deploy
 access.
 

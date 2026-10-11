@@ -87,14 +87,23 @@ reference to a Drive file without relocating the source file.
 Docs Hub roles and Google permissions remain separate. A `webViewLink` still
 requires the viewer's actual Google access to the source file.
 
-## Local files and Phase 4A
+## Editing, preview, and legacy local files
 
-`StorageService`, `FileVersion`, ONLYOFFICE, and `EditorSession` remain for
-existing `LOCAL` files until migration is complete. The standard UI does not
-create new local files. Phase 4A resolves the company integration and its
-configured storage folder; it does not start migration during boot or a Prisma
-migration. Audit records use the operator when one exists and `SYSTEM` for
-unattended work.
+Google Drive is the source of truth for new and migrated files. Native Google
+Docs, Sheets, and Slides, plus Microsoft Office files stored in Drive, open
+through their Drive `webViewLink` in a separate browser tab. Docs Hub provides
+organization and a narrow PreviewDialog for supported PDF, image, video, and
+text/media content; it does not run an embedded office editor.
+
+`StorageService` and `FileVersion` remain for existing `LOCAL` files and for
+the controlled migration/restore procedures. Historical `EditorSession` data
+and its Prisma migrations are retained only as database compatibility and
+cleanup records; the active API, UI, Docker runtime, and Nginx configuration
+no longer create or serve ONLYOFFICE sessions. The standard UI does not create
+new local files. Phase 4A resolves the company integration and its configured
+storage folder; it does not start migration during boot or a Prisma migration.
+Audit records use the operator when one exists and `SYSTEM` for unattended
+work.
 
 Production acceptance is: connect the company account, choose and validate a
 storage folder, browse and import a live file without syncing first, run a

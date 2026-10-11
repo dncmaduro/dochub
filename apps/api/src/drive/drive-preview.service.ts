@@ -18,12 +18,19 @@ import { DriveService } from './drive.service.js';
 
 const DRIVE_PREVIEW_AUDIENCE = 'dochub-drive-preview';
 const DRIVE_PREVIEW_TTL_SECONDS = 300;
-const GOOGLE_NATIVE_EXPORTS = new Map([
-  ['application/vnd.google-apps.document', 'application/pdf'],
-  ['application/vnd.google-apps.spreadsheet', 'application/pdf'],
-  ['application/vnd.google-apps.presentation', 'application/pdf'],
+const DIRECT_PREVIEW_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'video/mp4',
+  'video/webm',
+  'text/plain',
+  'application/json',
+  'application/xml',
+  'text/xml',
 ]);
-
 type DrivePreviewToken = {
   typ: 'drive-preview';
   sid: string;
@@ -31,7 +38,6 @@ type DrivePreviewToken = {
   nid: string;
   did: string;
   mimeType: string;
-  exportMimeType: string | null;
   filename: string;
 };
 
@@ -47,20 +53,10 @@ export type DrivePreviewSession = {
   size: string;
 };
 
-function previewPlan(mimeType: string): { mimeType: string; exportMimeType: string | null } | null {
+function previewPlan(mimeType: string): { mimeType: string } | null {
   const normalized = mimeType.toLowerCase();
-  const nativeExport = GOOGLE_NATIVE_EXPORTS.get(normalized);
-  if (nativeExport) return { mimeType: nativeExport, exportMimeType: nativeExport };
-  if (
-    normalized === 'application/pdf' ||
-    normalized.startsWith('image/') ||
-    normalized === 'video/mp4' ||
-    normalized === 'video/webm' ||
-    normalized.startsWith('text/') ||
-    normalized === 'application/json' ||
-    normalized === 'application/xml'
-  ) {
-    return { mimeType: normalized, exportMimeType: null };
+  if (DIRECT_PREVIEW_MIME_TYPES.has(normalized)) {
+    return { mimeType: normalized };
   }
   return null;
 }
@@ -128,7 +124,6 @@ export class DrivePreviewService {
         nid: node.id,
         did: source.driveFileId,
         mimeType: outputMimeType,
-        exportMimeType: plan?.exportMimeType ?? null,
         filename: node.name,
       },
       { expiresIn: DRIVE_PREVIEW_TTL_SECONDS, audience: DRIVE_PREVIEW_AUDIENCE },
@@ -197,7 +192,7 @@ export class DrivePreviewService {
   }
 
   openContent(preview: DrivePreviewToken, rangeHeader?: string): Promise<DriveContent> {
-    return this.drive.openPreviewContent(preview.did, preview.exportMimeType, rangeHeader);
+    return this.drive.openPreviewContent(preview.did, rangeHeader);
   }
 
   write(content: DriveContent, preview: DrivePreviewToken, response: Response): void {

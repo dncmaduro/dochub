@@ -54,11 +54,6 @@ export interface CollectionItem extends Node {
   favoritedAt?: string;
   lastAccessedAt?: string;
 }
-export interface EditorSession {
-  session: { id: string; mode: "VIEW" | "EDIT" };
-  documentServer: { apiUrl: string };
-  config: Record<string, unknown>;
-}
 export interface PreviewSession { sessionId: string; nodeId: string; contentUrl: string; expiresAt: string; mimeType: string; filename: string; size: string; }
 export interface DrivePreviewSession { previewable: boolean; sessionId: string; nodeId: string; contentUrl: string; expiresAt: string; mimeType: string; filename: string; size: string; }
 export type DocumentRole = "VIEWER" | "EDITOR" | "OWNER";
@@ -67,21 +62,6 @@ export interface SharingState {
   generalAccessRole: "RESTRICTED" | "VIEWER" | "EDITOR";
   documentUrl: string;
   canManageSharing: boolean;
-}
-export interface DocumentAccess {
-  node: { id: string; type: "FILE" | "FOLDER"; name: string; mimeType: string | null };
-  access: {
-    mode: "AUTHENTICATED" | "PUBLIC";
-    generalAccessRole: "RESTRICTED" | "VIEWER" | "EDITOR";
-    editorMode: "VIEW" | "EDIT";
-    canPreview: boolean;
-    canDownload: boolean;
-  };
-}
-export interface EditorSessionState {
-  id: string;
-  state: "ACTIVE" | "FINALIZING" | "CLOSED" | "FAILED";
-  status: "ACTIVE" | "CLOSED" | "FAILED";
 }
 export interface PermissionEntry {
   id: string;
@@ -155,7 +135,6 @@ interface UploadResponse {
   node: Node;
 }
 export type SystemRole = "ADMIN" | "DOCUMENT_MANAGER" | "VIEWER";
-export type OfficeFileKind = "DOCX" | "XLSX" | "PPTX";
 export type NativeDocumentKind = "DOCUMENT" | "SPREADSHEET" | "PRESENTATION";
 export type UserStatus = "INVITED" | "PENDING_APPROVAL" | "ACTIVE" | "SUSPENDED";
 export interface CurrentUser {
@@ -439,12 +418,6 @@ export class ApiClient {
       body: JSON.stringify({ name, parentId }),
     });
   }
-  async createOfficeFile(kind: OfficeFileKind, parentId: string | null, locale: "en" | "vi" = "en") {
-    return this.request<UploadResponse>("/files/create", {
-      method: "POST",
-      body: JSON.stringify({ kind, parentId, locale }),
-    });
-  }
   async getNode(nodeId: string) {
     return this.request<Node>(`/nodes/${nodeId}`);
   }
@@ -466,21 +439,6 @@ export class ApiClient {
       { method: "DELETE" },
     );
   }
-  async createEditorSession(nodeId: string, mode?: "VIEW" | "EDIT") {
-    return this.request<EditorSession>(`/nodes/${nodeId}/editor-sessions`, {
-      method: "POST",
-      body: JSON.stringify(mode ? { mode } : {}),
-    });
-  }
-  async documentAccess(nodeId: string) {
-    return this.request<DocumentAccess>(`/documents/${nodeId}`);
-  }
-  async createDocumentEditorSession(nodeId: string) {
-    return this.request<EditorSession>(`/documents/${nodeId}/editor-sessions`, { method: "POST" });
-  }
-  async loadDocumentContent(nodeId: string) {
-    return this.raw(`/documents/${nodeId}/content`).then((response) => response.blob());
-  }
   async createPreviewSession(nodeId: string) {
     const result = await this.request<PreviewSession | { previewable: false }>(`/nodes/${nodeId}/preview-session`, { method: "POST" });
     return "previewable" in result ? null : { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` };
@@ -500,14 +458,6 @@ export class ApiClient {
     link.click();
     link.remove();
     URL.revokeObjectURL(link.href);
-  }
-  async closeEditorSession(sessionId: string) {
-    return this.request<EditorSessionState>(`/editor-sessions/${sessionId}/close`, {
-      method: "POST",
-    });
-  }
-  async editorSessionStatus(sessionId: string) {
-    return this.request<EditorSessionState>(`/editor-sessions/${sessionId}/status`);
   }
   async sharing(nodeId: string) {
     return this.request<SharingState>(`/nodes/${nodeId}/sharing`);

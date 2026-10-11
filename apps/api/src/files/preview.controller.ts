@@ -4,6 +4,7 @@ import { AccessTokenGuard } from '../auth/access-token.guard.js';
 import { AuthCookieService } from '../auth/auth-cookie.service.js';
 import { CurrentAuth } from '../auth/current-auth.decorator.js';
 import type { AuthPrincipal } from '../auth/auth.types.js';
+import { applyPreviewContentSecurityHeaders } from '../common/security-headers.js';
 import { UnsatisfiableRangeError } from './byte-range.js';
 import { FileReadService } from './file-read.service.js';
 import { PreviewService } from './preview.service.js';
@@ -22,6 +23,7 @@ export class PreviewController {
   @Get('preview/:sessionId/content')
   async content(@Param('sessionId') sessionId: string, @Req() request: Request, @Res() response: Response) {
     const preview = await this.previews.verify(sessionId, request.cookies?.[this.previews.cookieName(sessionId)]);
+    applyPreviewContentSecurityHeaders(response);
     response.setHeader('Referrer-Policy', 'no-referrer');
     try { this.reads.write(await this.reads.openAuthorized(preview.nid, request.header('range'), preview.vid), response); }
     catch (error) { if (error instanceof UnsatisfiableRangeError) { response.setHeader('Content-Range', `bytes */${error.totalSize}`); response.status(416).end(); return; } throw error; }

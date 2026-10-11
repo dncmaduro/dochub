@@ -8,8 +8,9 @@
 After Phase 3B, every new file created through the normal Docs Hub UI is
 Google Drive-backed: native Docs/Sheets/Slides use the Phase 3A flow and binary
 uploads keep their original file format in Drive. Docs Hub folders remain
-logical containers. Existing `LOCAL` files remain readable and editable during
-the migration period.
+logical containers. Existing `LOCAL` files remain available to controlled
+legacy/migration procedures during the migration period, but the normal UI
+does not expose an embedded office editor for them.
 
 The legacy `POST /files` local upload route remains available for migration and
 internal use, but is deprecated and is no longer called by the normal Upload
@@ -91,9 +92,8 @@ The transaction creates no `FileVersion`, `storageKey`, local storage object,
 processing task, or `EditorSession`. Search discovers the Node by filename and
 its file type comes from `DriveFile` metadata; binary content is not indexed.
 Favorites and Recent continue to use the Docs Hub Node. Opening a Drive-backed
-upload uses its Google `webViewLink`, including DOCX/XLSX/PPTX; ONLYOFFICE
-continues to serve legacy local office files. Version history and Docs Hub
-sharing controls remain hidden for Drive-backed files.
+upload uses its Google `webViewLink`, including DOCX/XLSX/PPTX. Version history
+and Docs Hub sharing controls remain hidden for Drive-backed files.
 
 ## Idempotency and failures
 

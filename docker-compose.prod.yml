@@ -10,9 +10,8 @@ services:
     image: ${DOCHUB_WEB_IMAGE:-dochub-web}:${DOCHUB_IMAGE_TAG:-local}
     environment:
       WEB_HOST: ${WEB_HOST}
-      ONLYOFFICE_HOST: ${ONLYOFFICE_HOST}
       NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE}
-      NGINX_ENVSUBST_FILTER: 'WEB_HOST|ONLYOFFICE_HOST|NGINX_CLIENT_MAX_BODY_SIZE'
+      NGINX_ENVSUBST_FILTER: 'WEB_HOST|NGINX_CLIENT_MAX_BODY_SIZE'
     ports:
       - "127.0.0.1:${WEB_GATEWAY_PORT:-8081}:80"
     depends_on:
@@ -60,12 +59,6 @@ services:
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
       DRIVE_TOKEN_ENCRYPTION_KEY: ${DRIVE_TOKEN_ENCRYPTION_KEY}
       AUTH_LOGIN_SUCCESS_REDIRECT_URL: ${AUTH_LOGIN_SUCCESS_REDIRECT_URL}
-      ONLYOFFICE_PUBLIC_URL: ${ONLYOFFICE_PUBLIC_URL}
-      ONLYOFFICE_INTERNAL_API_URL: ${ONLYOFFICE_INTERNAL_API_URL}
-      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
-      ONLYOFFICE_FETCH_TOKEN_SECRET: ${ONLYOFFICE_FETCH_TOKEN_SECRET}
-      ONLYOFFICE_FETCH_TOKEN_TTL_SECONDS: ${ONLYOFFICE_FETCH_TOKEN_TTL_SECONDS}
-      ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS: ${ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS}
     volumes:
       - type: bind
         source: ${DOCHUB_STORAGE_HOST_PATH}
@@ -169,26 +162,6 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
     networks: [backend]
-
-  onlyoffice:
-    image: onlyoffice/documentserver:9.4.0
-    environment:
-      JWT_ENABLED: "true"
-      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
-    ports:
-      - "127.0.0.1:${ONLYOFFICE_GATEWAY_PORT:-8082}:80"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost/healthcheck >/dev/null"]
-      interval: 15s
-      timeout: 5s
-      retries: 12
-      start_period: 45s
-    mem_limit: ${ONLYOFFICE_MEMORY_LIMIT:-2g}
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-    networks: [proxy, backend]
 
   tika:
     image: apache/tika:3.2.3.0-full

@@ -664,7 +664,7 @@
 }
 .drive-import-search {
   min-width: 180px;
-  flex: 1;
+  flex: 1 1 auto;
 }
 .drive-import-content {
   flex: 1;
@@ -931,7 +931,7 @@
     min-height: 34px;
   }
   .dialog.drive-import-dialog .drive-import-search {
-    flex: 1;
+    flex: 1 1 auto;
     min-width: 0;
     max-width: none;
     margin: 0;
@@ -1402,8 +1402,7 @@
   color: var(--muted);
   font-size: 13px;
 }
-.dialog-backdrop,
-.editor-backdrop {
+.dialog-backdrop {
   position: fixed;
   z-index: 10;
   inset: 0;
@@ -1419,8 +1418,8 @@
 }
 .dialog.drive-import-dialog {
   display: flex;
-  width: 90vw;
-  height: 90vh;
+  width: 95vw;
+  height: 95vh;
   max-width: none;
   max-height: none;
   flex-direction: column;
@@ -1433,8 +1432,8 @@
 }
 @media (max-width: 700px) {
   .dialog.drive-import-dialog {
-    width: calc(100vw - 16px);
-    height: calc(100dvh - 16px);
+    width: calc(100vw - 8px);
+    height: calc(100dvh - 8px);
   }
 }
 .dialog.drive-folder-picker {
@@ -1478,6 +1477,23 @@
 .dialog input:focus {
   border-color: var(--accent);
   outline: 1px solid var(--accent);
+}
+.dialog .search-field input {
+  min-width: 0;
+  flex: 1 1 auto;
+  width: auto;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.dialog .search-field input:focus,
+.dialog .search-field input:focus-visible {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
 }
 .form-error {
   margin: 8px 0 0;
@@ -1880,66 +1896,6 @@ summary:focus-visible {
   color: var(--muted);
   font-size: 13px;
 }
-.document-workspace {
-  display: flex;
-  flex-direction: column;
-  width: 100vw;
-  height: 100vh;
-  min-height: 0;
-  overflow: hidden;
-  background: #f1f3f4;
-}
-.preview-workspace-header {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 18px;
-  min-height: 54px;
-  padding: 0 18px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface);
-}
-.preview-title {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.document-canvas,
-.shared-preview-canvas {
-  position: relative;
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex: 1;
-  overflow: hidden;
-  background: #f1f3f4;
-}
-.document-canvas .editor-body {
-  width: 100%;
-  height: 100%;
-}
-.shared-preview-canvas {
-  justify-content: center;
-  align-items: center;
-  overflow: auto;
-}
-.shared-preview-canvas iframe,
-.shared-preview-canvas video {
-  width: 100%;
-  height: 100%;
-  border: 0;
-}
-.shared-preview-canvas img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-.document-loading,
 .document-state-page {
   display: grid;
   min-height: 100dvh;
@@ -1947,12 +1903,6 @@ summary:focus-visible {
   padding: 24px;
   background: var(--page);
   color: var(--muted);
-}
-.document-loading {
-  align-content: center;
-  gap: 18px;
-  justify-items: center;
-  font-size: 14px;
 }
 .document-state-card {
   display: grid;
@@ -2061,60 +2011,6 @@ summary:focus-visible {
 .preview-state .button {
   justify-self: center;
   margin-top: 4px;
-}
-.editor-dialog header {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  height: 44px;
-  padding: 0 10px 0 16px;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 500;
-}
-.editor-header-title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-}
-.editor-header-title {
-  gap: 8px;
-  overflow: hidden;
-}
-.editor-header-title > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.editor-body {
-  position: relative;
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-.editor-host {
-  flex: 1;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-.editor-error {
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  display: grid;
-  gap: 10px;
-  place-items: center;
-  align-content: center;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 13px;
 }
 .auth-state,
 .sign-in {
@@ -2260,9 +2156,6 @@ summary:focus-visible {
   .trash-table .trash-date-column,
   .trash-table .trash-expiry-column {
     display: none;
-  }
-  .editor-dialog {
-    border-radius: 0;
   }
   .permission-row {
     grid-template-columns: minmax(0, 1fr) 96px;

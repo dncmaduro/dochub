@@ -115,11 +115,6 @@ export interface DriveProvider {
     driveFileId: string,
     rangeHeader?: string,
   ): Promise<DriveContent>;
-  exportFile(
-    accessToken: string,
-    driveFileId: string,
-    mimeType: string,
-  ): Promise<DriveContent>;
   createNativeFile(
     accessToken: string,
     request: DriveNativeFileCreateRequest,
@@ -323,18 +318,6 @@ export class GoogleDriveApiProvider implements DriveProvider {
       accessToken,
       { alt: 'media' },
       rangeHeader,
-    );
-  }
-
-  exportFile(
-    accessToken: string,
-    driveFileId: string,
-    mimeType: string,
-  ): Promise<DriveContent> {
-    return this.driveContentRequest(
-      `/files/${encodeURIComponent(driveFileId)}/export`,
-      accessToken,
-      { mimeType },
     );
   }
 

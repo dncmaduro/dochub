@@ -4,8 +4,9 @@
 > integration, not a per-user Docs Hub connection. See [Google Drive architecture](google-drive-architecture.md).
 
 Phase 2 adds metadata-only Google Drive references to the existing Docs Hub
-logical tree. Drive bytes remain in Google Drive; local uploads and ONLYOFFICE
-continue using the existing `FileVersion` and storage flow.
+logical tree. Drive bytes remain in Google Drive; existing local uploads retain
+the `FileVersion` and storage flow for controlled legacy/migration procedures.
+The active product does not embed an office editor.
 
 ## Logical backing
 

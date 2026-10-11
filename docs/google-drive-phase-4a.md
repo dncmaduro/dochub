@@ -6,7 +6,9 @@
 
 Phase 4A migrates the current authoritative `FileVersion` for one existing
 `File(backingType=LOCAL)` at a time. It does not delete local bytes, remove
-`FileVersion` rows, remove ONLYOFFICE, or remove `StorageService`.
+`FileVersion` rows, or remove `StorageService`. ONLYOFFICE is not part of the
+active product/runtime; historical editor-session schema and migration safety
+checks remain only for compatibility with existing database records.
 
 ## Ownership and safety
 
@@ -92,12 +94,13 @@ Drive object.
 
 ## Runtime and rollback
 
-After cutover, normal runtime opens the Drive `webViewLink`; ONLYOFFICE and
-local versioned reads remain available for files still backed by `LOCAL`.
-Legacy FileVersion history is retained as a separate pre-migration archive and
-is not represented as Google revision history. Migrated files keep the existing
-Docs Hub identifiers and logical hierarchy; legacy version restore is hidden by
-the existing Drive-backed UI rules.
+After cutover, normal runtime opens the Drive `webViewLink`. Local versioned
+bytes remain available to the controlled legacy/migration procedures, but the
+normal UI does not expose an office editor for them. Legacy FileVersion history
+is retained as a separate pre-migration archive and is not represented as
+Google revision history. Migrated files keep the existing Docs Hub identifiers
+and logical hierarchy; legacy version restore is hidden by the existing
+Drive-backed UI rules.
 
 `rollback --file-id` verifies that the local current version and bytes still
 match their recorded SHA-256, locks the file, changes it back to `LOCAL`, and

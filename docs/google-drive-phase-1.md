@@ -27,8 +27,8 @@ files.
 storage-folder target, and sync state. `DriveFile` stores the external Drive file ID,
 metadata, normalized type, and links. The unique identity is `driveFileId`.
 Legacy `DriveConnection` rows are retained only for safe transition. Drive files
-are not inserted into `Node`, `File`, or `FileVersion`, and no StorageService or
-ONLYOFFICE session is involved.
+are not inserted into `Node`, `File`, or `FileVersion`, and no local storage or
+editor runtime is involved.
 
 ## Configuration
 

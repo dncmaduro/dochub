@@ -34,14 +34,14 @@ function serviceFor({
 }
 
 describe('DrivePreviewService', () => {
-  it('creates a server-held PDF export session for native Google files', async () => {
+  it('does not turn native Google files into a Docs Hub preview', async () => {
     const { service, drive, jwt, database } = serviceFor();
     const preview = await service.create('user', 'node');
     expect(preview).toMatchObject({
-      previewable: true,
+      previewable: false,
       nodeId: 'node',
       contentUrl: expect.stringMatching(/^\/drive-preview\//),
-      mimeType: 'application/pdf',
+      mimeType: 'application/vnd.google-apps.document',
       filename: 'Quarterly report',
     });
     expect(preview).toHaveProperty('token', 'signed-drive-preview');
@@ -51,11 +51,64 @@ describe('DrivePreviewService', () => {
         typ: 'drive-preview',
         nid: 'node',
         did: 'drive-file',
-        exportMimeType: 'application/pdf',
       }),
       expect.objectContaining({ audience: 'dochub-drive-preview' }),
     );
     expect(database.prisma).not.toHaveProperty('fileVersion');
+  });
+
+  it.each([
+    ['application/pdf', 'application/pdf'],
+    ['image/png', 'image/png'],
+    ['video/mp4', 'video/mp4'],
+    ['video/webm', 'video/webm'],
+    ['text/plain', 'text/plain'],
+  ])('streams %s directly from Drive', async (sourceMimeType, previewMimeType) => {
+    const { service, drive } = serviceFor({
+      node: {
+        id: 'node',
+        name: 'asset',
+        type: 'FILE',
+        file: {
+          backingType: 'GOOGLE_DRIVE',
+          driveFile: {
+            driveFileId: 'drive-file',
+            mimeType: sourceMimeType,
+            sizeBytes: 24n,
+            sourceStatus: 'CONNECTED',
+            trashed: false,
+          },
+        },
+      },
+    });
+
+    await expect(service.create('user', 'node')).resolves.toMatchObject({
+      previewable: true,
+      mimeType: previewMimeType,
+    });
+    expect(drive.assertReadableDrive).toHaveBeenCalledOnce();
+  });
+
+  it('does not classify an unsupported video MIME as browser-previewable', async () => {
+    const { service } = serviceFor({
+      node: {
+        id: 'node',
+        name: 'asset.mov',
+        type: 'FILE',
+        file: {
+          backingType: 'GOOGLE_DRIVE',
+          driveFile: {
+            driveFileId: 'drive-file',
+            mimeType: 'video/quicktime',
+            sizeBytes: 24n,
+            sourceStatus: 'CONNECTED',
+            trashed: false,
+          },
+        },
+      },
+    });
+
+    await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: false });
   });
 
   it('keeps unsupported Drive binaries unavailable while allowing authorized download', async () => {
@@ -97,10 +150,9 @@ describe('DrivePreviewService', () => {
       nid: 'node',
       did: 'drive-file',
       mimeType: 'application/pdf',
-      exportMimeType: 'application/pdf',
       filename: 'Quarterly report',
     };
     await expect(service.openContent(preview, 'bytes=0-4')).resolves.toBe(content);
-    expect(drive.openPreviewContent).toHaveBeenCalledWith('drive-file', 'application/pdf', 'bytes=0-4');
+    expect(drive.openPreviewContent).toHaveBeenCalledWith('drive-file', 'bytes=0-4');
   });
 });

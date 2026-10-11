@@ -340,7 +340,7 @@ describe('DriveFileMigrationService', () => {
     expect(h.files.get(h.fileId).backingType).toBe(FileBackingType.LOCAL);
   });
 
-  it('blocks active ONLYOFFICE editing and missing source bytes', async () => {
+  it('blocks historical active editing and missing source bytes', async () => {
     const active = harness({ activeEditor: true });
     expect(
       await active.service.migrateFile(active.fileId),

@@ -1037,7 +1037,6 @@ export class DriveService {
 
   async openPreviewContent(
     driveFileId: string,
-    exportMimeType: string | null,
     rangeHeader?: string,
   ): Promise<DriveContent> {
     this.assertEnabled();
@@ -1046,9 +1045,7 @@ export class DriveService {
     });
     try {
       return await this.withAccessToken(connection, (accessToken) =>
-        exportMimeType
-          ? this.provider.exportFile(accessToken, driveFileId, exportMimeType)
-          : this.provider.downloadFile(accessToken, driveFileId, rangeHeader),
+        this.provider.downloadFile(accessToken, driveFileId, rangeHeader),
       );
     } catch (error) {
       throw this.liveDriveBrowserError(error);

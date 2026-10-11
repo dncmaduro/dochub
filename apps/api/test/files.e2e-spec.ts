@@ -371,7 +371,6 @@ describe('streaming file uploads (e2e)', () => {
       access: {
         mode: 'PUBLIC',
         generalAccessRole: 'VIEWER',
-        editorMode: 'VIEW',
         canPreview: true,
         canDownload: false,
       },

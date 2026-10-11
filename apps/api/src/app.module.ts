@@ -10,7 +10,6 @@ import { PermissionsModule } from './permissions/permissions.module.js';
 import { TrashModule } from './trash/trash.module.js';
 import { SharingModule } from './sharing/sharing.module.js';
 import { SearchModule } from './search/search.module.js';
-import { EditorModule } from './editor/editor.module.js';
 import { CollectionsModule } from './collections/collections.module.js';
 import { DriveModule } from './drive/drive.module.js';
 
@@ -26,7 +25,6 @@ import { DriveModule } from './drive/drive.module.js';
     TrashModule,
     SharingModule,
     SearchModule,
-    EditorModule,
     CollectionsModule,
     DriveModule,
   ],

@@ -20,8 +20,8 @@ has exactly that many controlled proxies in front of it. Its safe default is 0,
 which ignores client-supplied forwarded headers. Configure HSTS at the TLS proxy,
 not on a plaintext upstream. The API emits `nosniff`, no-referrer,
 frame-denial, permissions, and restrictive API CSP headers. The web server should
-also send a matching site CSP that permits the configured ONLYOFFICE document
-server in `frame-src`; Docs Hub itself should use `frame-ancestors 'none'`.
+also send a matching site CSP that permits same-origin preview content in
+`frame-src`; Docs Hub itself should use `frame-ancestors 'none'`.
 
 The API has bounded JSON bodies and streaming multipart upload limits. Targeted
 in-memory rate limits protect login/callback, refresh/logout, public shares,
@@ -30,9 +30,8 @@ mutations. This limiter is intentionally for a single API instance. A future
 multi-instance deployment needs a shared, trusted limiter before relying on those
 limits.
 
-ONLYOFFICE and Tika URLs are configuration-only trust boundaries. ONLYOFFICE
-public URLs must be HTTPS in production; callback artifact fetches are exact-origin
-locked and redirects are rejected. Do not point these settings at untrusted hosts.
+Tika URLs are configuration-only trust boundaries. Do not point them at
+untrusted hosts.
 Unknown server errors return a generic 500 and production logs intentionally omit
 unknown error payloads. Never log request authorization headers, cookies, bearer
 URLs, OIDC callback query strings, document contents, or secret values.

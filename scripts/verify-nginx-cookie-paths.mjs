@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const templatePath = path.join(repositoryRoot, "docker/nginx/default.conf.template");
+const hostTemplatePath = path.join(repositoryRoot, "ops/nginx/dochub.conf.template");
 const template = await readFile(templatePath, "utf8");
+const hostTemplate = await readFile(hostTemplatePath, "utf8");
 const rendered = template
   .replaceAll("${WEB_HOST}", "dochub.example.test")
   .replaceAll("${NGINX_CLIENT_MAX_BODY_SIZE}", "16m");
@@ -32,5 +34,17 @@ assert.match(
   "Drive preview cookie rewrite is missing",
 );
 assert.match(rendered, /proxy_pass http:\/\/api:3000\//, "production API gateway must strip the public /api prefix");
+assert.match(
+  rendered,
+  /frame-src 'self';/,
+  "web page CSP must allow same-origin preview content",
+);
+assert.match(rendered, /frame-ancestors 'none';/, "web page CSP must remain non-embeddable");
+assert.match(
+  hostTemplate,
+  /location ~ \^\/api\/\(preview\|drive-preview\)\/\[\^\/\]\+\/content\$/,
+  "host Nginx must have a route-specific preview location",
+);
+assert.match(hostTemplate, /proxy_hide_header X-Frame-Options;/, "host Nginx must not forward DENY for preview content");
 
-console.log("Nginx preview and OAuth cookie-path rewrites are present in the rendered production template.");
+console.log("Nginx preview/OAuth cookie rewrites and preview framing policy are present in the production templates.");

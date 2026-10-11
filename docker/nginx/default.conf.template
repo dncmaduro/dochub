@@ -41,11 +41,13 @@ server {
 
     location / {
         root /usr/share/nginx/html;
+        add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-src 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; media-src 'self' blob:;" always;
         try_files $uri $uri/ /index.html;
     }
 
     location = /index.html {
         root /usr/share/nginx/html;
+        add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-src 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; media-src 'self' blob:;" always;
         add_header Cache-Control "no-cache" always;
     }
 

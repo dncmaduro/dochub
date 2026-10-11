@@ -1,10 +1,10 @@
-import { Controller, Get, Inject, Param, Req, Res, Post, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Req, Res, Post, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AccessTokenGuard } from '../auth/access-token.guard.js';
 import { AuthCookieService } from '../auth/auth-cookie.service.js';
-import { AUTH_CONFIG, type AuthConfig } from '../auth/auth.config.js';
 import { CurrentAuth } from '../auth/current-auth.decorator.js';
 import type { AuthPrincipal } from '../auth/auth.types.js';
+import { applyPreviewContentSecurityHeaders } from '../common/security-headers.js';
 import { DrivePreviewService } from './drive-preview.service.js';
 
 @Controller()
@@ -12,7 +12,6 @@ export class DrivePreviewController {
   constructor(
     private readonly previews: DrivePreviewService,
     private readonly cookies: AuthCookieService,
-    @Inject(AUTH_CONFIG) private readonly authConfig: AuthConfig,
   ) {}
 
   @Post('nodes/:nodeId/drive-preview-session')
@@ -42,11 +41,7 @@ export class DrivePreviewController {
     const token = request.cookies?.[this.previews.cookieName(sessionId)];
     const preview = await this.previews.verify(sessionId, token);
     const content = await this.previews.openContent(preview, request.header('range'));
-    response.removeHeader('X-Frame-Options');
-    response.setHeader(
-      'Content-Security-Policy',
-      `default-src 'none'; frame-ancestors ${this.authConfig.webOrigins.length ? this.authConfig.webOrigins.join(' ') : "'self'"}`,
-    );
+    applyPreviewContentSecurityHeaders(response);
     response.setHeader('Referrer-Policy', 'no-referrer');
     this.previews.write(content, preview, response);
   }

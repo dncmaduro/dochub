@@ -9,6 +9,7 @@ import { ProductionExceptionFilter } from './common/production-exception.filter.
 import { isAllowedBrowserOrigin } from './common/cors-policy.js';
 import { RequestRateLimitMiddleware } from './common/request-rate-limit.middleware.js';
 import { loadRuntimeSecurityConfig } from './common/runtime-security.config.js';
+import { applyStrictApiSecurityHeaders } from './common/security-headers.js';
 
 async function bootstrap() {
   const runtime = loadRuntimeSecurityConfig();
@@ -31,17 +32,7 @@ async function bootstrap() {
         .json({ statusCode: 403, message: 'Cross-origin request denied' });
       return;
     }
-    response.setHeader('X-Content-Type-Options', 'nosniff');
-    response.setHeader('Referrer-Policy', 'no-referrer');
-    response.setHeader('X-Frame-Options', 'DENY');
-    response.setHeader(
-      'Permissions-Policy',
-      'camera=(), microphone=(), geolocation=()',
-    );
-    response.setHeader(
-      'Content-Security-Policy',
-      "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
-    );
+    applyStrictApiSecurityHeaders(response);
     next();
   });
   const rateLimiter = new RequestRateLimitMiddleware();
