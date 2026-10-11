@@ -217,7 +217,11 @@ async function openFileActivation(
 ) {
   try {
     if (node.backing?.type === "GOOGLE_DRIVE") {
-      void api.recordRecent(node.id).catch(() => undefined);
+      try {
+        await api.recordRecent(node.id);
+      } catch {
+        // Recent is best-effort; it must not prevent opening the document.
+      }
       const unavailable = {
         unavailable: true as const,
         nodeId: node.id,
@@ -232,7 +236,7 @@ async function openFileActivation(
       }
       if (isDriveGoogleEditableFile(node)) {
         if (node.backing.webViewLink) {
-          window.open(node.backing.webViewLink, "_blank", "noopener,noreferrer");
+          window.location.assign(node.backing.webViewLink);
         } else {
           setPreview({ ...unavailable, canDownload: hasCapability(node, "DOWNLOAD") });
         }
