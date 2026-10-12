@@ -13,6 +13,8 @@ import { MultipartUploadService } from './multipart-upload.service.js';
 import { PreviewController } from './preview.controller.js';
 import { PreviewService } from './preview.service.js';
 import { OfficeTemplateService } from './office-template.service.js';
+import { FileWorkspacePreviewService } from './file-workspace-preview.service.js';
+import { FileEngineModule } from '../file-engine/file-engine.module.js';
 
 @Module({
   imports: [
@@ -22,6 +24,7 @@ import { OfficeTemplateService } from './office-template.service.js';
     StorageModule,
     DriveModule,
     CollectionsModule,
+    FileEngineModule,
   ],
   controllers: [FilesController, PreviewController],
   providers: [
@@ -31,6 +34,7 @@ import { OfficeTemplateService } from './office-template.service.js';
     FileReadService,
     PreviewService,
     OfficeTemplateService,
+    FileWorkspacePreviewService,
   ],
   exports: [FileReadService, FileValidationService],
 })

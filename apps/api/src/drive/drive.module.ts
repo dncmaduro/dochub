@@ -6,6 +6,7 @@ import { DatabaseModule } from '../database/database.module.js';
 import { AuthorizationModule } from '../authorization/authorization.module.js';
 import { FileValidationService } from '../files/file-validation.service.js';
 import { StorageModule } from '../storage/storage.module.js';
+import { FileEngineModule } from '../file-engine/file-engine.module.js';
 import { STORAGE_PROVIDER } from '../storage/storage-provider.js';
 import { GoogleDriveStorageProvider } from '../storage/google-drive-storage.provider.js';
 import { DRIVE_CONFIG, loadDriveConfig } from './drive.config.js';
@@ -31,6 +32,7 @@ import {
     AuthModule,
     AuthorizationModule,
     StorageModule,
+    FileEngineModule,
   ],
   controllers: [DriveController, DrivePreviewController],
   providers: [
@@ -62,7 +64,9 @@ import {
     DriveService,
     DriveOrganizationService,
     DriveFileMigrationService,
+    DrivePreviewService,
     STORAGE_PROVIDER,
+    FileEngineModule,
   ],
 })
 export class DriveModule {}

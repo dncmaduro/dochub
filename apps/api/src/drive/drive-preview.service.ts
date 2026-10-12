@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -21,8 +22,15 @@ import { JwtService } from '@nestjs/jwt';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
-import type { DriveContent } from './google-drive.provider.js';
 import { DriveService } from './drive.service.js';
+import { FileEngineRegistry } from '../file-engine/file-engine.registry.js';
+import {
+  extensionFromFilename,
+  type FileDescriptor,
+  type FileEngineId,
+  type FilePreviewContent,
+  type FilePreviewResult,
+} from '../file-engine/file-engine.types.js';
 import { STORAGE_PROVIDER } from '../storage/storage-provider.js';
 import type {
   StorageObjectRef,
@@ -39,48 +47,7 @@ const MAX_OFFICE_INPUT_BYTES = 50 * 1024 * 1024;
 const MAX_OFFICE_OUTPUT_BYTES = 100 * 1024 * 1024;
 const MAX_CONVERTER_OUTPUT_BYTES = 8 * 1024;
 
-const DIRECT_PREVIEW_MIME_TYPES = new Set([
-  PREVIEW_PDF_MIME_TYPE,
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-  'video/mp4',
-  'video/webm',
-  'text/plain',
-  'application/json',
-  'application/xml',
-  'text/xml',
-]);
-
-const GOOGLE_NATIVE_MIME_TYPES = new Set([
-  'application/vnd.google-apps.document',
-  'application/vnd.google-apps.spreadsheet',
-  'application/vnd.google-apps.presentation',
-]);
-
-const OFFICE_MIME_EXTENSIONS = new Map([
-  ['application/msword', '.doc'],
-  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.docx'],
-  ['application/vnd.ms-excel', '.xls'],
-  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'],
-  ['application/vnd.ms-powerpoint', '.ppt'],
-  ['application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pptx'],
-]);
-
-const OFFICE_EXTENSION_MIME_TYPES = new Map([
-  ['.doc', 'application/msword'],
-  ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-  ['.xls', 'application/vnd.ms-excel'],
-  ['.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
-  ['.ppt', 'application/vnd.ms-powerpoint'],
-  ['.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-]);
-
-type DrivePreviewPlan =
-  | { kind: 'direct'; mimeType: string }
-  | { kind: 'google-export'; mimeType: typeof PREVIEW_PDF_MIME_TYPE }
-  | { kind: 'office'; mimeType: typeof PREVIEW_PDF_MIME_TYPE; extension: string };
+type DrivePreviewKind = 'direct' | 'google-export' | 'office';
 
 type DrivePreviewToken = {
   typ: 'drive-preview';
@@ -90,17 +57,14 @@ type DrivePreviewToken = {
   did: string;
   mimeType: string;
   filename: string;
-  kind?: DrivePreviewPlan['kind'];
+  kind?: DrivePreviewKind;
   officeExtension?: string;
+  engineId?: FileEngineId;
+  sourceMimeType?: string | null;
+  extension?: string | null;
 };
 
-type PreviewContent = {
-  stream: DriveContent['stream'];
-  mimeType: string;
-  sizeBytes: bigint | null;
-  range: DriveContent['range'];
-  cleanup?: () => Promise<void>;
-};
+type PreviewContent = FilePreviewContent;
 
 function previewRef(preview: Pick<DrivePreviewToken, 'did'>): StorageObjectRef {
   return { provider: 'GOOGLE_DRIVE', objectId: preview.did };
@@ -126,31 +90,10 @@ export type DrivePreviewSession = {
   mimeType: string;
   filename: string;
   size: string;
+  engine: FileEngineId;
+  capabilities: ReturnType<FileEngineRegistry['resolve']>['capabilities'];
+  preview: FilePreviewResult;
 };
-
-function previewPlan(mimeType: string, filename: string): DrivePreviewPlan | null {
-  const normalized = mimeType.toLowerCase();
-  if (DIRECT_PREVIEW_MIME_TYPES.has(normalized)) {
-    return { kind: 'direct', mimeType: normalized };
-  }
-  // Google metadata wins over the extension fallback. A Google Doc named
-  // "report.docx" must still use Drive export, never LibreOffice.
-  if (GOOGLE_NATIVE_MIME_TYPES.has(normalized)) {
-    return { kind: 'google-export', mimeType: PREVIEW_PDF_MIME_TYPE };
-  }
-  const extension = OFFICE_MIME_EXTENSIONS.get(normalized) ?? controlledOfficeExtension(filename);
-  if (extension && (OFFICE_MIME_EXTENSIONS.has(normalized) || !normalized.startsWith('application/vnd.google-apps.'))) {
-    return { kind: 'office', mimeType: PREVIEW_PDF_MIME_TYPE, extension };
-  }
-  return null;
-}
-
-function controlledOfficeExtension(filename: string): string | undefined {
-  const match = /\.[a-z0-9]+$/i.exec(filename);
-  if (!match) return undefined;
-  const extension = match[0].toLowerCase();
-  return OFFICE_EXTENSION_MIME_TYPES.has(extension) ? extension : undefined;
-}
 
 function safePreviewError(): ServiceUnavailableException {
   return new ServiceUnavailableException('Preview is unavailable.');
@@ -166,7 +109,12 @@ export class DrivePreviewService {
     private readonly jwt: JwtService,
     private readonly drive: DriveService,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
+    @Optional() private readonly injectedRegistry?: FileEngineRegistry,
   ) {}
+
+  private get registry(): FileEngineRegistry {
+    return this.injectedRegistry ?? new FileEngineRegistry();
+  }
 
   cookieName(sessionId: string): string {
     return `dochub_drive_preview_${sessionId}`;
@@ -189,6 +137,7 @@ export class DrivePreviewService {
         file: {
           select: {
             backingType: true,
+            id: true,
             driveFile: {
               select: {
                 driveFileId: true,
@@ -209,10 +158,27 @@ export class DrivePreviewService {
     if (source.trashed || source.sourceStatus === 'UNAVAILABLE') {
       throw new ServiceUnavailableException('Google Drive source is unavailable');
     }
-    const plan = previewPlan(source.mimeType, node.name);
+    const descriptor: FileDescriptor = {
+      fileId: node.file?.id ?? node.id,
+      nodeId: node.id,
+      name: node.name,
+      mimeType: source.mimeType,
+      extension: extensionFromFilename(node.name),
+      size: source.sizeBytes === null ? null : Number(source.sizeBytes),
+      storageRef: { provider: 'GOOGLE_DRIVE', objectId: source.driveFileId },
+    };
+    const resolved = this.registry.resolve(descriptor);
+    const preview = await resolved.engine.openPreview(descriptor);
+    const plan = preview.kind === 'unavailable'
+      ? null
+      : resolved.engine.id === 'LEGACY_GOOGLE_NATIVE'
+        ? { kind: 'google-export' as const }
+        : preview.kind === 'pdf' && ['DOCUMENT', 'SPREADSHEET', 'PRESENTATION'].includes(resolved.engine.id)
+          ? { kind: 'office' as const }
+          : { kind: 'direct' as const };
     if (!plan && !capabilities.capabilities.has(DocumentCapability.DOWNLOAD)) return null;
     await this.drive.assertReadableDrive();
-    const outputMimeType = plan?.mimeType ?? source.mimeType.toLowerCase();
+    const outputMimeType = preview.mimeType ?? source.mimeType.toLowerCase();
     const sessionId = randomUUID();
     const token = await this.jwt.signAsync<DrivePreviewToken>(
       {
@@ -224,7 +190,10 @@ export class DrivePreviewService {
         mimeType: outputMimeType,
         filename: node.name,
         ...(plan ? { kind: plan.kind } : {}),
-        ...(plan?.kind === 'office' ? { officeExtension: plan.extension } : {}),
+        ...(plan?.kind === 'office' ? { officeExtension: descriptor.extension ?? undefined } : {}),
+        engineId: resolved.engine.id,
+        sourceMimeType: descriptor.mimeType,
+        extension: descriptor.extension,
       },
       { expiresIn: DRIVE_PREVIEW_TTL_SECONDS, audience: DRIVE_PREVIEW_AUDIENCE },
     );
@@ -238,6 +207,9 @@ export class DrivePreviewService {
       mimeType: outputMimeType,
       filename: node.name,
       size: source.sizeBytes?.toString() ?? '0',
+      engine: resolved.engine.id,
+      capabilities: resolved.capabilities,
+      preview,
     };
   }
 
@@ -295,22 +267,44 @@ export class DrivePreviewService {
     if (preview.kind === 'google-export') {
       return this.drive.openPreviewExport(preview.did, PREVIEW_PDF_MIME_TYPE);
     }
-    if (preview.kind === 'office') {
+    if (preview.kind === 'office' && !preview.engineId) {
       return this.convertOfficePreview(
         previewRef(preview),
         preview.officeExtension,
       );
     }
     const reference = previewRef(preview);
+    const descriptor: FileDescriptor = {
+      fileId: preview.did,
+      nodeId: preview.nid,
+      name: preview.filename,
+      mimeType: preview.sourceMimeType ?? preview.mimeType,
+      extension: preview.extension ?? extensionFromFilename(preview.filename),
+      size: null,
+      storageRef: reference,
+    };
+    const engine = preview.engineId
+      ? this.registry.get(preview.engineId)
+      : this.registry.resolve(descriptor).engine;
     let range = null;
-    if (rangeHeader) {
+    if (rangeHeader && preview.kind !== 'office') {
       const current = await this.storage.stat(reference);
       if (current.sizeBytes === null) throw safePreviewError();
       range = parseSingleByteRange(rangeHeader, current.sizeBytes);
     }
-    return previewContent(
-      await this.storage.openRead(reference, range ? { range } : undefined),
-    );
+    if (!engine.openContent) throw safePreviewError();
+    return engine.openContent(descriptor, {
+      storage: this.storage,
+      range: range ?? undefined,
+      openLibreOfficePreview: (file) => this.convertOfficePreview(
+        file.storageRef ?? reference,
+        file.extension ?? preview.officeExtension,
+      ),
+      openLegacyGoogleNativePreview: () => this.drive.openPreviewExport(
+        preview.did,
+        PREVIEW_PDF_MIME_TYPE,
+      ),
+    });
   }
 
   write(content: PreviewContent, preview: DrivePreviewToken, response: Response): void {

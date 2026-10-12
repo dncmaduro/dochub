@@ -29,6 +29,20 @@ export interface Node {
   capabilities: string[];
   processing?: { contentSearch: "READY" | "PROCESSING" | "FAILED" } | null;
 }
+export type FileEngineId = "DOCUMENT" | "SPREADSHEET" | "PRESENTATION" | "PDF" | "IMAGE" | "TEXT" | "VIDEO" | "AUDIO" | "LEGACY_GOOGLE_NATIVE" | "FALLBACK";
+export type FilePreviewKind = "pdf" | "image" | "text" | "video" | "audio" | "unavailable";
+export interface FileEngineCapabilities {
+  preview: boolean;
+  edit: boolean;
+  download: boolean;
+  textExtraction: boolean;
+  thumbnail: boolean;
+}
+export interface FilePreviewDescriptor {
+  kind: FilePreviewKind;
+  mimeType: string | null;
+  reason?: "unsupported" | "source-unavailable" | "failed";
+}
 export type NodeSortBy = "name" | "lastModified";
 export type NodeSortDirection = "asc" | "desc";
 export interface Breadcrumb {
@@ -54,8 +68,20 @@ export interface CollectionItem extends Node {
   favoritedAt?: string;
   lastAccessedAt?: string;
 }
-export interface PreviewSession { sessionId: string; nodeId: string; contentUrl: string; expiresAt: string; mimeType: string; filename: string; size: string; }
-export interface DrivePreviewSession { previewable: boolean; sessionId: string; nodeId: string; contentUrl: string; expiresAt: string; mimeType: string; filename: string; size: string; }
+export interface PreviewSession {
+  sessionId: string;
+  nodeId: string;
+  contentUrl: string;
+  expiresAt: string;
+  mimeType: string;
+  filename: string;
+  size: string;
+  engine?: FileEngineId;
+  capabilities?: FileEngineCapabilities;
+  preview?: FilePreviewDescriptor;
+}
+export interface DrivePreviewSession extends PreviewSession { previewable: boolean; }
+export interface FileWorkspacePreviewSession extends PreviewSession { previewable?: boolean; }
 export type DocumentRole = "VIEWER" | "EDITOR" | "OWNER";
 export interface SharingState {
   nodeId: string;
@@ -417,6 +443,10 @@ export class ApiClient {
   async createPreviewSession(nodeId: string) {
     const result = await this.request<PreviewSession | { previewable: false }>(`/nodes/${nodeId}/preview-session`, { method: "POST" });
     return "previewable" in result ? null : { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` };
+  }
+  async createFilePreviewSession(nodeId: string) {
+    const result = await this.request<FileWorkspacePreviewSession | { previewable: false }>(`/nodes/${nodeId}/file-preview-session`, { method: "POST" });
+    return "contentUrl" in result ? { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` } : null;
   }
   async createDrivePreviewSession(nodeId: string) {
     const result = await this.request<DrivePreviewSession | { previewable: false }>(`/nodes/${nodeId}/drive-preview-session`, { method: "POST" });

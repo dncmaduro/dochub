@@ -8,10 +8,45 @@ import { applyPreviewContentSecurityHeaders } from '../common/security-headers.j
 import { UnsatisfiableRangeError } from './byte-range.js';
 import { FileReadService } from './file-read.service.js';
 import { PreviewService } from './preview.service.js';
+import { DrivePreviewService } from '../drive/drive-preview.service.js';
+import { FileWorkspacePreviewService } from './file-workspace-preview.service.js';
 
 @Controller()
 export class PreviewController {
-  constructor(private readonly previews: PreviewService, private readonly cookies: AuthCookieService, private readonly reads: FileReadService) {}
+  constructor(
+    private readonly previews: PreviewService,
+    private readonly cookies: AuthCookieService,
+    private readonly reads: FileReadService,
+    private readonly workspace: FileWorkspacePreviewService,
+    private readonly drivePreviews: DrivePreviewService,
+  ) {}
+
+  @Post('nodes/:nodeId/file-preview-session') @UseGuards(AccessTokenGuard)
+  async createWorkspace(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('nodeId') nodeId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const resolved = await this.workspace.create(auth.userId, nodeId);
+    const preview = resolved.session;
+    if (!preview) return { previewable: false };
+    if (resolved.source === 'GOOGLE_DRIVE') {
+      response.cookie(
+        this.drivePreviews.cookieName(preview.sessionId),
+        preview.token,
+        this.cookies.drivePreviewOptions(preview.sessionId),
+      );
+    } else {
+      response.cookie(
+        this.previews.cookieName(preview.sessionId),
+        preview.token,
+        this.cookies.previewOptions(preview.sessionId),
+      );
+    }
+    const { token: _token, ...body } = preview;
+    return body;
+  }
+
   @Post('nodes/:nodeId/preview-session') @UseGuards(AccessTokenGuard)
   async create(@CurrentAuth() auth: AuthPrincipal, @Param('nodeId') nodeId: string, @Res({ passthrough: true }) response: Response) {
     const preview = await this.previews.create(auth.userId, nodeId);

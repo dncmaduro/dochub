@@ -34,7 +34,7 @@ const SENSITIVE_ROUTES: ReadonlyArray<{
   },
   {
     match: (r) =>
-      /^\/nodes\/[^/]+\/(?:preview-session|sharing)$/.test(
+      /^\/nodes\/[^/]+\/(?:preview-session|file-preview-session|sharing)$/.test(
         r.path,
       ) ||
       /^\/nodes\/[^/]+\/drive-preview-session$/.test(r.path) ||

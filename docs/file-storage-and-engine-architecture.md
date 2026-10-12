@@ -1,6 +1,7 @@
 # Docs Hub file, storage, and engine architecture
 
-Status: canonical target architecture for Checkpoint 0 (2026-10-11).
+Status: canonical target architecture; Checkpoints 1 and 2 are implemented
+(2026-10-12).
 
 This document is the product and implementation boundary for the storage and
 file-engine work. The `docs/google-drive-phase-*.md` files describe historical
@@ -245,7 +246,7 @@ The existing `@dochub/storage` `StorageService`/`LocalFileStorage` is a useful
 legacy local-byte abstraction, but it is not the final provider boundary. Do
 not make local filesystem bytes the new source of truth.
 
-## File Engine boundary (future; not implemented)
+## File Engine boundary (implemented; Checkpoint 2)
 
 The UI should ask a registry what a file can do rather than maintain large
 MIME/extension conditionals:
@@ -263,8 +264,46 @@ FileEngineRegistry
 └── fallback
 ```
 
-Expected capabilities include `canPreview`, `canEdit`, `load`, render-model
-construction, `save`/`export`, `extractText`, and `generateThumbnail`.
+The API now exposes a provider-neutral `FileDescriptor` with `fileId`,
+`nodeId`, logical `name`, `mimeType`, `extension`, optional numeric `size`, and
+an opaque `storageRef`. The only exception is the legacy local preview path,
+which has no `StorageProvider` reference until that compatibility path is
+migrated.
+
+`FileEngineCapabilities` is currently:
+
+```ts
+{
+  preview: boolean;
+  edit: boolean;
+  download: boolean;
+  textExtraction: boolean;
+  thumbnail: boolean;
+}
+```
+
+`FileEngineRegistry` registers engines in an explicit priority order and
+returns both the selected engine and its capabilities. A non-generic trusted
+MIME type is matched first; only generic/absent MIME values use a controlled
+extension fallback; otherwise `FallbackEngine` is selected. This makes a
+Google-native MIME win over a misleading `.docx`, while an opaque
+`application/octet-stream` may use `.docx` as a fallback.
+
+The current engine identities are Document, Spreadsheet, Presentation, PDF,
+Image, Text, Video, Audio, `LegacyGoogleNativeEngine`, and Fallback. All
+physical engines depend only on `StorageProvider` through the engine runtime;
+they do not import Drive services or provider error types. `edit`,
+`textExtraction`, and `thumbnail` are reserved capability boundaries and are
+false until real implementations exist.
+
+The stable web-facing workspace preview descriptor is one of `pdf`, `image`,
+`text`, `video`, `audio`, or `unavailable`. The web client renders this
+descriptor and does not classify files by MIME or extension. The secure
+`file-preview-session` endpoint returns the engine/capability metadata and
+keeps the existing HttpOnly session cookie and opaque content URL.
+
+Expected future capabilities include `load`, render-model construction,
+`save`/`export`, `extractText`, and `generateThumbnail`.
 
 Complex packages are not edited directly by UI code. The future boundaries are
 for example:
@@ -300,9 +339,11 @@ The current preview work is transitional and intentionally retained:
 - Office files may use request-scoped headless LibreOffice conversion to PDF.
 
 LibreOffice is a **transitional fallback preview**, not the future file
-engine. It must not become the internal document model, editing architecture,
-or long-term renderer. The API temporary-directory conversion and Docker
-runtime packages may remain until native engines exist.
+engine. It is called behind the Document, Spreadsheet, and Presentation
+engines through a provider-neutral runtime callback. The UI receives only a
+PDF preview descriptor and never knows that LibreOffice was used. The API
+temporary-directory conversion and Docker runtime packages may remain until
+native engines exist.
 
 ONLYOFFICE remains removed from active runtime. Do not restore its service,
 DocsAPI, DocEditor, editor sessions, callbacks, document keys,
@@ -386,7 +427,7 @@ means audit/documentation or the small safe cleanup already performed.
 | Upload | `/drive/uploads` streams bytes directly through `DriveService`/Google provider and registers a Drive-backed File. `/files` is legacy local upload. | Upload API accepts logical parent and calls `StorageProvider.put`. | Checkpoint 1. |
 | Drive provider | `GoogleDriveApiProvider` owns OAuth, Drive HTTP, IDs, parents, export, upload, and delete. | `GoogleDriveStorageProvider` is the only Drive API consumer. | Checkpoint 1. |
 | Drive browser/import | `/drive/browser/files` plus `DriveOrganizationService` adds metadata-only references. | Optional transitional import utility, outside core ingest. | Audit in Checkpoint 0; isolate/deprioritize in later checkpoint. |
-| Preview | `DrivePreviewService` branches on Drive MIME, export, and LibreOffice fallback; local preview reads `FileVersion`. | Preview service asks File Engine/StorageProvider; Drive export is legacy fallback only. | Checkpoint 1 provider read boundary; File Engine later. |
+| Preview | Existing secure local and Drive preview transports remain. | `FileEngineRegistry` resolves the engine/capabilities; physical preview uses `StorageProvider`, Drive export is legacy fallback only, and LibreOffice is behind office engines. | Checkpoint 2. |
 | Create document/spreadsheet/presentation | `/drive/documents` creates Google-native files; web path removed. | Create real DOCX/XLSX/PPTX through future engines. | Backend retained transitional; implementation later. |
 | Download | Local `FileReadService` reads local storage; Drive-backed download routes through Drive-specific service. | Authorization + StorageProvider openRead, with product-neutral metadata. | Checkpoint 1. |
 | Delete/trash | Docs Hub trash controls Nodes; Drive reference removal can delete only logical reference, while provider operations remain Drive-specific. | Product trash and provider object lifecycle explicitly separated. | Checkpoint 1 audit; later lifecycle policy. |
@@ -399,19 +440,19 @@ means audit/documentation or the small safe cleanup already performed.
 |---|---|---|---|
 | Add from | Sidebar menu exposes “Add from Google Drive” and a Create new dialog. | Upload is primary; Drive import is visibly transitional/optional. | Native Google create UI removed in Checkpoint 0; import redesign later. |
 | Upload | Page and menu upload call `/drive/uploads`; availability is tied to Drive integration/write state. | Upload is the primary product flow and should not expose provider choice. | Checkpoint 1 API client/provider boundary. |
-| Primary activation | Drive-backed files now stay in Docs Hub preview modal; explicit Google action remains. | All normal activation stays in FileWorkspaceModal. | Preserve current preview work; engine later. |
-| Preview modal | Large Docs Hub modal supports direct previews and transitional Drive export/LibreOffice fallback. | Registry-selected renderer/model. | Preserve in Checkpoint 0; engine later. |
+| Primary activation | Drive-backed files now stay in Docs Hub preview modal; explicit Google action remains. | All normal activation calls the unified file-preview-session and renders its engine-neutral descriptor. | Checkpoint 2; explicit Google action remains compatibility-only. |
+| Preview modal | Large Docs Hub modal supports direct previews and transitional Drive export/LibreOffice fallback. | Registry-selected renderer kind; no MIME/extension classification in React. | Checkpoint 2; native renderers later. |
 | Create-new flow | Google-native Document/Spreadsheet/Presentation buttons previously called `/drive/documents`; those buttons are removed. | Future buttons create DOCX/XLSX/PPTX. | Future engine/create checkpoint. |
 | Google-specific actions | `webViewLink` appears for explicit Open/Edit in Google and Drive import UI. | Explicit legacy action only; never default open path. | Checkpoint 1 response-model audit. |
-| Product model leakage | `Node.backing` exposes Drive IDs, links, normalized Drive type, and Drive time. | UI consumes provider-neutral capabilities/metadata. | Checkpoint 1/2. |
+| Product model leakage | `Node.backing` still exposes transitional Drive fields for import/legacy actions. | Engine descriptors do not include provider fields; broader Node response cleanup remains staged. | Checkpoint 2; later response-model cleanup. |
 
 ### Worker
 
 | Area | Current | Target | Checkpoint to change |
 |---|---|---|---|
-| Extraction | `FileProcessingService` opens local `FileVersion.storageKey` and sends searchable MIME types to Tika. | File Engine extracts from `StorageProvider.openRead` for any supported physical file. | Provider-neutral read contract in Checkpoint 1; engines later. |
+| Extraction | `FileProcessingService` opens local `FileVersion.storageKey` and sends searchable MIME types to Tika. | FileEngine exposes an `extractText` hook; worker migration remains future work. | Checkpoint 2 reserves the hook; later worker/engine checkpoint. |
 | Indexing | `SearchDocument` is tied to current local FileVersion and does not cover Drive-backed bytes. | Product content index is fed by File Engine output. | Later engine/search checkpoint. |
-| Thumbnails | No native File Engine thumbnail boundary exists. | Registry/engine owns thumbnail generation. | Later engine checkpoint. |
+| Thumbnails | No native File Engine thumbnail implementation exists. | Registry/engine owns future thumbnail generation. | Checkpoint 2 reserves the capability; implementation later. |
 | Retention | Local storage/trash retention services remain. | Retention coordinates logical trash and provider deletion safely. | Checkpoint 1/2 lifecycle audit. |
 
 ### Infrastructure
@@ -454,13 +495,32 @@ The success criterion is that business and future file-engine code no longer
 needs to know whether `storageObjectId` is a Google Drive ID, an S3 key, a
 MinIO key, or a local object ID.
 
-## Checkpoint 2 boundary
+## Checkpoint 2 implementation and boundary
 
-Checkpoint 2 is the File Engine framework. It may consume
-`StorageProvider.openRead()` and `StorageProvider.replace()` plus normalized
-metadata, but it must not import `DriveService`, `GoogleDriveApiProvider`,
-Drive IDs, Drive export methods, or Drive error types. It is intentionally not
-implemented here.
+Checkpoint 2 implements the File Engine framework and preview routing. The
+registry and physical engines consume `StorageProvider.openRead()` and are
+prepared for `StorageProvider.replace()`, but they do not import
+`DriveService`, `GoogleDriveApiProvider`, Drive IDs, Drive export methods, or
+Drive error types. `LegacyGoogleNativeEngine` is the isolated compatibility
+exception: the Drive preview coordinator supplies a legacy PDF-export adapter
+only for existing Google-native references.
+
+No database engine table or schema migration was added. Authorization remains
+the responsibility of the existing Docs Hub authorization services; engine
+capabilities describe format support and are ANDed with user permissions by
+the product flow.
+
+## Checkpoint 3 contract
+
+Checkpoint 3 is **Document Engine V1 — DOCX read/preview**. It will replace
+the DocumentEngine's LibreOffice fallback for DOCX with:
+
+```text
+DOCX OOXML -> DocumentModel -> Docs Hub renderer
+```
+
+It is preview/read-only first. It must not begin XLSX/PPTX editing, saving,
+worker migration, Google-native conversion, or a new database model.
 
 ## ADR: Google Drive is an opaque storage backend
 

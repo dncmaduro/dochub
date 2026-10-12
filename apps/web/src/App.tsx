@@ -26,6 +26,7 @@ import {
   type CurrentUser,
   type DocumentRole,
   type FileVersion,
+  type FilePreviewDescriptor,
   type Node,
   type NodeSortBy,
   type NodeSortDirection,
@@ -60,6 +61,9 @@ type UnavailablePreview = {
   filename: string;
   canDownload: boolean;
   contentUrl?: string;
+  engine?: PreviewSession["engine"];
+  capabilities?: PreviewSession["capabilities"];
+  preview?: FilePreviewDescriptor;
   isDrivePreview?: boolean;
   openInGoogleUrl?: string | null;
   canEditInGoogle?: boolean;
@@ -203,14 +207,6 @@ function displayError(error: unknown) {
 function hasCapability(node: Node, capability: string) {
   return node.capabilities.includes(capability);
 }
-function isOfficeFilename(name: string) {
-  return /\.(doc|docx|xls|xlsx|ppt|pptx)$/i.test(name);
-}
-function isDriveGoogleEditableFile(node: Node) {
-  if (node.backing?.type !== "GOOGLE_DRIVE") return false;
-  if (["GOOGLE_DOC", "GOOGLE_SHEET", "GOOGLE_SLIDE", "DOCX", "XLSX", "PPTX"].includes(node.backing.normalizedType)) return true;
-  return node.backing.normalizedType === "BINARY" && isOfficeFilename(node.name);
-}
 function canOpenNode(node: Node) {
   return node.type === "FOLDER" ||
     hasCapability(node, "PREVIEW") ||
@@ -226,63 +222,33 @@ async function openFileActivation(
   onError: (notice: Notice) => void,
 ) {
   try {
-    const isDriveFile = node.backing?.type === "GOOGLE_DRIVE";
-    const canEditInGoogle = isDriveFile && isDriveGoogleEditableFile(node);
-    const openInGoogleUrl = node.backing?.type === "GOOGLE_DRIVE" ? node.backing.webViewLink : undefined;
     setPreview({
       loading: true,
       nodeId: node.id,
       filename: node.name,
       canDownload: hasCapability(node, "DOWNLOAD"),
-      isDrivePreview: isDriveFile,
-      openInGoogleUrl,
-      canEditInGoogle,
     });
-    if (node.backing?.type === "GOOGLE_DRIVE") {
-      try {
-        await api.recordRecent(node.id);
-      } catch {
-        // Recent is best-effort; it must not prevent opening the document.
-      }
-      const unavailable = {
-        unavailable: true as const,
-        nodeId: node.id,
-        filename: node.name,
-        canDownload: false,
-        isDrivePreview: true,
-        openInGoogleUrl: node.backing.webViewLink,
-        canEditInGoogle,
-      };
-      if (node.backing.sourceStatus === "UNAVAILABLE") {
-        setPreview(unavailable);
-        return;
-      }
-      try {
-        const session = await api.createDrivePreviewSession(node.id);
-        if (!session) setPreview(unavailable);
-        else if (!session.previewable) setPreview({ ...unavailable, canDownload: hasCapability(node, "DOWNLOAD"), contentUrl: session.contentUrl });
-        else setPreview({ ...session, canDownload: hasCapability(node, "DOWNLOAD"), isDrivePreview: true, openInGoogleUrl: node.backing.webViewLink, canEditInGoogle });
-      } catch (previewError) {
-        setPreview(unavailable);
-        onError({ tone: "error", message: displayError(previewError) });
-      }
-      return;
+    try {
+      await api.recordRecent(node.id);
+    } catch {
+      // Recent is best-effort; it must not prevent opening the document.
     }
-    if (hasCapability(node, "PREVIEW")) {
-      const session = await api.createPreviewSession(node.id);
-      if (session) {
-        setPreview({ ...session, canDownload: hasCapability(node, "DOWNLOAD") });
-        return;
-      }
+    const session = await api.createFilePreviewSession(node.id);
+    const canDownload = hasCapability(node, "DOWNLOAD") && (session?.capabilities?.download ?? true);
+    if (!session || session.previewable === false || session.preview?.kind === "unavailable") {
       setPreview({
         unavailable: true,
         nodeId: node.id,
         filename: node.name,
-        canDownload: hasCapability(node, "DOWNLOAD"),
+        canDownload,
+        contentUrl: session?.contentUrl,
+        engine: session?.engine,
+        capabilities: session?.capabilities,
+        preview: session?.preview,
       });
       return;
     }
-    if (hasCapability(node, "DOWNLOAD")) await api.download(node);
+    setPreview({ ...session, canDownload });
   } catch (error) {
     onError({ tone: "error", message: displayError(error) });
   }
@@ -2394,7 +2360,7 @@ function FileTile({
       {menuOpen && <RowMenu id={`file-menu-${node.id}`} trigger={trigger} onClose={onCloseMenu}>
         <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onFavorite(node); }}><Icon name="star" size={16} />{isFavorite ? t("files.unfavorite") : t("files.favorite")}</button>
         <button type="button" role="menuitem" disabled={!canOpen} onClick={() => { onCloseMenu(); if (isFolder) onFolder(node.id); else void onOpen(node); }}>{openActionLabel(node)}</button>
-        {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>{isDriveGoogleEditableFile(node) ? t("drive.editInGoogle") : t("drive.openInGoogle")}</button>}
+        {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>{t("drive.openInGoogle")}</button>}
         {!isFolder && hasCapability(node, "DOWNLOAD") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); void download(); }}><Icon name="download" size={16} />{t("common.download")}</button>}
         {hasCapability(node, "RENAME") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onRename(node); }}><Icon name="edit" size={16} />{t("files.rename")}</button>}
         {!isFolder && node.backing?.type !== "GOOGLE_DRIVE" && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onVersions(node); }}>{t("files.versionHistory")}</button>}
@@ -2573,7 +2539,7 @@ function FileRow({
             </button>
             {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && (
               <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>
-                {isDriveGoogleEditableFile(node) ? t("drive.editInGoogle") : t("drive.openInGoogle")}
+                {t("drive.openInGoogle")}
               </button>
             )}
             {!isFolder && hasCapability(node, "DOWNLOAD") && (
@@ -4117,7 +4083,7 @@ function PreviewDialog({
   const unavailable = previewIsUnavailable(preview);
   const loading = previewIsLoading(preview);
   const session = unavailable || loading ? null : preview;
-  const type = session?.mimeType.toLowerCase();
+  const kind = session?.preview?.kind;
   const previewLoading = state === "loading";
   const retry = () => {
     setState("loading");
@@ -4186,10 +4152,12 @@ function PreviewDialog({
           ) : (
             <>
               {previewLoading && <div className="preview-loading" role="status">{t("preview.loading")}</div>}
-              {type?.startsWith("image/") ? (
+              {kind === "image" ? (
                 <img key={attempt} src={session!.contentUrl} alt={session!.filename} onLoad={() => setState("ready")} onError={() => setState("error")} />
-              ) : type?.startsWith("video/") ? (
+              ) : kind === "video" ? (
                 <video key={attempt} src={session!.contentUrl} controls preload="metadata" onLoadedMetadata={() => setState("ready")} onError={() => setState("error")} />
+              ) : kind === "audio" ? (
+                <audio key={attempt} src={session!.contentUrl} controls preload="metadata" onCanPlay={() => setState("ready")} onError={() => setState("error")} />
               ) : (
                 <iframe key={attempt} title={session!.filename} src={session!.contentUrl} onLoad={() => setState("ready")} onError={() => setState("error")} />
               )}

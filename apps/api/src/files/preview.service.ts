@@ -1,20 +1,29 @@
-import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException, Optional, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import { UserStatus } from '@dochub/database';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
+import { FileEngineRegistry } from '../file-engine/file-engine.registry.js';
+import { extensionFromFilename } from '../file-engine/file-engine.types.js';
 
 const PREVIEW_AUDIENCE = 'dochub-preview';
 const PREVIEW_TTL_SECONDS = 300;
-const PREVIEW_MIME_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/webm', 'text/plain']);
-
 type PreviewToken = { typ: 'preview'; sid: string; sub: string; nid: string; vid: string };
 
 @Injectable()
 export class PreviewService {
-  constructor(private readonly database: DatabaseService, private readonly authorization: DocumentAuthorizationService, private readonly jwt: JwtService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly authorization: DocumentAuthorizationService,
+    private readonly jwt: JwtService,
+    @Optional() private readonly injectedRegistry?: FileEngineRegistry,
+  ) {}
+
+  private get registry(): FileEngineRegistry {
+    return this.injectedRegistry ?? new FileEngineRegistry();
+  }
 
   async create(userId: string, nodeId: string) {
     const capabilities = await this.authorization.resolveCapabilities(userId, nodeId);
@@ -24,10 +33,42 @@ export class PreviewService {
     const node = await this.database.prisma.node.findFirst({ where: { id: nodeId, trashOperationId: null }, select: { id: true, name: true, file: { select: { currentVersion: { select: { id: true, mimeType: true, sizeBytes: true } } } } } });
     const version = node?.file?.currentVersion;
     if (!node || !version) throw new NotFoundException('Node not found');
-    if (!PREVIEW_MIME_TYPES.has(version.mimeType.toLowerCase())) return null;
+    const resolved = this.registry.resolve({
+      fileId: node.id,
+      nodeId: node.id,
+      name: node.name,
+      mimeType: version.mimeType,
+      extension: extensionFromFilename(node.name),
+      size: Number(version.sizeBytes),
+      storageRef: null,
+    });
+    const preview = await resolved.engine.openPreview({
+      fileId: node.id,
+      nodeId: node.id,
+      name: node.name,
+      mimeType: version.mimeType,
+      extension: extensionFromFilename(node.name),
+      size: Number(version.sizeBytes),
+      storageRef: null,
+    });
+    // The legacy local content route has not yet moved behind StorageProvider.
+    // Only its existing direct-preview formats are advertised here.
+    if (!['PDF', 'IMAGE', 'TEXT', 'VIDEO', 'AUDIO'].includes(resolved.engine.id) || preview.kind === 'unavailable') return null;
     const sessionId = randomUUID();
     const token = await this.jwt.signAsync<PreviewToken>({ typ: 'preview', sid: sessionId, sub: userId, nid: node.id, vid: version.id }, { expiresIn: PREVIEW_TTL_SECONDS, audience: PREVIEW_AUDIENCE });
-    return { sessionId, nodeId: node.id, token, contentUrl: `/preview/${sessionId}/content`, expiresAt: new Date(Date.now() + PREVIEW_TTL_SECONDS * 1000).toISOString(), mimeType: version.mimeType, filename: node.name, size: version.sizeBytes.toString() };
+    return {
+      sessionId,
+      nodeId: node.id,
+      token,
+      contentUrl: `/preview/${sessionId}/content`,
+      expiresAt: new Date(Date.now() + PREVIEW_TTL_SECONDS * 1000).toISOString(),
+      mimeType: version.mimeType,
+      filename: node.name,
+      size: version.sizeBytes.toString(),
+      engine: resolved.engine.id,
+      capabilities: resolved.capabilities,
+      preview,
+    };
   }
 
   async verify(sessionId: string, token: string | undefined) {
