@@ -1988,6 +1988,50 @@ summary:focus-visible {
   max-height: 100%;
   object-fit: contain;
 }
+.preview-content > img {
+  width: auto;
+  height: auto;
+  max-width: min(100%, 1200px);
+  max-height: min(100%, 1000px);
+  cursor: zoom-in;
+}
+.preview-content > video {
+  object-fit: contain;
+  background: #202124;
+}
+.preview-content > audio {
+  width: min(700px, 90%);
+}
+.image-viewer { display: flex; min-width: 0; min-height: 0; width: 100%; height: 100%; flex-direction: column; }
+.image-viewer-toolbar { display: flex; flex: none; align-items: center; justify-content: center; gap: 8px; padding: 7px; color: var(--muted); font-size: 12px; }
+.image-viewer-button { min-width: 32px; min-height: 28px; border: 1px solid var(--border-subtle); border-radius: 4px; background: #fff; color: inherit; cursor: pointer; }
+.image-viewer-viewport { display: flex; min-height: 0; flex: 1; align-items: center; justify-content: center; overflow: auto; padding: 16px; }
+.image-viewer-viewport img { width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center; transition: transform 100ms ease; }
+.text-file-viewer { display: flex; min-height: 100%; min-width: 0; flex: 1; flex-direction: column; background: #fff; color: #202124; }
+.text-file-editor { display: flex; min-height: 100%; min-width: 0; flex: 1; flex-direction: column; }
+.text-file-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 9px 12px; border-bottom: 1px solid var(--border-subtle); background: #fff; }
+.text-file-format { font-weight: 600; margin-right: 5px; }
+.text-file-tool { min-height: 30px; padding: 4px 9px; border: 1px solid var(--border-subtle); border-radius: 4px; background: #fff; color: inherit; cursor: pointer; }
+.text-file-tool:disabled { cursor: not-allowed; opacity: .45; }
+.text-file-tool-primary { border-color: #1a73e8; background: #1a73e8; color: #fff; }
+.text-file-status { margin-left: auto; color: var(--muted); font-size: 12px; }
+.text-file-error, .text-file-parse-error { display: flex; flex: none; align-items: center; gap: 10px; padding: 8px 12px; color: #991b1b; background: #fef2f2; border-bottom: 1px solid #fecaca; font-size: 12px; }
+.text-file-body { min-height: 0; flex: 1; overflow: auto; padding: 28px; background: #f8f9fa; }
+.text-plain-preview, .text-source-view, .text-source-editor { box-sizing: border-box; width: min(1000px, 100%); min-height: 100%; margin: 0 auto; padding: 24px; border: 1px solid #dadce0; background: #fff; color: #202124; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; text-align: left; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
+.text-plain-preview { user-select: text; }
+.text-source-view { padding: 0; }
+.text-source-editor { display: block; min-height: 60vh; resize: none; outline: none; }
+.text-source-editor:focus { border-color: #8ab4f8; box-shadow: 0 0 0 2px #e8f0fe; }
+.text-markdown-preview { width: min(900px, 100%); min-height: 100%; margin: 0 auto; padding: 34px 46px; border: 1px solid #dadce0; background: #fff; color: #202124; line-height: 1.55; overflow-wrap: anywhere; user-select: text; }
+.text-markdown-preview h1, .text-markdown-preview h2, .text-markdown-preview h3, .text-markdown-preview h4, .text-markdown-preview h5, .text-markdown-preview h6 { line-height: 1.25; }
+.text-markdown-preview a { color: #1967d2; }
+.text-markdown-preview code { padding: 2px 4px; border-radius: 3px; background: #f1f3f4; font: .9em ui-monospace, SFMono-Regular, Consolas, monospace; }
+.text-markdown-preview pre { overflow: auto; padding: 14px; border-radius: 5px; background: #202124; color: #f8f9fa; }
+.text-markdown-preview pre code { padding: 0; background: transparent; }
+.text-markdown-preview blockquote { margin-left: 0; padding-left: 16px; border-left: 3px solid #dadce0; color: #5f6368; }
+.text-markdown-preview table { width: 100%; border-collapse: collapse; }
+.text-markdown-preview th, .text-markdown-preview td { padding: 7px 9px; border: 1px solid #dadce0; text-align: left; vertical-align: top; }
+.text-file-loading { display: grid; flex: 1; min-height: 160px; place-items: center; color: var(--muted); font-size: 13px; }
 .document-viewer {
   align-self: stretch;
   min-height: 100%;

@@ -43,6 +43,27 @@ describe('FileEngineRegistry', () => {
     expect(registry.resolve(file(name, mimeType)).engine.id).toBe(expected);
   });
 
+  it.each([
+    ['report.doc', 'application/msword', false, true],
+    ['report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', true, true],
+    ['budget.xls', 'application/vnd.ms-excel', false, true],
+    ['budget.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', true, true],
+    ['budget.csv', 'text/csv', true, true],
+    ['slides.ppt', 'application/vnd.ms-powerpoint', false, true],
+    ['slides.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', true, true],
+    ['brief.pdf', 'application/pdf', false, true],
+    ['notes.txt', 'text/plain', true, true],
+    ['notes.md', 'text/markdown', true, true],
+    ['data.json', 'application/json', true, true],
+    ['data.xml', 'application/xml', true, true],
+    ['photo.png', 'image/png', false, true],
+    ['movie.mp4', 'video/mp4', false, true],
+    ['song.mp3', 'audio/mpeg', false, true],
+    ['unknown.bin', 'application/octet-stream', false, false],
+  ] as const)('exposes normalized capabilities for %s', (name, mimeType, edit, preview) => {
+    expect(registry.resolve(file(name, mimeType)).capabilities).toMatchObject({ preview, edit, download: true });
+  });
+
   it('uses a controlled extension when the MIME is generic', () => {
     expect(registry.resolve(file('report.docx', 'application/octet-stream')).engine.id).toBe('DOCUMENT');
     expect(registry.resolve(file('report.docx', null)).engine.id).toBe('DOCUMENT');

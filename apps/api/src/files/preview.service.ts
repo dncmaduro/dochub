@@ -28,8 +28,10 @@ export class PreviewService {
   async create(userId: string, nodeId: string) {
     const capabilities = await this.authorization.resolveCapabilities(userId, nodeId);
     if (!capabilities.capabilities.has(DocumentCapability.VIEW)) throw new NotFoundException('Node not found');
-    if (!capabilities.capabilities.has(DocumentCapability.PREVIEW))
+    if (!capabilities.capabilities.has(DocumentCapability.PREVIEW)) {
+      if (capabilities.capabilities.has(DocumentCapability.DOWNLOAD)) return null;
       throw new ForbiddenException('You do not have the required document capability');
+    }
     const node = await this.database.prisma.node.findFirst({ where: { id: nodeId, trashOperationId: null }, select: { id: true, name: true, file: { select: { currentVersion: { select: { id: true, mimeType: true, sizeBytes: true } } } } } });
     const version = node?.file?.currentVersion;
     if (!node || !version) throw new NotFoundException('Node not found');

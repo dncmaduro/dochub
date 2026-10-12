@@ -62,6 +62,16 @@ export class DrivePreviewController {
     return this.previews.savePresentation(auth.userId, nodeId, body);
   }
 
+  @Patch('nodes/:nodeId/text')
+  @UseGuards(AccessTokenGuard)
+  async saveText(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('nodeId') nodeId: string,
+    @Body() body: unknown,
+  ) {
+    return this.previews.saveText(auth.userId, nodeId, body);
+  }
+
   @Get('drive-preview/:sessionId/content')
   async content(
     @Param('sessionId') sessionId: string,

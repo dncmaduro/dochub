@@ -755,11 +755,75 @@ images, shapes, rotation, inheritance hints, unsupported content, safe
 hyperlinks, geometry/text edits, revision conflicts, and byte-preserved
 unrelated package parts.
 
-Checkpoint 7 is **Other File Engines + Format Normalization**. It consolidates
-and hardens PDF, images, TXT/Markdown, JSON/XML, audio, video, fallback/unknown
-formats, richer text/Markdown editing, structured JSON/XML preview, image and
-media behavior, unified download handling, capability normalization, preview
-limits, and consistent unsupported-state UX. It does not begin in Checkpoint 6.
+## Checkpoint 7 — Other file engines and format normalization
+
+Checkpoint 7 completes the first-class file-family matrix without changing the
+StorageProvider boundary:
+
+| Family | Engine | Preview | Edit | Product behavior |
+| --- | --- | --- | --- | --- |
+| DOCX | `DOCUMENT` | native | yes | native model/editor/save |
+| DOC | `DOCUMENT` | PDF fallback | no | bounded LibreOffice conversion |
+| XLSX / CSV | `SPREADSHEET` | native | yes | native model/editor/save |
+| XLS | `SPREADSHEET` | PDF fallback | no | bounded LibreOffice conversion |
+| PPTX | `PRESENTATION` | native | yes | native model/editor/save |
+| PPT | `PRESENTATION` | PDF fallback | no | bounded LibreOffice conversion |
+| TXT / Markdown / JSON / XML | `TEXT` | native | yes when within limits | shared source editor and format adapter |
+| PDF | `PDF` | native browser PDF | no | authenticated same-origin stream |
+| JPEG / PNG / WEBP / GIF | `IMAGE` | native image | no | fit/zoom viewer; animated GIF stays animated |
+| MP4 / WebM | `VIDEO` | native media | no | controls and provider-backed ranges |
+| explicit audio types | `AUDIO` | native media | no | browser controls; no transcoding |
+| unknown | `FALLBACK` | unavailable | no | authorized download only |
+
+TXT, Markdown, JSON, and XML share a bounded UTF-8 source layer. It accepts
+valid UTF-8 with or without BOM, rejects invalid encodings instead of guessing
+legacy encodings, records BOM and line-ending metadata, and preserves those
+properties when saving where practical. The family is limited to 16 MiB input,
+2 million decoded characters, 100,000 lines, and 8 MiB editable content. JSON
+and XML structured validation additionally bounds depth to 100 and nodes to
+50,000. Malformed JSON/XML remain available as source text, while their saves
+are rejected until valid. XML parsing disables entity processing and rejects
+DOCTYPE/external entity declarations; it never performs DTD, XInclude, network,
+XSLT, or HTML execution.
+
+The frontend uses one `TextFileEditor` foundation with format adapters: plain
+text preserves whitespace and line breaks, Markdown renders a small safe
+heading/list/quote/code/table/link subset with raw HTML disabled, JSON renders
+bounded formatted source, and XML renders readable source. All rendered values
+are React text/nodes; raw HTML is never injected. Markdown links are restricted
+to `http:`, `https:`, and `mailto:` and open with `noopener noreferrer`; remote
+Markdown images are not fetched. The source editor provides source/preview
+modes, undo/redo, dirty state, save status, Ctrl/Cmd+S, IME-safe editing, and
+revision conflict reload.
+
+`PATCH /nodes/:nodeId/text` is the provider-neutral text save route. The server
+re-authorizes edit access, resolves the real MIME/extension through
+`FileEngineRegistry`, validates the bounded payload and actual text subtype,
+checks the opaque storage revision, validates JSON/XML where applicable, and
+calls `StorageProvider.replace()`. HTTP 409 never overwrites the provider and
+keeps local text until the user explicitly reloads.
+
+PDF, image, video, audio, and fallback behavior now use the same workspace
+capability metadata and download action. PDF remains read-only and keeps the
+authenticated same-origin/CSP/range path. Images are read-only and have a
+small fit/zoom viewer; SVG is not added to the supported image set because it
+would require an active-content sanitization policy. Video/audio MIME support
+is explicit and range requests continue through `StorageProvider.openRead()`;
+the browser is not asked to buffer the full object. Unknown files resolve to a
+safe unavailable state with factual filename/type/size context and download
+only when authorization permits.
+
+Native text engines expose `extractText()`. Thumbnail capabilities remain false
+unless an actual thumbnail implementation exists; no engine advertises a fake
+thumbnail path. Legacy Google-native files remain isolated PDF-export
+compatibility paths, while DOC/XLS/PPT remain read-only LibreOffice fallbacks.
+No image, PDF, audio, video, legacy binary Office editing, or search-worker
+migration was introduced.
+
+Checkpoint 8 is **Save Semantics + Versioning + Recovery + Conflict
+Hardening**. It may unify save-state plumbing, autosave/recovery drafts, Save
+As Copy, version/history behavior, crash/navigation recovery, and cross-engine
+conflict handling. Checkpoint 8 is not started here.
 
 ## ADR: Google Drive is an opaque storage backend
 

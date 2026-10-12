@@ -31,6 +31,7 @@ export interface Node {
 }
 export type FileEngineId = "DOCUMENT" | "SPREADSHEET" | "PRESENTATION" | "PDF" | "IMAGE" | "TEXT" | "VIDEO" | "AUDIO" | "LEGACY_GOOGLE_NATIVE" | "FALLBACK";
 export type FilePreviewKind = "document" | "spreadsheet" | "presentation" | "pdf" | "image" | "text" | "video" | "audio" | "unavailable";
+export type TextFileFormat = "text" | "markdown" | "json" | "xml";
 export interface FileEngineCapabilities {
   preview: boolean;
   edit: boolean;
@@ -41,8 +42,22 @@ export interface FileEngineCapabilities {
 export interface FilePreviewDescriptor {
   kind: FilePreviewKind;
   mimeType: string | null;
+  format?: TextFileFormat;
   reason?: "unsupported" | "source-unavailable" | "failed";
   modelUrl?: string;
+}
+export interface TextFileModel {
+  version: 1;
+  format: TextFileFormat;
+  content: string;
+  previewContent: string;
+  parseError: string | null;
+  encoding: "utf-8";
+  bom: boolean;
+  lineEnding: "lf" | "crlf" | "mixed" | "none";
+  editable: boolean;
+  readOnlyReason?: string;
+  storageRevision?: string;
 }
 export type DocumentAlignment = "left" | "center" | "right" | "justified";
 export type DocumentVerticalAlign = "baseline" | "superscript" | "subscript";
@@ -694,6 +709,11 @@ export class ApiClient {
     if (!response.ok) throw await this.error(response);
     return (await response.json()) as PresentationSlideModel;
   }
+  async getTextModel(modelUrl: string) {
+    const response = await fetch(modelUrl, { credentials: "include" });
+    if (!response.ok) throw await this.error(response);
+    return (await response.json()) as TextFileModel;
+  }
   async saveDocument(nodeId: string, input: { expectedRevision: string; blocks: unknown[] }) {
     return this.request<{ storageRevision: string; model: DocumentModel }>(`/nodes/${nodeId}/document`, {
       method: "PATCH",
@@ -708,6 +728,12 @@ export class ApiClient {
   }
   async savePresentation(nodeId: string, input: { expectedRevision: string; slides: Array<{ slideId: string; elements: Array<{ elementId: string; textState?: { paragraphs: Array<{ alignment?: PresentationAlignment; bullet?: { kind: "bullet" | "number"; value?: string | null; level?: number } | null; runs: Array<{ text: string; bold?: boolean; italic?: boolean; underline?: boolean; fontFamily?: string | null; fontSize?: number | null; color?: string | null }> }> }; geometry?: { x?: number; y?: number; width?: number; height?: number } }> }> }) {
     return this.request<{ storageRevision: string; model: PresentationModel }>(`/nodes/${nodeId}/presentation`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+  async saveText(nodeId: string, input: { expectedRevision: string; content: string }) {
+    return this.request<{ storageRevision: string; model: TextFileModel }>(`/nodes/${nodeId}/text`, {
       method: "PATCH",
       body: JSON.stringify(input),
     });

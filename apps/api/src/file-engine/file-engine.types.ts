@@ -5,6 +5,7 @@ import type {
   StorageProvider,
   StorageReadResult,
 } from '../storage/storage-provider.js';
+import type { TextFileFormat } from './text/text-model.js';
 
 /** Built-in IDs are stable strings; applications may register additional IDs. */
 export type FileEngineId = string;
@@ -42,6 +43,7 @@ export interface FileEngineCapabilities {
 export interface FilePreviewResult {
   kind: FilePreviewKind;
   mimeType: string | null;
+  format?: TextFileFormat;
   reason?: 'unsupported' | 'source-unavailable' | 'failed';
 }
 

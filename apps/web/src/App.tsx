@@ -44,6 +44,8 @@ import { canAdministerAccounts, canManageDocuments } from "./system-role-policy"
 import { DocumentViewer } from "./DocumentViewer";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
 import { PresentationViewer } from "./PresentationViewer";
+import { TextFileViewer } from "./TextFileViewer";
+import { ImageViewer } from "./ImageViewer";
 import "./App.css";
 
 const api = new ApiClient();
@@ -259,6 +261,14 @@ async function openFileActivation(
 
 function downloadPreview(preview: Preview) {
   if (previewIsLoading(preview)) return Promise.resolve();
+  if (!previewIsUnavailable(preview)
+    && preview.engine
+    && ["DOCUMENT", "SPREADSHEET", "PRESENTATION"].includes(preview.engine)
+    && preview.preview?.kind === "pdf") {
+    // Office/PDF fallback content is a rendered preview; downloads must use
+    // the original authorized node stream instead.
+    return api.downloadNode(preview.nodeId, preview.filename);
+  }
   if (preview.contentUrl) return api.downloadPreview(preview.contentUrl, preview.filename);
   return api.downloadNode(preview.nodeId, preview.filename);
 }
@@ -4163,7 +4173,7 @@ function PreviewDialog({
             <>
               {previewLoading && <div className="preview-loading" role="status">{t("preview.loading")}</div>}
               {kind === "image" ? (
-                <img key={attempt} src={session!.contentUrl} alt={session!.filename} onLoad={() => setState("ready")} onError={() => setState("error")} />
+                <ImageViewer key={attempt} src={session!.contentUrl} alt={session!.filename} onReady={() => setState("ready")} onError={() => setState("error")} />
               ) : kind === "video" ? (
                 <video key={attempt} src={session!.contentUrl} controls preload="metadata" onLoadedMetadata={() => setState("ready")} onError={() => setState("error")} />
               ) : kind === "audio" ? (
@@ -4174,6 +4184,8 @@ function PreviewDialog({
                 <SpreadsheetViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
               ) : kind === "presentation" && session!.modelUrl ? (
                 <PresentationViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
+              ) : kind === "text" && session!.modelUrl ? (
+                <TextFileViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
               ) : (
                 <iframe key={attempt} title={session!.filename} src={session!.contentUrl} onLoad={() => setState("ready")} onError={() => setState("error")} />
               )}

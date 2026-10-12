@@ -125,7 +125,7 @@ describe('DrivePreviewService', () => {
     ['video/webm', 'video/webm'],
     ['text/plain', 'text/plain'],
   ])('streams %s directly from Drive', async (sourceMimeType, previewMimeType) => {
-    const { service, drive } = serviceFor({
+    const { service, drive, storage } = serviceFor({
       node: {
         id: 'node',
         name: 'asset',
@@ -142,6 +142,13 @@ describe('DrivePreviewService', () => {
         },
       },
     });
+    if (sourceMimeType === 'text/plain') {
+      storage.openRead.mockResolvedValue({
+        stream: Readable.from([Buffer.from('preview text', 'utf8')]),
+        metadata: { sizeBytes: 12n, mimeType: sourceMimeType },
+        range: null,
+      });
+    }
     await expect(service.create('user', 'node')).resolves.toMatchObject({
       previewable: true,
       mimeType: previewMimeType,
