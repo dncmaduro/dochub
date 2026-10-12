@@ -48,9 +48,9 @@ describe('FileEngineRegistry', () => {
     expect(registry.resolve(file('report.docx', null)).engine.id).toBe('DOCUMENT');
   });
 
-  it('keeps CSV on the simple text preview path', async () => {
+  it('routes CSV through the native spreadsheet preview path', async () => {
     await expect(registry.openPreview(file('budget.csv', 'text/csv'))).resolves.toMatchObject({
-      kind: 'text',
+      kind: 'spreadsheet',
       engine: { id: 'SPREADSHEET' },
     });
   });
@@ -70,7 +70,7 @@ describe('FileEngineRegistry', () => {
     const resolved = registry.resolve(file('report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'));
     expect(resolved.capabilities).toEqual({
       preview: true,
-      edit: false,
+      edit: true,
       download: true,
       textExtraction: false,
       thumbnail: false,

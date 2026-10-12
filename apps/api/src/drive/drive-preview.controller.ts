@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Req, Res, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Req, Res, Post, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AccessTokenGuard } from '../auth/access-token.guard.js';
 import { AuthCookieService } from '../auth/auth-cookie.service.js';
@@ -32,6 +32,36 @@ export class DrivePreviewController {
     return body;
   }
 
+  @Patch('nodes/:nodeId/document')
+  @UseGuards(AccessTokenGuard)
+  async saveDocument(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('nodeId') nodeId: string,
+    @Body() body: unknown,
+  ) {
+    return this.previews.saveDocument(auth.userId, nodeId, body);
+  }
+
+  @Patch('nodes/:nodeId/spreadsheet')
+  @UseGuards(AccessTokenGuard)
+  async saveSpreadsheet(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('nodeId') nodeId: string,
+    @Body() body: unknown,
+  ) {
+    return this.previews.saveSpreadsheet(auth.userId, nodeId, body);
+  }
+
+  @Patch('nodes/:nodeId/presentation')
+  @UseGuards(AccessTokenGuard)
+  async savePresentation(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param('nodeId') nodeId: string,
+    @Body() body: unknown,
+  ) {
+    return this.previews.savePresentation(auth.userId, nodeId, body);
+  }
+
   @Get('drive-preview/:sessionId/content')
   async content(
     @Param('sessionId') sessionId: string,
@@ -57,6 +87,34 @@ export class DrivePreviewController {
     response.setHeader('Cache-Control', 'private, no-store');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.json(await this.previews.openModel(preview));
+  }
+
+  @Get('drive-preview/:sessionId/content/sheets/:sheetId')
+  async sheet(
+    @Param('sessionId') sessionId: string,
+    @Param('sheetId') sheetId: string,
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    const token = request.cookies?.[this.previews.cookieName(sessionId)];
+    const preview = await this.previews.verify(sessionId, token);
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.json(await this.previews.openSheet(preview, sheetId));
+  }
+
+  @Get('drive-preview/:sessionId/content/slides/:slideId')
+  async slide(
+    @Param('sessionId') sessionId: string,
+    @Param('slideId') slideId: string,
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    const token = request.cookies?.[this.previews.cookieName(sessionId)];
+    const preview = await this.previews.verify(sessionId, token);
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.json(await this.previews.openSlide(preview, slideId));
   }
 
   @Get('drive-preview/:sessionId/content/assets/:assetId')

@@ -65,25 +65,16 @@ export class DocxPackageReader {
   private constructor(private readonly entries: ReadonlyMap<string, Uint8Array>) {}
 
   static async fromStorage(storage: StorageProvider, ref: StorageObjectRef): Promise<DocxPackageReader> {
-    let content;
-    try {
-      content = await storage.openRead(ref);
-    } catch {
-      throw new DocxPackageError("DOCX source is unavailable", "source");
-    }
-    if (!content?.stream || !content.metadata) throw new DocxPackageError("DOCX source is unavailable", "source");
-    if (content.metadata.sizeBytes != null && content.metadata.sizeBytes > BigInt(DOCX_LIMITS.compressedBytes)) {
-      content.stream.destroy();
-      if (content.cleanup) await content.cleanup().catch(() => undefined);
-      throw new DocxPackageError("DOCX source exceeds the package limit", "resource-limit");
-    }
-    let bytes: Buffer;
-    try {
-      bytes = await readBoundedStream(content.stream, DOCX_LIMITS.compressedBytes);
-    } finally {
-      if (content.cleanup) await content.cleanup().catch(() => undefined);
-    }
-    return DocxPackageReader.fromBytes(bytes);
+    return DocxPackageReader.fromBytes(await readDocxStorageBytes(storage, ref));
+  }
+
+  /** Reads only the bounded original package bytes; callers own any patch/rebuild step. */
+  static async readStorageBytes(storage: StorageProvider, ref: StorageObjectRef): Promise<Buffer> {
+    return readDocxStorageBytes(storage, ref);
+  }
+
+  private static fromEntries(entries: ReadonlyMap<string, Uint8Array>): DocxPackageReader {
+    return new DocxPackageReader(entries);
   }
 
   static fromBytes(bytes: Uint8Array): DocxPackageReader {
@@ -126,7 +117,12 @@ export class DocxPackageReader {
       throw new DocxPackageError("DOCX package could not be read", "corrupt");
     }
     if (!entries.has("word/document.xml")) throw new DocxPackageError("DOCX document part is missing", "corrupt");
-    return new DocxPackageReader(entries);
+    return DocxPackageReader.fromEntries(entries);
+  }
+
+  /** Package entries are returned as immutable byte views for a controlled rebuild. */
+  allEntries(): ReadonlyMap<string, Uint8Array> {
+    return this.entries;
   }
 
   has(path: string): boolean {
@@ -166,6 +162,28 @@ export class DocxPackageReader {
     const resolved = result.join("/");
     return resolved && this.entries.has(resolved) ? resolved : null;
   }
+}
+
+async function readDocxStorageBytes(storage: StorageProvider, ref: StorageObjectRef): Promise<Buffer> {
+  let content;
+  try {
+    content = await storage.openRead(ref);
+  } catch {
+    throw new DocxPackageError("DOCX source is unavailable", "source");
+  }
+  if (!content?.stream || !content.metadata) throw new DocxPackageError("DOCX source is unavailable", "source");
+  if (content.metadata.sizeBytes != null && content.metadata.sizeBytes > BigInt(DOCX_LIMITS.compressedBytes)) {
+    content.stream.destroy();
+    if (content.cleanup) await content.cleanup().catch(() => undefined);
+    throw new DocxPackageError("DOCX source exceeds the package limit", "resource-limit");
+  }
+  let bytes: Buffer;
+  try {
+    bytes = await readBoundedStream(content.stream, DOCX_LIMITS.compressedBytes);
+  } finally {
+    if (content.cleanup) await content.cleanup().catch(() => undefined);
+  }
+  return bytes;
 }
 
 export async function openDocxPackage(storage: StorageProvider, ref: StorageObjectRef): Promise<DocxPackageReader> {

@@ -559,13 +559,207 @@ Google editor, or ONLYOFFICE surface.
 Checkpoint 3 is preview/read-only first. It does not add editing, save/export,
 DOCX serialization, search-worker migration, or a new database model.
 
-## Checkpoint 4 boundary
+## Checkpoint 4 — Document Engine V1: native DOCX edit/save
 
-Checkpoint 4 is **Document Engine V1 — edit and save DOCX**. It may add edit
-mode, selection/edit operations, minimal formatting commands, undo/redo,
-dirty/save state, DOCX patch/export, `StorageProvider.replace()`, and conflict
-handling foundations. None of those behaviors belong to the Checkpoint 3
-renderer or parser.
+Checkpoint 4 implements the bounded edit path:
+
+```text
+DOCX preview
+  -> block-scoped Docs Hub editor
+  -> typed semantic DocumentPatchRequest
+  -> server editability/source-map validation
+  -> narrow DOCX paragraph patch
+  -> ZIP rebuild with original unrelated entry bytes
+  -> StorageProvider.replace(expectedRevision)
+  -> fresh parse and DocumentModel
+```
+
+The editor keeps `baselineModel`, `currentModel`, dirty block IDs, command
+history, selection offsets, mode, and save status in a focused editor-state
+module. Commands cover text replacement, bold/italic/underline/strike, font
+size, alignment, and Normal/H1/H2/H3 style changes. Undo/redo is Docs Hub
+command history; browser editing history is not authoritative. Editing is
+block-scoped, uses plain-text textarea input for the active block, intercepts
+structural browser behavior, and treats IME composition as a single semantic
+text mutation. Rich pasted HTML and pasted images are not accepted.
+
+The parser/source-map layer assigns deterministic structural block IDs for
+body paragraphs and simple table-cell paragraphs. A paragraph is editable only
+when its original source contains the controlled V1 subset (`w:p`, `w:pPr`,
+`w:r`, `w:rPr`, `w:t`, `w:tab`, and `w:br`) with supported formatting and
+paragraph properties. Hyperlinks, drawings/images mixed with text, fields,
+tracked changes, content controls, equations, embedded objects, and unknown
+significant OOXML keep their blocks read-only. Images, hyperlinks, unsupported
+placeholders, list structure, table structure, and all structural block
+insertion/deletion remain outside V1.
+
+The save API is `PATCH /nodes/:nodeId/document`. It re-authorizes the caller
+server-side, accepts only bounded typed semantic blocks, verifies the opaque
+expected storage revision, reads the current DOCX through `StorageProvider`,
+patches only changed safe paragraph source regions, and calls
+`StorageProvider.replace()` on the same physical object. User text is escaped
+by a controlled run serializer and `xml:space="preserve"` is added where
+needed. The patcher never serializes the whole `document.xml`, and unrelated
+parts such as styles, numbering, relationships, media, custom XML, and
+unsupported OOXML are carried forward byte-for-byte before ZIP rebuilding.
+
+Google Drive's current replace flow provides best-effort optimistic
+concurrency (`stat` then patch then `replace`); it is not an atomic compare-
+and-swap. A mismatch returns a provider-neutral conflict (HTTP 409), leaves
+local edits intact, and offers reload after explicit discard confirmation.
+Viewer saves are rejected by the existing Docs Hub authorization service.
+DOC remains LibreOffice/PDF and is not editable. XLS remains a read-only
+LibreOffice/PDF transitional fallback. PPTX remains on its existing preview
+path.
+
+## Checkpoint 5 — Spreadsheet Engine V1: native XLSX/CSV preview and save
+
+Checkpoint 5 implements the native spreadsheet path:
+
+```text
+XLSX/CSV preview
+  -> SpreadsheetEngine
+  -> StorageProvider.openRead()
+  -> bounded XLSX OOXML/CSV parser
+  -> WorkbookModel + lazy SheetModel
+  -> virtualized Docs Hub grid
+  -> typed cell edits and undo/redo
+  -> narrow worksheet patch or dialect-preserving CSV serialization
+  -> StorageProvider.replace(expectedRevision)
+  -> fresh authoritative model
+```
+
+`WorkbookModel` is provider-neutral. XLSX sheet IDs are deterministic opaque
+session values derived from workbook relationship identity; the browser never
+receives arbitrary ZIP paths. The workbook endpoint returns only a bounded
+manifest (sheet names, visibility, dimensions, active sheet, formula and
+unsupported-content indicators). The active sheet and later sheet tabs are
+loaded through the authenticated preview-session-bound `/content/sheets/:sheetId`
+endpoint. Sheet cells are sparse, and the browser renders only a viewport plus
+overscan rows and columns.
+
+Native V1 formats are XLSX and UTF-8 CSV (including controlled `.csv` fallback
+when the source MIME is generic). XLS remains a read-only LibreOffice/PDF
+fallback; no BIFF parser or writer is included. PPT remains transitional;
+native PPTX is implemented in Checkpoint 6 below.
+
+The XLSX parser reads workbook relationships, worksheets, shared strings,
+styles, common number/date formats, row/column dimensions, merged ranges,
+freeze-pane hints, formulas and cached values. Formula cells are visible but
+read-only; Docs Hub does not calculate formulas. After scalar edits in a
+formula-bearing workbook, formulas remain intact and workbook calculation
+properties request recalculation on the next compatible office open. Cached
+dependent values are marked as potentially stale; the Docs Hub grid never
+claims to have recalculated them. Cell value editing preserves existing style
+IDs. Merged ghost cells and unsupported special cells are read-only.
+
+`PATCH /nodes/:nodeId/spreadsheet` accepts only a bounded semantic payload of
+`{ expectedRevision, edits: [{ sheetId, cell, value }] }`. The endpoint
+re-authorizes Docs Hub edit capability, validates sheet and cell identity,
+rejects formulas and merged ghost cells, checks the provider revision, and
+calls `StorageProvider.replace()`. A mismatch returns HTTP 409 and never
+silently discards pending edits. Google Drive's current stat/replace sequence
+remains a documented best-effort optimistic check rather than an atomic CAS.
+
+`XlsxPatcher` changes only affected worksheet cell/value spans, creates a cell
+or row in sorted order when needed, updates an existing dimension without
+shrinking it, and uses inline strings for changed text cells. It rebuilds the
+ZIP while carrying every untouched entry's original bytes forward. Styles,
+shared strings, formulas, relationships, tables, drawings, charts, media,
+custom XML, macros encountered in unsupported variants, and other unparsed
+package parts are not reserialized. CSV parsing supports quoted commas,
+embedded newlines, escaped quotes, Vietnamese UTF-8 text, detected delimiter,
+and detected line ending; CSV save preserves that dialect and uses the same
+semantic route.
+
+The implementation bounds compressed/decompressed XLSX data, entry/XML size,
+ZIP entries, shared strings, loaded cells, dimensions, merged ranges and edit
+counts. CSV bytes, rows, columns and cells are bounded. ZIP paths reject
+traversal/absolute names, XML parsing disables external entity behavior, and
+untrusted client input cannot select raw XML or provider objects.
+
+The small grid editor supports sheet switching, cell selection, arrows,
+Tab/Enter navigation, blank-cell creation, scalar text/number/boolean edits,
+clear, plain-text input, IME composition, Ctrl/Cmd+S, undo/redo, dirty state,
+save failure retry, and conflict reload. It does not implement formula
+evaluation, structural rows/columns/sheets operations, merge edits, filters,
+sorting mutations, chart/table/pivot/drawing editing, or collaborative edits.
+
+## Checkpoint 6 — Presentation Engine V1: native PPTX preview and basic edit/save
+
+Checkpoint 6 adds the native Open XML presentation path:
+
+```text
+PPTX preview
+  -> PresentationEngine
+  -> StorageProvider.openRead()
+  -> bounded PPTX package reader/parser
+  -> PresentationModel manifest
+  -> lazy SlideModel/image endpoints
+  -> Docs Hub thumbnail rail + SlideCanvas
+  -> typed semantic presentation commands
+  -> narrow PptxPatcher
+  -> StorageProvider.replace(expectedRevision)
+  -> fresh authoritative manifest
+```
+
+`PresentationModel` contains slide dimensions and the source-order slide
+manifest. `PresentationSlideModel` contains normalized slide-space geometry,
+stable source-derived element IDs, semantic text paragraphs/runs, safe image
+asset IDs, simple shape properties, z-order, and neutral unsupported-object
+placeholders. Slides are loaded lazily through the authenticated preview
+session; presentation assets are likewise served only through session-bound
+opaque URLs. Slide dimensions come from `p:sldSz`, so 4:3, 16:9, and custom
+aspect ratios are rendered without a hard-coded canvas ratio. The viewer
+resolves presentation order from `presentation.xml` relationships rather than
+slide filenames, and retains hidden-slide descriptors.
+
+The native renderer is Docs Hub-owned DOM/CSS: positioned text, images, and
+simple shapes inside a scaled slide coordinate space. It includes a scrollable
+thumbnail rail, click navigation, basic zoom, hyperlinks restricted to
+`http:`, `https:`, and `mailto:`, and placeholders for charts, SmartArt,
+tables, and other unsupported objects. Common slide/layout/master/theme
+context is inspected for basic placeholder geometry and theme font/color
+fallbacks. This is an approximation of PowerPoint typography, not a
+pixel-perfect Office renderer.
+
+PPTX V1 editing is deliberately narrow. Safe text-bearing shapes expose
+semantic text editing; simple text boxes, shapes, and images can expose move
+and resize when their source transforms are unambiguous. Commands provide
+undo/redo, dirty state, Ctrl/Cmd+S, and IME-safe textarea editing. There are
+no slide insertion/deletion/reordering operations, element insertion/deletion,
+chart/SmartArt/table-structure editing, master/layout/theme editing, notes
+editing, animation/transition editing or playback, or native PPT binary
+editing. PPT continues to use the existing LibreOffice/PDF read-only fallback.
+
+`PATCH /nodes/:nodeId/presentation` accepts only bounded semantic
+`PresentationPatchRequest` data containing slide/element IDs, changed text
+paragraphs/runs, and changed geometry. The server re-authorizes the caller,
+checks the opaque expected storage revision, validates source-derived
+editability, patches only controlled `a:p` text and `a:xfrm` offset/extent
+attributes, and replaces the original object through `StorageProvider`. It
+does not rebuild a presentation from the model. Masters, layouts, themes,
+media, relationships, notes, transitions/timing, chart/SmartArt parts,
+hyperlinks, custom XML, and unrelated slide content are carried forward as
+original ZIP entry bytes. A revision mismatch returns HTTP 409 and leaves
+local dirty edits intact; the Drive stat/replace sequence remains the small
+documented non-atomic optimistic-check window.
+
+The PPTX reader bounds compressed/decompressed package bytes, entries, XML,
+media, slides, elements, text, and patch size. ZIP traversal and absolute
+paths are rejected, no package is extracted to disk, and malformed or
+resource-exhausting native PPTX input is classified as unavailable rather
+than falling through on internal programmer errors. The fixture and
+round-trip tests cover ordered slides, dimensions, formatted text, bullets,
+images, shapes, rotation, inheritance hints, unsupported content, safe
+hyperlinks, geometry/text edits, revision conflicts, and byte-preserved
+unrelated package parts.
+
+Checkpoint 7 is **Other File Engines + Format Normalization**. It consolidates
+and hardens PDF, images, TXT/Markdown, JSON/XML, audio, video, fallback/unknown
+formats, richer text/Markdown editing, structured JSON/XML preview, image and
+media behavior, unified download handling, capability normalization, preview
+limits, and consistent unsupported-state UX. It does not begin in Checkpoint 6.
 
 ## ADR: Google Drive is an opaque storage backend
 

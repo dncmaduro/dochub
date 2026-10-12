@@ -42,6 +42,8 @@ import {
 import { changeLocale, getLocale, translate as t, type Locale } from "./i18n";
 import { canAdministerAccounts, canManageDocuments } from "./system-role-policy";
 import { DocumentViewer } from "./DocumentViewer";
+import { SpreadsheetViewer } from "./SpreadsheetViewer";
+import { PresentationViewer } from "./PresentationViewer";
 import "./App.css";
 
 const api = new ApiClient();
@@ -4071,18 +4073,23 @@ function PreviewDialog({
   );
   const [attempt, setAttempt] = useState(0);
   const [downloadError, setDownloadError] = useState("");
+  const [documentDirty, setDocumentDirty] = useState(false);
   const documentReady = useCallback(() => setState("ready"), []);
   const documentError = useCallback(() => setState("error"), []);
+  const requestClose = useCallback(() => {
+    if (documentDirty && !window.confirm("Discard unsaved changes?")) return;
+    onClose();
+  }, [documentDirty, onClose]);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        requestClose();
       }
     };
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
-  }, [onClose]);
+  }, [requestClose]);
   const unavailable = previewIsUnavailable(preview);
   const loading = previewIsLoading(preview);
   const session = unavailable || loading ? null : preview;
@@ -4126,7 +4133,7 @@ function PreviewDialog({
               type="button"
               className="icon-button"
               aria-label={t("preview.close")}
-              onClick={onClose}
+              onClick={requestClose}
             >
               <Icon name="close" />
             </button>
@@ -4162,7 +4169,11 @@ function PreviewDialog({
               ) : kind === "audio" ? (
                 <audio key={attempt} src={session!.contentUrl} controls preload="metadata" onCanPlay={() => setState("ready")} onError={() => setState("error")} />
               ) : kind === "document" && session!.modelUrl ? (
-                <DocumentViewer key={attempt} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} />
+                <DocumentViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
+              ) : kind === "spreadsheet" && session!.modelUrl ? (
+                <SpreadsheetViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
+              ) : kind === "presentation" && session!.modelUrl ? (
+                <PresentationViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
               ) : (
                 <iframe key={attempt} title={session!.filename} src={session!.contentUrl} onLoad={() => setState("ready")} onError={() => setState("error")} />
               )}

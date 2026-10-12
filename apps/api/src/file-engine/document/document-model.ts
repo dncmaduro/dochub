@@ -43,6 +43,9 @@ export interface ParagraphBlock extends ParagraphLayout {
   id: string;
   styleId: string | null;
   content: DocumentInline[];
+  /** False when the original paragraph contains OOXML outside the V1 safe subset. */
+  editable?: boolean;
+  readonlyReason?: string;
 }
 
 export interface HeadingBlock extends Omit<ParagraphBlock, "type"> {
@@ -58,6 +61,8 @@ export interface ListItemBlock extends ParagraphLayout {
   level: number;
   ordered: boolean;
   marker: string | null;
+  editable?: boolean;
+  readonlyReason?: string;
 }
 
 export interface TableBorder {
@@ -94,12 +99,14 @@ export interface ImageBlock {
   altText: string | null;
   widthPx: number | null;
   heightPx: number | null;
+  editable?: boolean;
 }
 
 export interface UnsupportedBlock {
   type: "unsupported";
   id: string;
   label: string;
+  editable?: boolean;
 }
 
 export type DocumentBlock =
@@ -113,4 +120,8 @@ export type DocumentBlock =
 export interface DocumentModel {
   version: 1;
   blocks: DocumentBlock[];
+  /** True when at least one safe paragraph can be edited in V1. */
+  editable?: boolean;
+  /** Opaque provider revision attached by the preview/session layer. */
+  storageRevision?: string;
 }

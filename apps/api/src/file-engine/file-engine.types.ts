@@ -12,6 +12,8 @@ export type FileEngineId = string;
 export type FilePreviewKind =
   | 'pdf'
   | 'document'
+  | 'spreadsheet'
+  | 'presentation'
   | 'image'
   | 'text'
   | 'video'
@@ -75,10 +77,14 @@ export interface FileEngine {
     file: FileDescriptor,
     context: FileEngineOpenContext,
   ): Promise<FilePreviewContent>;
-  /** Reserved for a future DocumentModel/WorkbookModel/PresentationModel. */
+  /** Server-side semantic model for a native engine, delivered through a preview session. */
   openModel?(file: FileDescriptor, context: FileEngineModelContext): Promise<unknown>;
+  /** Optional lazy sub-model endpoint, such as one spreadsheet worksheet. */
+  openSheet?(file: FileDescriptor, sheetId: string, context: FileEngineModelContext): Promise<unknown>;
+  /** Optional lazy sub-model endpoint, such as one presentation slide. */
+  openSlide?(file: FileDescriptor, slideId: string, context: FileEngineModelContext): Promise<unknown>;
   openAsset?(file: FileDescriptor, assetId: string, context: FileEngineModelContext): Promise<FilePreviewContent>;
-  /** Future implementations must serialize through StorageProvider.replace(). */
+  /** Implementations serialize through StorageProvider.replace(). */
   save?(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<unknown>;
   extractText?(file: FileDescriptor, context: FileEngineModelContext): Promise<string>;
   generateThumbnail?(file: FileDescriptor, context: FileEngineModelContext): Promise<FilePreviewContent>;
@@ -88,10 +94,12 @@ export interface FileEngineModelContext {
   storage: StorageProvider;
   /** Server-generated, preview-session-bound URL for an opaque model asset ID. */
   assetUrl?: (assetId: string) => string;
+  /** Provider revision captured for this read, never a provider-specific ID. */
+  storageRevision?: string;
 }
 
 export interface FileEngineSaveContext extends FileEngineModelContext {
-  expectedRevision?: string;
+  expectedRevision: string;
 }
 
 export function normalizeMimeType(value: string | null | undefined): string {

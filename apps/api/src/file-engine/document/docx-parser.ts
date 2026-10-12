@@ -19,6 +19,7 @@ import type {
   UnsupportedBlock,
 } from "./document-model.js";
 import { DOCX_LIMITS, DocxPackageError, type DocxPackageEntry, type DocxPackageReader } from "./docx-package-reader.js";
+import { annotateDocumentModel, createDocxSourceMap } from "./docx-source-map.js";
 
 type XmlNode = Record<string, unknown>;
 type XmlValue = unknown;
@@ -441,6 +442,11 @@ export class DocxParser {
     if (!body) throw new DocxPackageError("DOCX document body is missing", "corrupt");
     const blocks = parser.parseBlocks(body, "b", 0);
     const model: DocumentModel = { version: 1, blocks };
+    try {
+      annotateDocumentModel(model, createDocxSourceMap(reader.text("word/document.xml")));
+    } catch {
+      throw new DocxPackageError("DOCX document source mapping failed", "corrupt");
+    }
     if (assetUrl) parser.attachAssetUrls(model, assetUrl);
     return { model, assets: parser.assets };
   }

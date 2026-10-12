@@ -1,0 +1,17 @@
+export const SPREADSHEET_LIMITS = {
+  compressedBytes: 50 * 1024 * 1024,
+  decompressedBytes: 150 * 1024 * 1024,
+  entryBytes: 40 * 1024 * 1024,
+  xmlEntryBytes: 20 * 1024 * 1024,
+  maxEntries: 4_000,
+  maxSharedStrings: 500_000,
+  maxLoadedCells: 100_000,
+  maxRows: 1_048_576,
+  maxColumns: 16_384,
+  maxMergedRanges: 20_000,
+  maxEdits: 2_000,
+  maxCellText: 100_000,
+  maxCsvRows: 100_000,
+  maxCsvColumns: 2_000,
+  maxCsvCells: 2_000_000,
+} as const;

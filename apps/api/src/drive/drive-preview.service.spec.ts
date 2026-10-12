@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
+import { zipSync } from 'fflate';
+import { Readable } from 'node:stream';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DrivePreviewService } from './drive-preview.service.js';
+
+const nativeXlsx = Buffer.from(zipSync({
+  'xl/workbook.xml': new TextEncoder().encode('<workbook xmlns:r="urn:r"><sheets><sheet name="Sheet1" r:id="rId1"/></sheets></workbook>'),
+  'xl/_rels/workbook.xml.rels': new TextEncoder().encode('<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>'),
+  'xl/worksheets/sheet1.xml': new TextEncoder().encode('<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>'),
+}));
+const nativePptx = Buffer.from(zipSync({
+  'ppt/presentation.xml': new TextEncoder().encode('<p:presentation xmlns:p="urn:p" xmlns:r="urn:r"><p:sldSz cx="9144000" cy="5143500"/><p:sldIdLst><p:sldId id="1" r:id="rId1"/></p:sldIdLst></p:presentation>'),
+  'ppt/_rels/presentation.xml.rels': new TextEncoder().encode('<Relationships><Relationship Id="rId1" Target="slides/slide1.xml" Type="/slide"/></Relationships>'),
+  'ppt/slides/slide1.xml': new TextEncoder().encode('<p:sld xmlns:p="urn:p"><p:cSld><p:spTree/></p:cSld></p:sld>'),
+}));
 
 function serviceFor({
   capabilities = new Set([DocumentCapability.VIEW, DocumentCapability.PREVIEW, DocumentCapability.DOWNLOAD]),
@@ -36,6 +49,52 @@ function serviceFor({
 }
 
 describe('DrivePreviewService', () => {
+  it('re-authorizes viewer saves on the server', async () => {
+    const { service } = serviceFor();
+    await expect(service.saveDocument('user', 'node', {})).rejects.toThrow('required document capability');
+  });
+
+  it('allows an authorized editor to reach the native engine save path', async () => {
+    const capabilities = new Set([DocumentCapability.VIEW, DocumentCapability.PREVIEW, DocumentCapability.DOWNLOAD, DocumentCapability.EDIT]);
+    const authorization = { resolveCapabilities: vi.fn().mockResolvedValue({ capabilities }) };
+    const database = { prisma: { node: { findFirst: vi.fn().mockResolvedValue({
+      id: 'node', name: 'report.docx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
+        driveFileId: 'drive-file', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', sizeBytes: 10n, sourceStatus: 'CONNECTED', trashed: false,
+      } },
+    }) } } };
+    const saved = { storageRevision: '8', model: { version: 1, blocks: [] } };
+    const engine = { id: 'DOCUMENT', save: vi.fn().mockResolvedValue(saved) };
+    const registry = { resolve: vi.fn().mockReturnValue({ engine, capabilities: { preview: true, edit: true, download: true, textExtraction: false, thumbnail: false } }) };
+    const storage = {};
+    const service = new DrivePreviewService(database as never, authorization as never, {} as never, {} as never, storage as never, registry as never);
+    await expect(service.saveDocument('editor', 'node', { expectedRevision: '7', blocks: [] })).resolves.toBe(saved);
+    expect(engine.save).toHaveBeenCalledWith(expect.objectContaining({ name: 'report.docx' }), expect.objectContaining({ expectedRevision: '7' }), { storage, expectedRevision: '7' });
+  });
+
+  it('plans native XLSX preview with edit capability and a workbook model URL', async () => {
+    const capabilities = new Set([DocumentCapability.VIEW, DocumentCapability.PREVIEW, DocumentCapability.DOWNLOAD, DocumentCapability.EDIT]);
+    const { service, storage } = serviceFor({ capabilities, node: {
+      id: 'node', name: 'report.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
+        driveFileId: 'drive-file', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', sizeBytes: 10n, sourceStatus: 'CONNECTED', trashed: false,
+      } },
+    } });
+    storage.stat.mockResolvedValue({ sizeBytes: 10n, revision: 'r1' });
+    storage.openRead.mockResolvedValue({ stream: Readable.from([nativeXlsx]), metadata: { sizeBytes: BigInt(nativeXlsx.byteLength), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, range: null });
+    await expect(service.create('editor', 'node')).resolves.toMatchObject({ previewable: true, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', modelUrl: expect.stringContaining('/content/model'), capabilities: { edit: true }, storageRevision: 'r1' });
+  });
+
+  it('re-authorizes and delegates native spreadsheet saves', async () => {
+    const capabilities = new Set([DocumentCapability.VIEW, DocumentCapability.PREVIEW, DocumentCapability.DOWNLOAD, DocumentCapability.EDIT]);
+    const authorization = { resolveCapabilities: vi.fn().mockResolvedValue({ capabilities }) };
+    const database = { prisma: { node: { findFirst: vi.fn().mockResolvedValue({ id: 'node', name: 'report.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: { driveFileId: 'drive-file', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', sizeBytes: 10n, sourceStatus: 'CONNECTED', trashed: false } } }) } } };
+    const saved = { storageRevision: 'r2', model: { version: 1, sheets: [], activeSheetId: 'sheet' } };
+    const engine = { id: 'SPREADSHEET', save: vi.fn().mockResolvedValue(saved) };
+    const registry = { resolve: vi.fn().mockReturnValue({ engine, capabilities: { preview: true, edit: true, download: true, textExtraction: false, thumbnail: false } }) };
+    const service = new DrivePreviewService(database as never, authorization as never, {} as never, {} as never, {} as never, registry as never);
+    await expect(service.saveSpreadsheet('editor', 'node', { expectedRevision: 'r1', edits: [{ sheetId: 'sheet', cell: 'A1', value: 'ok' }] })).resolves.toBe(saved);
+    expect(engine.save).toHaveBeenCalledWith(expect.objectContaining({ name: 'report.xlsx' }), expect.objectContaining({ expectedRevision: 'r1' }), expect.objectContaining({ expectedRevision: 'r1' }));
+  });
+
   it('exports Google-native files as PDF previews', async () => {
     const { service, drive, jwt, database } = serviceFor();
     const preview = await service.create('user', 'node');
@@ -83,7 +142,6 @@ describe('DrivePreviewService', () => {
         },
       },
     });
-
     await expect(service.create('user', 'node')).resolves.toMatchObject({
       previewable: true,
       mimeType: previewMimeType,
@@ -114,14 +172,14 @@ describe('DrivePreviewService', () => {
   });
 
   it.each([
-    ['application/msword', 'report.doc'],
-    ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'report.docx'],
-    ['application/vnd.ms-excel', 'report.xls'],
-    ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'report.xlsx'],
-    ['application/vnd.ms-powerpoint', 'report.ppt'],
-    ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'report.pptx'],
-  ])('plans %s for LibreOffice PDF preview', async (mimeType, filename) => {
-    const { service, drive } = serviceFor({
+    ['application/msword', 'report.doc', 'application/pdf'],
+    ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'report.docx', 'application/pdf'],
+    ['application/vnd.ms-excel', 'report.xls', 'application/pdf'],
+    ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'report.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['application/vnd.ms-powerpoint', 'report.ppt', 'application/pdf'],
+    ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'report.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ])('plans %s for the native or LibreOffice preview path', async (mimeType, filename, expectedMimeType) => {
+    const { service, drive, storage } = serviceFor({
       node: {
         id: 'node',
         name: filename,
@@ -138,7 +196,9 @@ describe('DrivePreviewService', () => {
         },
       },
     });
-    await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: true, mimeType: 'application/pdf' });
+    if (filename === 'report.xlsx') storage.openRead.mockResolvedValue({ stream: Readable.from([nativeXlsx]), metadata: { sizeBytes: BigInt(nativeXlsx.byteLength), mimeType }, range: null });
+    if (filename === 'report.pptx') storage.openRead.mockResolvedValue({ stream: Readable.from([nativePptx]), metadata: { sizeBytes: BigInt(nativePptx.byteLength), mimeType }, range: null });
+    await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: true, mimeType: expectedMimeType });
     expect(drive.assertReadableDrive).toHaveBeenCalledOnce();
   });
 

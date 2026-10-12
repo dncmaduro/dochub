@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -25,6 +27,7 @@ import { DatabaseService } from '../database/database.service.js';
 import { DriveService } from './drive.service.js';
 import { FileEngineRegistry } from '../file-engine/file-engine.registry.js';
 import { isDocxFile, isExpectedDocxFailure } from '../file-engine/engines/document.engine.js';
+import { isPptxFile } from '../file-engine/engines/presentation.engine.js';
 import {
   extensionFromFilename,
   type FileDescriptor,
@@ -39,6 +42,14 @@ import type {
   StorageReadResult,
 } from '../storage/storage-provider.js';
 import { parseSingleByteRange } from '../files/byte-range.js';
+import { DocxPackageError } from '../file-engine/document/docx-package-reader.js';
+import { DocumentEditValidationError, parseDocumentPatchRequest } from '../file-engine/document/document-edit.types.js';
+import { StorageConflictError } from '../storage/storage.errors.js';
+import { isCsvFile, isXlsxFile } from '../file-engine/engines/spreadsheet.engine.js';
+import { SpreadsheetEditValidationError, parseSpreadsheetPatchRequest } from '../file-engine/spreadsheet/spreadsheet-edit.types.js';
+import { SpreadsheetPackageError } from '../file-engine/spreadsheet/xlsx-package-reader.js';
+import { PresentationEditValidationError, parsePresentationPatchRequest } from '../file-engine/presentation/presentation-edit.types.js';
+import { PresentationPackageError } from '../file-engine/presentation/pptx-package-reader.js';
 
 const DRIVE_PREVIEW_AUDIENCE = 'dochub-drive-preview';
 const DRIVE_PREVIEW_TTL_SECONDS = 300;
@@ -48,7 +59,7 @@ const MAX_OFFICE_INPUT_BYTES = 50 * 1024 * 1024;
 const MAX_OFFICE_OUTPUT_BYTES = 100 * 1024 * 1024;
 const MAX_CONVERTER_OUTPUT_BYTES = 8 * 1024;
 
-type DrivePreviewKind = 'direct' | 'google-export' | 'office' | 'document';
+type DrivePreviewKind = 'direct' | 'google-export' | 'office' | 'document' | 'spreadsheet' | 'presentation';
 
 type DrivePreviewToken = {
   typ: 'drive-preview';
@@ -95,6 +106,7 @@ export type DrivePreviewSession = {
   capabilities: ReturnType<FileEngineRegistry['resolve']>['capabilities'];
   preview: FilePreviewResult;
   modelUrl?: string;
+  storageRevision?: string;
 };
 
 function safePreviewError(): ServiceUnavailableException {
@@ -180,17 +192,46 @@ export class DrivePreviewService {
         preview = { kind: 'pdf', mimeType: PREVIEW_PDF_MIME_TYPE, reason: 'failed' };
       }
     }
+    if (resolved.engine.id === 'SPREADSHEET' && (isXlsxFile(descriptor) || isCsvFile(descriptor))) {
+      try {
+        await resolved.engine.openModel?.(descriptor, { storage: this.storage });
+      } catch (error) {
+        if (!(error instanceof SpreadsheetPackageError)) throw safePreviewError();
+        this.logger.warn(`Native spreadsheet preview unavailable (${this.safeErrorKind(error)})`);
+        preview = { kind: 'unavailable', mimeType: source.mimeType, reason: 'failed' };
+      }
+    }
+    if (resolved.engine.id === 'PRESENTATION' && isPptxFile(descriptor)) {
+      try {
+        await resolved.engine.openModel?.(descriptor, { storage: this.storage });
+      } catch (error) {
+        if (!(error instanceof PresentationPackageError)) throw safePreviewError();
+        this.logger.warn(`Native presentation preview unavailable (${this.safeErrorKind(error)})`);
+        preview = { kind: 'unavailable', mimeType: source.mimeType, reason: 'failed' };
+      }
+    }
     const plan = preview.kind === 'unavailable'
       ? null
       : resolved.engine.id === 'LEGACY_GOOGLE_NATIVE'
         ? { kind: 'google-export' as const }
         : preview.kind === 'document'
           ? { kind: 'document' as const }
+        : preview.kind === 'spreadsheet'
+          ? { kind: 'spreadsheet' as const }
+        : preview.kind === 'presentation'
+          ? { kind: 'presentation' as const }
         : preview.kind === 'pdf' && ['DOCUMENT', 'SPREADSHEET', 'PRESENTATION'].includes(resolved.engine.id)
           ? { kind: 'office' as const }
           : { kind: 'direct' as const };
     if (!plan && !capabilities.capabilities.has(DocumentCapability.DOWNLOAD)) return null;
     await this.drive.assertReadableDrive();
+    const publicCapabilities = {
+      ...resolved.capabilities,
+      edit: resolved.capabilities.edit && capabilities.capabilities.has(DocumentCapability.EDIT),
+    };
+    const storageRevision = plan?.kind === 'document' || plan?.kind === 'spreadsheet' || plan?.kind === 'presentation'
+      ? (await this.storage.stat(previewRef({ did: source.driveFileId }))).revision
+      : undefined;
     const outputMimeType = preview.mimeType ?? source.mimeType.toLowerCase();
     const sessionId = randomUUID();
     const token = await this.jwt.signAsync<DrivePreviewToken>(
@@ -221,9 +262,10 @@ export class DrivePreviewService {
       filename: node.name,
       size: source.sizeBytes?.toString() ?? '0',
       engine: resolved.engine.id,
-      capabilities: resolved.capabilities,
+      capabilities: publicCapabilities,
       preview,
-      ...(plan?.kind === 'document' ? { modelUrl: `/drive-preview/${sessionId}/content/model` } : {}),
+      ...(plan?.kind === 'document' || plan?.kind === 'spreadsheet' || plan?.kind === 'presentation' ? { modelUrl: `/drive-preview/${sessionId}/content/model` } : {}),
+      ...(storageRevision ? { storageRevision } : {}),
     };
   }
 
@@ -332,22 +374,143 @@ export class DrivePreviewService {
   }
 
   async openModel(preview: DrivePreviewToken) {
-    if (preview.kind !== 'document') throw safePreviewError();
+    if (preview.kind !== 'document' && preview.kind !== 'spreadsheet' && preview.kind !== 'presentation') throw safePreviewError();
     const descriptor = this.descriptor(preview);
     const engine = preview.engineId ? this.registry.get(preview.engineId) : this.registry.resolve(descriptor).engine;
     if (!engine.openModel) throw safePreviewError();
+    const current = await this.storage.stat(previewRef(preview));
     return engine.openModel(descriptor, {
       storage: this.storage,
       assetUrl: (assetId) => `/drive-preview/${preview.sid}/content/assets/${encodeURIComponent(assetId)}`,
+      storageRevision: current.revision,
     });
   }
 
+  async openSheet(preview: DrivePreviewToken, sheetId: string) {
+    if (preview.kind !== 'spreadsheet' || !/^[A-Za-z0-9_-]{1,200}$/u.test(sheetId)) throw safePreviewError();
+    const descriptor = this.descriptor(preview);
+    const engine = preview.engineId ? this.registry.get(preview.engineId) : this.registry.resolve(descriptor).engine;
+    if (!engine.openSheet) throw safePreviewError();
+    const current = await this.storage.stat(previewRef(preview));
+    return engine.openSheet(descriptor, sheetId, { storage: this.storage, storageRevision: current.revision });
+  }
+
+  async openSlide(preview: DrivePreviewToken, slideId: string) {
+    if (preview.kind !== 'presentation' || !/^[A-Za-z0-9_-]{1,200}$/u.test(slideId)) throw safePreviewError();
+    const descriptor = this.descriptor(preview);
+    const engine = preview.engineId ? this.registry.get(preview.engineId) : this.registry.resolve(descriptor).engine;
+    if (!engine.openSlide) throw safePreviewError();
+    const current = await this.storage.stat(previewRef(preview));
+    return engine.openSlide(descriptor, slideId, { storage: this.storage, assetUrl: (assetId) => `/drive-preview/${preview.sid}/content/assets/${encodeURIComponent(assetId)}`, storageRevision: current.revision });
+  }
+
   async openAsset(preview: DrivePreviewToken, assetId: string): Promise<PreviewContent> {
-    if (preview.kind !== 'document' || !/^[a-z0-9-]+$/i.test(assetId)) throw safePreviewError();
+    if ((preview.kind !== 'document' && preview.kind !== 'presentation') || !/^[A-Za-z0-9_-]{1,200}$/u.test(assetId)) throw safePreviewError();
     const descriptor = this.descriptor(preview);
     const engine = preview.engineId ? this.registry.get(preview.engineId) : this.registry.resolve(descriptor).engine;
     if (!engine.openAsset) throw safePreviewError();
     return engine.openAsset(descriptor, assetId, { storage: this.storage });
+  }
+
+  async saveDocument(userId: string, nodeId: string, body: unknown) {
+    const capabilities = await this.authorization.resolveCapabilities(userId, nodeId);
+    if (!capabilities.capabilities.has(DocumentCapability.EDIT)) {
+      throw new ForbiddenException('You do not have the required document capability');
+    }
+    const node = await this.database.prisma.node.findFirst({
+      where: { id: nodeId, trashOperationId: null },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        file: {
+          select: {
+            backingType: true,
+            id: true,
+            driveFile: {
+              select: {
+                driveFileId: true,
+                mimeType: true,
+                sizeBytes: true,
+                sourceStatus: true,
+                trashed: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    const source = node?.file?.backingType === FileBackingType.GOOGLE_DRIVE ? node.file.driveFile : null;
+    if (!node || node.type !== 'FILE' || !source || source.trashed || source.sourceStatus === 'UNAVAILABLE') {
+      throw new NotFoundException('Node not found');
+    }
+    const descriptor: FileDescriptor = {
+      fileId: node.file?.id ?? node.id,
+      nodeId: node.id,
+      name: node.name,
+      mimeType: source.mimeType,
+      extension: extensionFromFilename(node.name),
+      size: source.sizeBytes === null ? null : Number(source.sizeBytes),
+      storageRef: { provider: 'GOOGLE_DRIVE', objectId: source.driveFileId },
+    };
+    const resolved = this.registry.resolve(descriptor);
+    if (resolved.engine.id !== 'DOCUMENT' || !isDocxFile(descriptor) || !resolved.capabilities.edit || !resolved.engine.save) {
+      throw new BadRequestException('This file is not editable as a native DOCX document');
+    }
+    try {
+      const request = parseDocumentPatchRequest(body);
+      return await resolved.engine.save(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision });
+    } catch (error) {
+      if (error instanceof StorageConflictError) throw new ConflictException('This file changed after you opened it.');
+      if (error instanceof DocxPackageError || error instanceof DocumentEditValidationError || error instanceof BadRequestException) {
+        throw new BadRequestException('The document changes are invalid.');
+      }
+      throw error;
+    }
+  }
+
+  async saveSpreadsheet(userId: string, nodeId: string, body: unknown) {
+    const capabilities = await this.authorization.resolveCapabilities(userId, nodeId);
+    if (!capabilities.capabilities.has(DocumentCapability.EDIT)) throw new ForbiddenException('You do not have the required document capability');
+    const node = await this.database.prisma.node.findFirst({
+      where: { id: nodeId, trashOperationId: null },
+      select: { id: true, name: true, type: true, file: { select: { backingType: true, id: true, driveFile: { select: { driveFileId: true, mimeType: true, sizeBytes: true, sourceStatus: true, trashed: true } } } } },
+    });
+    const source = node?.file?.backingType === FileBackingType.GOOGLE_DRIVE ? node.file.driveFile : null;
+    if (!node || node.type !== 'FILE' || !source || source.trashed || source.sourceStatus === 'UNAVAILABLE') throw new NotFoundException('Node not found');
+    const descriptor: FileDescriptor = { fileId: node.file?.id ?? node.id, nodeId: node.id, name: node.name, mimeType: source.mimeType, extension: extensionFromFilename(node.name), size: source.sizeBytes === null ? null : Number(source.sizeBytes), storageRef: { provider: 'GOOGLE_DRIVE', objectId: source.driveFileId } };
+    const resolved = this.registry.resolve(descriptor);
+    if (resolved.engine.id !== 'SPREADSHEET' || (!isXlsxFile(descriptor) && !isCsvFile(descriptor)) || !resolved.capabilities.edit || !resolved.engine.save) throw new BadRequestException('This file is not editable as a native XLSX or CSV spreadsheet');
+    try {
+      const request = parseSpreadsheetPatchRequest(body);
+      return await resolved.engine.save(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision });
+    } catch (error) {
+      if (error instanceof StorageConflictError) throw new ConflictException('This file changed after you opened it.');
+      if (error instanceof SpreadsheetPackageError || error instanceof SpreadsheetEditValidationError || error instanceof BadRequestException) throw new BadRequestException('The spreadsheet changes are invalid.');
+      throw error;
+    }
+  }
+
+  async savePresentation(userId: string, nodeId: string, body: unknown) {
+    const capabilities = await this.authorization.resolveCapabilities(userId, nodeId);
+    if (!capabilities.capabilities.has(DocumentCapability.EDIT)) throw new ForbiddenException('You do not have the required document capability');
+    const node = await this.database.prisma.node.findFirst({
+      where: { id: nodeId, trashOperationId: null },
+      select: { id: true, name: true, type: true, file: { select: { backingType: true, id: true, driveFile: { select: { driveFileId: true, mimeType: true, sizeBytes: true, sourceStatus: true, trashed: true } } } } },
+    });
+    const source = node?.file?.backingType === FileBackingType.GOOGLE_DRIVE ? node.file.driveFile : null;
+    if (!node || node.type !== 'FILE' || !source || source.trashed || source.sourceStatus === 'UNAVAILABLE') throw new NotFoundException('Node not found');
+    const descriptor: FileDescriptor = { fileId: node.file?.id ?? node.id, nodeId: node.id, name: node.name, mimeType: source.mimeType, extension: extensionFromFilename(node.name), size: source.sizeBytes === null ? null : Number(source.sizeBytes), storageRef: { provider: 'GOOGLE_DRIVE', objectId: source.driveFileId } };
+    const resolved = this.registry.resolve(descriptor);
+    if (resolved.engine.id !== 'PRESENTATION' || !isPptxFile(descriptor) || !resolved.capabilities.edit || !resolved.engine.save) throw new BadRequestException('This file is not editable as a native PPTX presentation');
+    try {
+      const request = parsePresentationPatchRequest(body);
+      return await resolved.engine.save(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision });
+    } catch (error) {
+      if (error instanceof StorageConflictError) throw new ConflictException('This file changed after you opened it.');
+      if (error instanceof PresentationPackageError || error instanceof PresentationEditValidationError || error instanceof BadRequestException) throw new BadRequestException('The presentation changes are invalid.');
+      throw error;
+    }
   }
 
   write(content: PreviewContent, preview: DrivePreviewToken, response: Response, mimeType = preview.mimeType): void {

@@ -30,7 +30,7 @@ export interface Node {
   processing?: { contentSearch: "READY" | "PROCESSING" | "FAILED" } | null;
 }
 export type FileEngineId = "DOCUMENT" | "SPREADSHEET" | "PRESENTATION" | "PDF" | "IMAGE" | "TEXT" | "VIDEO" | "AUDIO" | "LEGACY_GOOGLE_NATIVE" | "FALLBACK";
-export type FilePreviewKind = "document" | "pdf" | "image" | "text" | "video" | "audio" | "unavailable";
+export type FilePreviewKind = "document" | "spreadsheet" | "presentation" | "pdf" | "image" | "text" | "video" | "audio" | "unavailable";
 export interface FileEngineCapabilities {
   preview: boolean;
   edit: boolean;
@@ -84,6 +84,8 @@ export interface DocumentParagraphBlock extends DocumentParagraphLayout {
   id: string;
   styleId: string | null;
   content: DocumentInline[];
+  editable?: boolean;
+  readonlyReason?: string;
 }
 export interface DocumentHeadingBlock extends Omit<DocumentParagraphBlock, "type"> {
   type: "heading";
@@ -97,6 +99,8 @@ export interface DocumentListItemBlock extends DocumentParagraphLayout {
   level: number;
   ordered: boolean;
   marker: string | null;
+  editable?: boolean;
+  readonlyReason?: string;
 }
 export interface DocumentTableCell {
   id: string;
@@ -119,17 +123,139 @@ export interface DocumentImageBlock {
   altText: string | null;
   widthPx: number | null;
   heightPx: number | null;
+  editable?: boolean;
 }
 export interface DocumentUnsupportedBlock {
   type: "unsupported";
   id: string;
   label: string;
+  editable?: boolean;
 }
 export type DocumentBlock = DocumentParagraphBlock | DocumentHeadingBlock | DocumentListItemBlock | DocumentTableBlock | DocumentImageBlock | DocumentUnsupportedBlock;
 export interface DocumentModel {
   version: 1;
   blocks: DocumentBlock[];
+  editable?: boolean;
+  storageRevision?: string;
 }
+export type SpreadsheetCellValue = string | number | boolean | null;
+export interface SpreadsheetCellStyle {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  fontSize?: number | null;
+  textColor?: string | null;
+  fillColor?: string | null;
+  horizontalAlign?: "left" | "center" | "right" | "general";
+  verticalAlign?: "top" | "center" | "bottom";
+  numberFormat?: string | null;
+  borders?: Record<string, string | null>;
+}
+export interface SpreadsheetCell {
+  address: string;
+  row: number;
+  column: number;
+  value: SpreadsheetCellValue;
+  valueType: "string" | "number" | "boolean" | "blank" | "date" | "datetime" | "error" | "formula";
+  displayValue: string;
+  formula?: string;
+  cachedValue?: SpreadsheetCellValue;
+  style?: SpreadsheetCellStyle;
+  styleId?: number;
+  editable: boolean;
+  readonlyReason?: string;
+}
+export interface SpreadsheetSheetDescriptor {
+  id: string;
+  name: string;
+  position: number;
+  hidden?: boolean;
+  rowCount: number;
+  columnCount: number;
+}
+export interface SpreadsheetWorkbookModel {
+  version: 1;
+  id: string;
+  sheets: SpreadsheetSheetDescriptor[];
+  activeSheetId: string;
+  editable: boolean;
+  storageRevision?: string;
+  hasUnsupportedContent?: boolean;
+  formulasPresent?: boolean;
+  calculatedValuesStale?: boolean;
+}
+export interface SpreadsheetSheetModel {
+  version: 1;
+  id: string;
+  name: string;
+  dimensions: { rowCount: number; columnCount: number };
+  cells: SpreadsheetCell[];
+  rowMetadata: Record<string, { heightPx?: number; hidden?: boolean }>;
+  columnMetadata: Record<string, { widthPx?: number; hidden?: boolean }>;
+  mergedRanges: string[];
+  frozenPane?: { row: number; column: number };
+}
+export type PresentationAlignment = "left" | "center" | "right" | "justified";
+export interface PresentationTextRun {
+  id: string;
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  fontFamily: string | null;
+  fontSize: number | null;
+  color: string | null;
+  link: { href: string } | null;
+}
+export interface PresentationParagraph {
+  id: string;
+  runs: PresentationTextRun[];
+  alignment: PresentationAlignment;
+  bullet: { kind: "bullet" | "number"; value: string | null; level: number } | null;
+}
+export interface PresentationEditableCapabilities { text: boolean; move: boolean; resize: boolean; }
+export interface PresentationElementBase {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  zIndex: number;
+  editable: PresentationEditableCapabilities;
+  placeholderType?: string | null;
+  hyperlink?: { href: string } | null;
+}
+export interface PresentationTextElement extends PresentationElementBase {
+  type: "text";
+  shapeType: string;
+  paragraphs: PresentationParagraph[];
+  fillColor?: string | null;
+  borderColor?: string | null;
+  borderWidth?: number | null;
+  readonlyReason?: string;
+}
+export interface PresentationImageElement extends PresentationElementBase {
+  type: "image";
+  assetId: string;
+  src?: string;
+  crop?: { left: number; top: number; right: number; bottom: number } | null;
+  readonlyReason?: string;
+}
+export interface PresentationShapeElement extends PresentationElementBase {
+  type: "shape";
+  shapeType: string;
+  fillColor: string | null;
+  borderColor: string | null;
+  borderWidth: number | null;
+  readonlyReason?: string;
+}
+export interface PresentationGroupElement extends PresentationElementBase { type: "group"; children: PresentationElement[]; readonlyReason: string; }
+export interface PresentationUnsupportedElement extends PresentationElementBase { type: "unsupported"; label: string; readonlyReason: string; }
+export type PresentationElement = PresentationTextElement | PresentationImageElement | PresentationShapeElement | PresentationGroupElement | PresentationUnsupportedElement;
+export interface PresentationSlideDescriptor { id: string; index: number; name: string | null; hidden: boolean; width: number; height: number; thumbnailCapability: boolean; }
+export interface PresentationSlideModel { version: 1; id: string; index: number; width: number; height: number; background: string | null; elements: PresentationElement[]; unsupportedFeatures: string[]; }
+export interface PresentationModel { version: 1; id: string; width: number; height: number; slides: PresentationSlideDescriptor[]; activeSlideId: string; editable: boolean; storageRevision?: string; hasUnsupportedContent?: boolean; }
 export type NodeSortBy = "name" | "lastModified";
 export type NodeSortDirection = "asc" | "desc";
 export interface Breadcrumb {
@@ -167,6 +293,7 @@ export interface PreviewSession {
   capabilities?: FileEngineCapabilities;
   preview?: FilePreviewDescriptor;
   modelUrl?: string;
+  storageRevision?: string;
 }
 export interface DrivePreviewSession extends PreviewSession { previewable: boolean; }
 export interface FileWorkspacePreviewSession extends PreviewSession { previewable?: boolean; }
@@ -544,6 +671,46 @@ export class ApiClient {
     const response = await fetch(modelUrl, { credentials: "include" });
     if (!response.ok) throw await this.error(response);
     return (await response.json()) as DocumentModel;
+  }
+  async getSpreadsheetModel(modelUrl: string) {
+    const response = await fetch(modelUrl, { credentials: "include" });
+    if (!response.ok) throw await this.error(response);
+    return (await response.json()) as SpreadsheetWorkbookModel;
+  }
+  async getSpreadsheetSheet(modelUrl: string, sheetId: string) {
+    const sheetUrl = `${modelUrl.replace(/\/model$/, "")}/sheets/${encodeURIComponent(sheetId)}`;
+    const response = await fetch(sheetUrl, { credentials: "include" });
+    if (!response.ok) throw await this.error(response);
+    return (await response.json()) as SpreadsheetSheetModel;
+  }
+  async getPresentationModel(modelUrl: string) {
+    const response = await fetch(modelUrl, { credentials: "include" });
+    if (!response.ok) throw await this.error(response);
+    return (await response.json()) as PresentationModel;
+  }
+  async getPresentationSlide(modelUrl: string, slideId: string) {
+    const slideUrl = `${modelUrl.replace(/\/model$/, "")}/slides/${encodeURIComponent(slideId)}`;
+    const response = await fetch(slideUrl, { credentials: "include" });
+    if (!response.ok) throw await this.error(response);
+    return (await response.json()) as PresentationSlideModel;
+  }
+  async saveDocument(nodeId: string, input: { expectedRevision: string; blocks: unknown[] }) {
+    return this.request<{ storageRevision: string; model: DocumentModel }>(`/nodes/${nodeId}/document`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+  async saveSpreadsheet(nodeId: string, input: { expectedRevision: string; edits: Array<{ sheetId: string; cell: string; value: SpreadsheetCellValue }> }) {
+    return this.request<{ storageRevision: string; model: SpreadsheetWorkbookModel }>(`/nodes/${nodeId}/spreadsheet`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+  async savePresentation(nodeId: string, input: { expectedRevision: string; slides: Array<{ slideId: string; elements: Array<{ elementId: string; textState?: { paragraphs: Array<{ alignment?: PresentationAlignment; bullet?: { kind: "bullet" | "number"; value?: string | null; level?: number } | null; runs: Array<{ text: string; bold?: boolean; italic?: boolean; underline?: boolean; fontFamily?: string | null; fontSize?: number | null; color?: string | null }> }> }; geometry?: { x?: number; y?: number; width?: number; height?: number } }> }> }) {
+    return this.request<{ storageRevision: string; model: PresentationModel }>(`/nodes/${nodeId}/presentation`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
   }
   async downloadPreview(contentUrl: string, name: string) {
     const response = await fetch(contentUrl, { credentials: "include" });
