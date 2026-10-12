@@ -15,7 +15,7 @@ import {
 } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import { FileValidationService } from '../files/file-validation.service.js';
-import { DriveProviderError } from './google-drive.provider.js';
+import { StorageProviderUnavailableError } from '../storage/storage.errors.js';
 import { DriveUploadService } from './drive-upload.service.js';
 
 const PDF = Buffer.from('%PDF-1.7\nDocs Hub binary upload\n');
@@ -190,28 +190,27 @@ function harness(
         return callback(context);
       },
     ),
-    uploadBinaryWithContext: vi.fn(
-      async (
-        receivedContext: typeof context,
-        name: string,
-        mimeType: string,
-        source: AsyncIterable<Uint8Array>,
-      ) => {
-        let bytes = 0;
-        for await (const chunk of source) bytes += chunk.length;
-        uploadedCount += 1;
-        uploadCalls.push({ context: receivedContext, name, mimeType, bytes });
-        return {
-          id: `drive-file-${uploadedCount}`,
-          name,
+    storageIntegrationId: vi.fn(async () => connectionId),
+  };
+  const storage = {
+    put: vi.fn(async ({ stream, mimeType, filename }: any) => {
+      let bytes = 0;
+      for await (const chunk of stream) bytes += chunk.length;
+      uploadedCount += 1;
+      const objectId = `drive-file-${uploadedCount}`;
+      uploadCalls.push({ name: filename, mimeType, bytes, objectId });
+      return {
+        ref: { provider: 'GOOGLE_DRIVE', objectId },
+        metadata: {
+          provider: 'GOOGLE_DRIVE',
+          objectId,
           mimeType,
-          parents: [PHYSICAL_PARENT],
-          webViewLink: `https://drive.google.com/file/d/drive-file-${uploadedCount}/view`,
-          size: String(bytes),
-        };
-      },
-    ),
-    deleteBinaryWithContext: vi.fn(async () => {
+          sizeBytes: BigInt(bytes),
+          revision: `revision-${uploadedCount}`,
+        },
+      };
+    }),
+    delete: vi.fn(async () => {
       if (options.failCompensation) throw new Error('Drive delete failed');
     }),
   };
@@ -225,6 +224,7 @@ function harness(
       uploadTempRoot: '/tmp/dochub-upload-test',
       uploadMaxBytes: options.maxBytes ?? 1024,
     },
+    storage as any,
   );
   return {
     service,
@@ -232,6 +232,7 @@ function harness(
     folderId,
     prisma,
     drive,
+    storage,
     context,
     operations,
     nodes,
@@ -259,7 +260,6 @@ describe('DriveUploadService', () => {
       name: 'report.pdf',
       mimeType: 'application/pdf',
       bytes: PDF.length,
-      context: { target: { parentFolderId: PHYSICAL_PARENT } },
     });
     expect(state.prisma.file.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -284,12 +284,8 @@ describe('DriveUploadService', () => {
     );
 
     expect(result.node.parentId).toBe(state.folderId);
-    expect(state.uploadCalls[0]?.context.target.parentFolderId).toBe(
-      PHYSICAL_PARENT,
-    );
-    expect(state.uploadCalls[0]?.context.target.parentFolderId).not.toBe(
-      state.folderId,
-    );
+    expect(state.uploadCalls[0]?.name).toBe('report.pdf');
+    expect(state.uploadCalls[0]?.objectId).toMatch(/^drive-file-/);
   });
 
   it('allows DOCUMENT_MANAGER to upload DOCX as its original binary MIME type', async () => {
@@ -314,7 +310,7 @@ describe('DriveUploadService', () => {
       ForbiddenException,
     );
     expect(state.prisma.driveUploadOperation.create).not.toHaveBeenCalled();
-    expect(state.drive.uploadBinaryWithContext).not.toHaveBeenCalled();
+    expect(state.storage.put).not.toHaveBeenCalled();
     expect(state.prisma.fileVersion.create).not.toHaveBeenCalled();
   });
 
@@ -326,7 +322,7 @@ describe('DriveUploadService', () => {
       }),
     });
     expect(state.prisma.driveUploadOperation.create).not.toHaveBeenCalled();
-    expect(state.drive.uploadBinaryWithContext).not.toHaveBeenCalled();
+    expect(state.storage.put).not.toHaveBeenCalled();
   });
 
   it('returns the existing result on an identical idempotent replay without uploading twice', async () => {
@@ -335,7 +331,7 @@ describe('DriveUploadService', () => {
     const replay = await upload(state, 'same-upload-key');
 
     expect(replay).toEqual(first);
-    expect(state.drive.uploadBinaryWithContext).toHaveBeenCalledTimes(1);
+    expect(state.storage.put).toHaveBeenCalledTimes(1);
     expect(state.prisma.node.create).toHaveBeenCalledTimes(1);
     expect([...state.operations.values()][0]?.status).toBe(
       DriveUploadOperationStatus.SUCCEEDED,
@@ -352,12 +348,16 @@ describe('DriveUploadService', () => {
       'report.pdf',
       'report (1).pdf',
     ]);
+    expect(state.uploadCalls.map((call) => call.objectId)).not.toEqual([
+      'report.pdf',
+      'report (1).pdf',
+    ]);
   });
 
   it('does not create Docs Hub rows when Google Drive fails', async () => {
     const state = harness();
-    state.drive.uploadBinaryWithContext.mockRejectedValueOnce(
-      new DriveProviderError('provider', 503),
+    state.storage.put.mockRejectedValueOnce(
+      new StorageProviderUnavailableError('unavailable'),
     );
     await expect(upload(state, 'upstream-failure')).rejects.toBeInstanceOf(
       ServiceUnavailableException,
@@ -374,10 +374,10 @@ describe('DriveUploadService', () => {
     await expect(upload(state, 'db-failure')).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
-    expect(state.drive.deleteBinaryWithContext).toHaveBeenCalledWith(
-      state.context,
-      'drive-file-1',
-    );
+    expect(state.storage.delete).toHaveBeenCalledWith({
+      provider: 'GOOGLE_DRIVE',
+      objectId: 'drive-file-1',
+    });
     expect([...state.operations.values()][0]?.status).toBe(
       DriveUploadOperationStatus.FAILED,
     );
@@ -400,9 +400,9 @@ describe('DriveUploadService', () => {
     await expect(
       upload(state, 'oversized-upload', multipartRequest(oversizedPdf)),
     ).rejects.toBeInstanceOf(PayloadTooLargeException);
-    expect(state.drive.uploadBinaryWithContext).toHaveBeenCalledTimes(1);
+    expect(state.storage.put).toHaveBeenCalledTimes(1);
     expect(state.prisma.node.create).not.toHaveBeenCalled();
-    expect(state.drive.deleteBinaryWithContext).not.toHaveBeenCalled();
+    expect(state.storage.delete).not.toHaveBeenCalled();
   });
 
   it('rejects a same-key replay with different bytes', async () => {
@@ -412,6 +412,6 @@ describe('DriveUploadService', () => {
     await expect(
       upload(state, 'same-key-different-bytes', multipartRequest(modified)),
     ).rejects.toBeInstanceOf(ConflictException);
-    expect(state.drive.uploadBinaryWithContext).toHaveBeenCalledTimes(1);
+    expect(state.storage.put).toHaveBeenCalledTimes(1);
   });
 });

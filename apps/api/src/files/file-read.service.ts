@@ -6,8 +6,9 @@ import {
   ConflictException,
   ForbiddenException,
   ServiceUnavailableException,
+  Optional,
 } from '@nestjs/common';
-import { NodeType } from '@dochub/database';
+import { FileBackingType, NodeType } from '@dochub/database';
 import type { StorageService } from '@dochub/storage';
 import contentDisposition from 'content-disposition';
 import type { Response } from 'express';
@@ -16,6 +17,10 @@ import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
 import { CollectionsService } from '../collections/collections.service.js';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
+import {
+  STORAGE_PROVIDER,
+  type StorageProvider,
+} from '../storage/storage-provider.js';
 import { parseSingleByteRange, type ByteRange } from './byte-range.js';
 
 export interface BinaryRead {
@@ -32,6 +37,9 @@ export class FileReadService {
     private readonly database: DatabaseService,
     private readonly authorization: DocumentAuthorizationService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Optional()
+    @Inject(STORAGE_PROVIDER)
+    private readonly storageProvider?: StorageProvider,
     private readonly collections?: CollectionsService,
   ) {}
 
@@ -46,8 +54,22 @@ export class FileReadService {
       where: { id: nodeId, trashOperationId: null },
       select: {
         id: true,
+        name: true,
         type: true,
-        file: { select: { id: true, currentVersionId: true } },
+        file: {
+          select: {
+            id: true,
+            currentVersionId: true,
+            backingType: true,
+            driveFile: {
+              select: {
+                driveFileId: true,
+                mimeType: true,
+                sizeBytes: true,
+              },
+            },
+          },
+        },
       },
     });
     if (!node) throw new NotFoundException('Node not found');
@@ -77,8 +99,22 @@ export class FileReadService {
       where: { id: nodeId, trashOperationId: null },
       select: {
         id: true,
+        name: true,
         type: true,
-        file: { select: { id: true, currentVersionId: true } },
+        file: {
+          select: {
+            id: true,
+            currentVersionId: true,
+            backingType: true,
+            driveFile: {
+              select: {
+                driveFileId: true,
+                mimeType: true,
+                sizeBytes: true,
+              },
+            },
+          },
+        },
       },
     });
     if (!node) throw new NotFoundException('Node not found');
@@ -86,6 +122,44 @@ export class FileReadService {
       throw new ConflictException('Node is not a file');
     if (!node.file)
       throw new ServiceUnavailableException('File is unavailable');
+
+    if (node.file.backingType === FileBackingType.GOOGLE_DRIVE) {
+      const driveFile = node.file.driveFile;
+      if (!driveFile) throw new ServiceUnavailableException('File is unavailable');
+      const reference = {
+        provider: 'GOOGLE_DRIVE' as const,
+        objectId: driveFile.driveFileId,
+      };
+      if (!this.storageProvider) {
+        throw new ServiceUnavailableException('File is unavailable');
+      }
+      try {
+        const physical = await this.storageProvider.stat(reference);
+        if (physical.sizeBytes === null) {
+          throw new ServiceUnavailableException('File is unavailable');
+        }
+        const range = parseSingleByteRange(rangeHeader, physical.sizeBytes);
+        const content = await this.storageProvider.openRead(
+          reference,
+          range ? { range } : undefined,
+        );
+        return {
+          stream: content.stream,
+          version: {
+            originalFilename: node.name,
+            mimeType: physical.mimeType || driveFile.mimeType,
+            sizeBytes: physical.sizeBytes,
+          },
+          totalSize: physical.sizeBytes,
+          range,
+        };
+      } catch (error) {
+        if (error instanceof ServiceUnavailableException) throw error;
+        this.logger.error('Drive storage object is unavailable');
+        throw new ServiceUnavailableException('File is unavailable');
+      }
+    }
+
     const resolvedVersionId = versionId ?? node.file.currentVersionId;
     if (!resolvedVersionId) {
       this.logger.warn('Active file has no current version');

@@ -3,6 +3,7 @@ import { AuthorizationModule } from '../authorization/authorization.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { CollectionsModule } from '../collections/collections.module.js';
+import { DriveModule } from '../drive/drive.module.js';
 import { StorageModule } from '../storage/storage.module.js';
 import { FileValidationService } from './file-validation.service.js';
 import { FileReadService } from './file-read.service.js';
@@ -19,6 +20,7 @@ import { OfficeTemplateService } from './office-template.service.js';
     AuthorizationModule,
     DatabaseModule,
     StorageModule,
+    DriveModule,
     CollectionsModule,
   ],
   controllers: [FilesController, PreviewController],

@@ -263,6 +263,52 @@ describe('GoogleDriveApiProvider', () => {
     );
   });
 
+  it('replaces bytes through a resumable update targeting the existing Drive file ID', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      calls.push({
+        url: input instanceof Request ? input.url : String(input),
+        init,
+      });
+      if (init?.method === 'PATCH') {
+        return new Response(null, {
+          status: 200,
+          headers: { location: 'https://upload.example.test/session/replace' },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          id: 'existing-drive-file',
+          mimeType: 'application/pdf',
+          size: '7',
+          version: '12',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+
+    const provider = new GoogleDriveApiProvider(config);
+    const file = await provider.replaceBinaryFile(
+      'access-token',
+      'existing-drive-file',
+      'application/pdf',
+      Readable.from([Buffer.from('updated')]),
+    );
+
+    expect(file).toMatchObject({ id: 'existing-drive-file', version: '12' });
+    expect(calls[0]?.url).toContain(
+      '/upload/drive/v3/files/existing-drive-file?',
+    );
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(
+      JSON.stringify({ mimeType: 'application/pdf' }),
+    );
+    expect(calls[1]?.init?.headers).toMatchObject({
+      'Content-Range': 'bytes 0-6/7',
+      'Content-Type': 'application/pdf',
+    });
+  });
+
   it('sends production-sized data in bounded, aligned chunks', async () => {
     const chunkSize = 8 * 1024 * 1024;
     const calls: RequestInit[] = [];

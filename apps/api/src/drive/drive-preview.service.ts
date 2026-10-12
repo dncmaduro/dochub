@@ -1,5 +1,6 @@
 import {
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -22,6 +23,13 @@ import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
 import type { DriveContent } from './google-drive.provider.js';
 import { DriveService } from './drive.service.js';
+import { STORAGE_PROVIDER } from '../storage/storage-provider.js';
+import type {
+  StorageObjectRef,
+  StorageProvider,
+  StorageReadResult,
+} from '../storage/storage-provider.js';
+import { parseSingleByteRange } from '../files/byte-range.js';
 
 const DRIVE_PREVIEW_AUDIENCE = 'dochub-drive-preview';
 const DRIVE_PREVIEW_TTL_SECONDS = 300;
@@ -86,6 +94,28 @@ type DrivePreviewToken = {
   officeExtension?: string;
 };
 
+type PreviewContent = {
+  stream: DriveContent['stream'];
+  mimeType: string;
+  sizeBytes: bigint | null;
+  range: DriveContent['range'];
+  cleanup?: () => Promise<void>;
+};
+
+function previewRef(preview: Pick<DrivePreviewToken, 'did'>): StorageObjectRef {
+  return { provider: 'GOOGLE_DRIVE', objectId: preview.did };
+}
+
+function previewContent(content: StorageReadResult): PreviewContent {
+  return {
+    stream: content.stream,
+    mimeType: content.metadata.mimeType,
+    sizeBytes: content.metadata.sizeBytes,
+    range: content.range,
+    cleanup: content.cleanup,
+  };
+}
+
 export type DrivePreviewSession = {
   previewable: boolean;
   sessionId: string;
@@ -135,6 +165,7 @@ export class DrivePreviewService {
     private readonly authorization: DocumentAuthorizationService,
     private readonly jwt: JwtService,
     private readonly drive: DriveService,
+    @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
   ) {}
 
   cookieName(sessionId: string): string {
@@ -260,17 +291,29 @@ export class DrivePreviewService {
     return preview;
   }
 
-  async openContent(preview: DrivePreviewToken, rangeHeader?: string): Promise<DriveContent> {
+  async openContent(preview: DrivePreviewToken, rangeHeader?: string): Promise<PreviewContent> {
     if (preview.kind === 'google-export') {
       return this.drive.openPreviewExport(preview.did, PREVIEW_PDF_MIME_TYPE);
     }
     if (preview.kind === 'office') {
-      return this.convertOfficePreview(preview);
+      return this.convertOfficePreview(
+        previewRef(preview),
+        preview.officeExtension,
+      );
     }
-    return this.drive.openPreviewContent(preview.did, rangeHeader);
+    const reference = previewRef(preview);
+    let range = null;
+    if (rangeHeader) {
+      const current = await this.storage.stat(reference);
+      if (current.sizeBytes === null) throw safePreviewError();
+      range = parseSingleByteRange(rangeHeader, current.sizeBytes);
+    }
+    return previewContent(
+      await this.storage.openRead(reference, range ? { range } : undefined),
+    );
   }
 
-  write(content: DriveContent, preview: DrivePreviewToken, response: Response): void {
+  write(content: PreviewContent, preview: DrivePreviewToken, response: Response): void {
     const length = content.range
       ? content.range.end - content.range.start + 1
       : content.sizeBytes === null
@@ -304,12 +347,15 @@ export class DrivePreviewService {
     content.stream.pipe(response);
   }
 
-  private async convertOfficePreview(preview: DrivePreviewToken): Promise<DriveContent> {
+  private async convertOfficePreview(
+    reference: StorageObjectRef,
+    officeExtension?: string,
+  ): Promise<PreviewContent> {
     const directory = await mkdtemp(join(tmpdir(), 'dochub-preview-'));
-    const sourcePath = join(directory, `source${preview.officeExtension ?? '.bin'}`);
+    const sourcePath = join(directory, `source${officeExtension ?? '.bin'}`);
     const pdfPath = join(directory, 'source.pdf');
     try {
-      const source = await this.drive.openPreviewContent(preview.did);
+      const source = previewContent(await this.storage.openRead(reference));
       await this.writeSource(source, sourcePath);
       await this.runLibreOffice(sourcePath, directory);
       const pdf = await stat(pdfPath);
@@ -336,7 +382,7 @@ export class DrivePreviewService {
     }
   }
 
-  private async writeSource(source: DriveContent, sourcePath: string): Promise<void> {
+  private async writeSource(source: PreviewContent, sourcePath: string): Promise<void> {
     if (source.sizeBytes !== null && source.sizeBytes > BigInt(MAX_OFFICE_INPUT_BYTES)) {
       source.stream.destroy();
       throw new Error('preview input too large');

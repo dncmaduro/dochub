@@ -24,12 +24,14 @@ function serviceFor({
   const database = { prisma: { node: { findFirst: vi.fn().mockResolvedValue(node) }, user: { findUnique: vi.fn() } } };
   const jwt = { signAsync: vi.fn().mockResolvedValue('signed-drive-preview'), verifyAsync: vi.fn() };
   const drive = { assertReadableDrive: vi.fn().mockResolvedValue(undefined), openPreviewContent: vi.fn(), openPreviewExport: vi.fn() };
+  const storage = { stat: vi.fn().mockResolvedValue({ sizeBytes: 24n }), openRead: vi.fn() };
   return {
-    service: new DrivePreviewService(database as never, authorization as never, jwt as never, drive as never),
+    service: new DrivePreviewService(database as never, authorization as never, jwt as never, drive as never, storage as never),
     authorization,
     database,
     jwt,
     drive,
+    storage,
   };
 }
 
@@ -191,9 +193,9 @@ describe('DrivePreviewService', () => {
   });
 
   it('delegates content access without exposing a provider token', async () => {
-    const { service, drive } = serviceFor();
-    const content = { stream: {} };
-    drive.openPreviewContent.mockResolvedValue(content);
+    const { service, storage } = serviceFor();
+    const content = { stream: {}, metadata: { mimeType: 'application/pdf', sizeBytes: 5n }, range: null };
+    storage.openRead.mockResolvedValue(content);
     const preview = {
       typ: 'drive-preview' as const,
       sid: 'session',
@@ -203,8 +205,11 @@ describe('DrivePreviewService', () => {
       mimeType: 'application/pdf',
       filename: 'Quarterly report',
     };
-    await expect(service.openContent(preview, 'bytes=0-4')).resolves.toBe(content);
-    expect(drive.openPreviewContent).toHaveBeenCalledWith('drive-file', 'bytes=0-4');
+    await expect(service.openContent(preview, 'bytes=0-4')).resolves.toMatchObject({ stream: content.stream, mimeType: 'application/pdf' });
+    expect(storage.openRead).toHaveBeenCalledWith(
+      { provider: 'GOOGLE_DRIVE', objectId: 'drive-file' },
+      { range: { start: 0, end: 4 } },
+    );
   });
 
   it('uses Drive export for a Google-native preview session', async () => {

@@ -989,6 +989,86 @@ export class DriveService {
     });
   }
 
+  /**
+   * Raw storage operations used only by GoogleDriveStorageProvider. Keeping
+   * token refresh and integration lookup here avoids a second OAuth path in
+   * the storage adapter.
+   */
+  putStorageObject(
+    name: string,
+    mimeType: string,
+    source: Readable,
+    signal?: AbortSignal,
+  ): Promise<DriveApiFile> {
+    return this.withConfiguredWritableDrive((context) =>
+      this.provider.uploadBinaryFile(
+        context.accessToken,
+        {
+          name,
+          mimeType,
+          parentFolderId: context.target.parentFolderId,
+        },
+        source,
+        signal,
+      ),
+    );
+  }
+
+  async openStorageObject(
+    driveFileId: string,
+    rangeHeader?: string,
+  ): Promise<DriveContent> {
+    this.assertEnabled();
+    const connection = await this.requireReadableConnected('system', {
+      requireStorageFolder: false,
+    });
+    return this.withAccessToken(connection, (accessToken) =>
+      this.provider.downloadFile(accessToken, driveFileId, rangeHeader),
+    );
+  }
+
+  async replaceStorageObject(
+    driveFileId: string,
+    mimeType: string,
+    source: Readable,
+    signal?: AbortSignal,
+  ): Promise<DriveApiFile> {
+    this.assertEnabled();
+    const connection = await this.requireWritableConnected('system');
+    const accessToken = await this.accessToken(connection);
+    return this.provider.replaceBinaryFile(
+      accessToken,
+      driveFileId,
+      mimeType,
+      source,
+      signal,
+    );
+  }
+
+  async statStorageObject(driveFileId: string): Promise<DriveApiFile> {
+    this.assertEnabled();
+    const connection = await this.requireReadableConnected('system', {
+      requireStorageFolder: false,
+    });
+    return this.withAccessToken(connection, (accessToken) =>
+      this.provider.getFile(accessToken, driveFileId),
+    );
+  }
+
+  async deleteStorageObject(driveFileId: string): Promise<void> {
+    this.assertEnabled();
+    const connection = await this.requireWritableConnected('system');
+    return this.withAccessToken(connection, (accessToken) =>
+      this.provider.deleteFile(accessToken, driveFileId),
+    );
+  }
+
+  async storageIntegrationId(): Promise<string> {
+    this.assertEnabled();
+    const connection = await this.requireWritableConnected('system');
+    return connection.id;
+  }
+
   assertDriveUploadManager(userId: string): Promise<void> {
     return this.assertWriteManager(userId);
   }

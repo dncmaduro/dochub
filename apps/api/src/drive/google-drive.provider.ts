@@ -131,6 +131,13 @@ export interface DriveProvider {
     source: Readable,
     signal?: AbortSignal,
   ): Promise<DriveApiFile>;
+  replaceBinaryFile(
+    accessToken: string,
+    driveFileId: string,
+    mimeType: string,
+    source: Readable,
+    signal?: AbortSignal,
+  ): Promise<DriveApiFile>;
   abortResumableUpload(accessToken: string, sessionUri: string): Promise<void>;
   deleteFile(accessToken: string, driveFileId: string): Promise<void>;
 }
@@ -464,25 +471,62 @@ export class GoogleDriveApiProvider implements DriveProvider {
     source: Readable,
     signal?: AbortSignal,
   ): Promise<DriveApiFile> {
-    const url = new URL(`${DRIVE_UPLOAD_ENDPOINT}/files`);
+    return this.uploadBinaryFileAtPath(
+      accessToken,
+      '/files',
+      'POST',
+      {
+        name: request.name,
+        mimeType: request.mimeType,
+        parents: [request.parentFolderId],
+      },
+      request.mimeType,
+      source,
+      signal,
+    );
+  }
+
+  async replaceBinaryFile(
+    accessToken: string,
+    driveFileId: string,
+    mimeType: string,
+    source: Readable,
+    signal?: AbortSignal,
+  ): Promise<DriveApiFile> {
+    return this.uploadBinaryFileAtPath(
+      accessToken,
+      `/files/${encodeURIComponent(driveFileId)}`,
+      'PATCH',
+      { mimeType },
+      mimeType,
+      source,
+      signal,
+    );
+  }
+
+  private async uploadBinaryFileAtPath(
+    accessToken: string,
+    path: string,
+    method: 'POST' | 'PATCH',
+    metadata: Record<string, unknown>,
+    mimeType: string,
+    source: Readable,
+    signal?: AbortSignal,
+  ): Promise<DriveApiFile> {
+    const url = new URL(`${DRIVE_UPLOAD_ENDPOINT}${path}`);
     url.search = new URLSearchParams({
       uploadType: 'resumable',
       fields: FILE_FIELDS,
     }).toString();
-    const metadata = {
-      name: request.name,
-      mimeType: request.mimeType,
-      parents: [request.parentFolderId],
-    };
 
     let sessionUri: string | undefined;
     try {
       const initiation = await fetch(url, {
-        method: 'POST',
+        method,
         headers: {
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json; charset=UTF-8',
-          'X-Upload-Content-Type': request.mimeType,
+          'X-Upload-Content-Type': mimeType,
         },
         body: JSON.stringify(metadata),
         signal,
@@ -552,7 +596,7 @@ export class GoogleDriveApiProvider implements DriveProvider {
               method: 'PUT',
               headers: {
                 Authorization: `Bearer ${accessToken}`,
-                'Content-Type': request.mimeType,
+                'Content-Type': mimeType,
                 'Content-Length': String(chunk.length),
                 'Content-Range': `bytes ${cursor}-${end}/${finalTotal ?? '*'}`,
               },

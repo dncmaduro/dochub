@@ -33,11 +33,13 @@ import {
   STORAGE_CONFIG,
   type StorageConfig,
 } from '../storage/storage.config.js';
-import { DriveService, type WritableDriveContext } from './drive.service.js';
-import {
-  DriveProviderError,
-  type DriveApiFile,
-} from './google-drive.provider.js';
+import { STORAGE_PROVIDER } from '../storage/storage-provider.js';
+import type {
+  StorageProvider,
+  StoredObject,
+} from '../storage/storage-provider.js';
+import { StorageError } from '../storage/storage.errors.js';
+import { DriveService } from './drive.service.js';
 
 const MAX_MULTIPART_FIELDS = 1;
 const MAX_MULTIPART_PARTS = 3;
@@ -76,6 +78,7 @@ export class DriveUploadService {
     private readonly drive: DriveService,
     private readonly validation: FileValidationService,
     @Inject(STORAGE_CONFIG) private readonly storageConfig: StorageConfig,
+    @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
   ) {}
 
   async receive(
@@ -275,7 +278,7 @@ export class DriveUploadService {
       );
     }
 
-    return this.drive.withWritableDrive(userId, async (context) => {
+    return this.drive.withWritableDrive(userId, async () => {
       const claimed = await this.beginOperation(
         userId,
         idempotencyKey,
@@ -314,32 +317,32 @@ export class DriveUploadService {
         throw new ConflictException('The Idempotency-Key is already in use');
       }
 
-      let remoteFile: DriveApiFile | undefined;
+      let storedObject: StoredObject | undefined;
       const transfer = finished(validation.stream, { readable: false });
       void transfer.catch(() => undefined);
       upload.file.pipe(validation.stream);
       try {
-        remoteFile = await this.drive.uploadBinaryWithContext(
-          context,
-          operation.name,
-          validation.mimeType,
-          validation.stream,
-          upload.abortSignal,
-        );
+        storedObject = await this.storage.put({
+          stream: validation.stream,
+          mimeType: validation.mimeType,
+          filename: operation.name,
+          signal: upload.abortSignal,
+        });
         await transfer;
         const metadata = await validation.finish();
         await this.database.prisma.driveUploadOperation.update({
           where: { idempotencyKey },
           data: {
-            driveFileId: remoteFile.id,
+            driveFileId: storedObject.ref.objectId,
             sizeBytes: metadata.sizeBytes,
             sha256: metadata.sha256,
           },
         });
+        const integrationId = await this.drive.storageIntegrationId();
         return await this.registerUpload(
-          context,
+          integrationId,
           operation,
-          remoteFile,
+          storedObject,
           metadata.sizeBytes,
           metadata.sha256,
         );
@@ -348,13 +351,13 @@ export class DriveUploadService {
         validation.stream.destroy();
         if (!upload.file.destroyed) upload.file.resume();
         await transfer.catch(() => undefined);
-        if (remoteFile?.id) {
-          await this.compensate(context, operation, remoteFile.id, error);
+        if (storedObject?.ref.objectId) {
+          await this.compensate(operation, storedObject.ref.objectId, error);
         } else {
           await this.markFailed(idempotencyKey, this.safeFailure(error));
         }
         if (this.isExpectedUploadError(error)) throw error;
-        if (error instanceof DriveProviderError) {
+        if (error instanceof StorageError) {
           throw new ServiceUnavailableException('Google Drive upload failed.');
         }
         throw new ServiceUnavailableException(
@@ -431,23 +434,19 @@ export class DriveUploadService {
   }
 
   private async registerUpload(
-    context: WritableDriveContext,
+    integrationId: string,
     operation: DriveUploadOperationRecord,
-    remoteFile: DriveApiFile,
+    storedObject: StoredObject,
     sizeBytes: bigint,
     sha256: string,
   ) {
     const parentId = operation.parentId;
-    const remoteName = remoteFile.name?.trim() || operation.name;
     const name = operation.name;
     const normalizedName = name.trim().normalize('NFC').toLowerCase();
     const storedDriveFileData = this.driveFileData(
-      context.integrationId,
-      {
-        ...remoteFile,
-        name: remoteName,
-        mimeType: operation.mimeType,
-      },
+      integrationId,
+      storedObject,
+      name,
       sizeBytes,
     );
     const result = await this.database.prisma.$transaction(
@@ -478,7 +477,7 @@ export class DriveUploadService {
           throw new ConflictException('A node with this name already exists');
         }
         const storedDriveFile = await transaction.driveFile.upsert({
-          where: { driveFileId: remoteFile.id },
+          where: { driveFileId: storedObject.ref.objectId },
           create: storedDriveFileData,
           update: storedDriveFileData,
           select: { id: true },
@@ -505,7 +504,7 @@ export class DriveUploadService {
           where: { idempotencyKey: operation.idempotencyKey },
           data: {
             status: DriveUploadOperationStatus.SUCCEEDED,
-            driveFileId: remoteFile.id,
+            driveFileId: storedObject.ref.objectId,
             nodeId: node.id,
             sizeBytes,
             sha256,
@@ -537,13 +536,15 @@ export class DriveUploadService {
   }
 
   private async compensate(
-    context: WritableDriveContext,
     operation: Pick<DriveUploadOperationRecord, 'idempotencyKey' | 'userId'>,
     driveFileId: string,
     cause: unknown,
   ) {
     try {
-      await this.drive.deleteBinaryWithContext(context, driveFileId);
+      await this.storage.delete({
+        provider: 'GOOGLE_DRIVE',
+        objectId: driveFileId,
+      });
       await this.markFailed(
         operation.idempotencyKey,
         'Upload registration failed; the Google Drive file was removed.',
@@ -679,30 +680,30 @@ export class DriveUploadService {
 
   private driveFileData(
     integrationId: string,
-    file: DriveApiFile,
+    storedObject: StoredObject,
+    logicalName: string,
     sizeBytes: bigint,
   ): Prisma.DriveFileUncheckedCreateInput {
-    const mimeType = file.mimeType ?? 'application/octet-stream';
+    const file = storedObject.metadata;
+    const mimeType = file.mimeType || 'application/octet-stream';
     return {
       driveIntegrationId: integrationId,
-      driveFileId: file.id,
-      name: file.name?.trim() || '(unnamed Drive file)',
+      driveFileId: storedObject.ref.objectId,
+      // This catalog field is retained for the transitional Drive browser.
+      // Node.name remains the authoritative user-visible filename.
+      name: logicalName,
       mimeType,
       normalizedType: this.normalizeType(mimeType),
-      webViewLink: file.webViewLink ?? null,
-      driveModifiedTime: this.safeDate(file.modifiedTime),
-      driveCreatedTime: this.safeDate(file.createdTime),
-      trashed: file.trashed === true,
-      driveParents: file.parents ?? [],
-      location: file.driveId
-        ? DriveFileLocation.SHARED_DRIVE
-        : DriveFileLocation.MY_DRIVE,
-      sharedDriveId: file.driveId ?? null,
-      sizeBytes: file.size ? this.safeBigInt(file.size) : sizeBytes,
-      driveVersion: file.version ?? null,
-      sourceStatus: file.trashed
-        ? DriveSourceStatus.UNAVAILABLE
-        : DriveSourceStatus.CONNECTED,
+      webViewLink: null,
+      driveModifiedTime: file.modifiedAt ?? null,
+      driveCreatedTime: null,
+      trashed: false,
+      driveParents: [],
+      location: DriveFileLocation.UNKNOWN,
+      sharedDriveId: null,
+      sizeBytes: file.sizeBytes ?? sizeBytes,
+      driveVersion: file.revision ?? null,
+      sourceStatus: DriveSourceStatus.CONNECTED,
       syncedAt: new Date(),
     };
   }
@@ -721,20 +722,6 @@ export class DriveUploadService {
         if (mimeType.startsWith('image/')) return DriveFileType.IMAGE;
         if (mimeType.startsWith('video/')) return DriveFileType.VIDEO;
         return DriveFileType.BINARY;
-    }
-  }
-
-  private safeDate(value: string | undefined): Date | null {
-    if (!value) return null;
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  private safeBigInt(value: string): bigint | null {
-    try {
-      return BigInt(value);
-    } catch {
-      return null;
     }
   }
 
@@ -760,27 +747,14 @@ export class DriveUploadService {
     ) {
       return error;
     }
-    if (error instanceof DriveProviderError) {
+    if (error instanceof StorageError) {
       return new ServiceUnavailableException('Google Drive upload failed.');
     }
     return new BadRequestException('Malformed multipart request');
   }
 
   private safeFailure(error: unknown): string {
-    if (error instanceof DriveProviderError) {
-      switch (error.kind) {
-        case 'unauthorized':
-          return 'Google Drive authorization expired or was revoked.';
-        case 'forbidden':
-          return 'Google Drive denied the upload.';
-        case 'rate_limited':
-          return 'Google Drive is temporarily rate-limiting uploads.';
-        case 'network':
-          return 'Google Drive could not be reached during upload.';
-        default:
-          return 'Google Drive returned an unexpected upload error.';
-      }
-    }
+    if (error instanceof StorageError) return error.message;
     return 'Docs Hub could not complete the Google Drive upload.';
   }
 }

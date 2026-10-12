@@ -184,25 +184,62 @@ the transition, Drive PDF export may remain the preview fallback for existing
 Google-native files, and an explicit “Edit in Google” action may remain for
 legacy Google-native content. Normal activation stays in Docs Hub.
 
-## StorageProvider boundary (target; Checkpoint 1)
+## StorageProvider boundary (implemented; Checkpoint 1)
 
-Checkpoint 0 defines but does not implement the full abstraction. The target
-contract is conceptually:
+Checkpoint 1 implements the physical-object boundary in the API storage
+module. The contract is streaming-first and deliberately does not expose
+Drive folders, `webViewLink`, native editing, or Express request/response
+objects:
 
 ```ts
 interface StorageProvider {
   put(input: PutObjectInput): Promise<StoredObject>;
-  openRead(reference: StorageReference, options?: ReadOptions): Promise<Readable>;
-  replace(reference: StorageReference, input: ReplaceObjectInput): Promise<StoredObject>;
+  openRead(reference: StorageReference, options?: ReadOptions): Promise<StorageReadResult>;
+  replace(reference: StorageReference, input: ReplaceObjectInput, precondition?: ReplacePrecondition): Promise<StoredObject>;
   delete(reference: StorageReference): Promise<void>;
-  stat(reference: StorageReference): Promise<StoredObjectStat>;
+  stat(reference: StorageReference): Promise<StoredObjectMetadata>;
 }
 ```
 
-`GoogleDriveStorageProvider` will own Drive OAuth token use, upload/download,
-replace/delete/stat, revision handling, and the configured private storage
-root. Business services and future File Engines must not call the Google Drive
-API directly.
+The implemented reference is `{ provider: "GOOGLE_DRIVE", objectId }`. Metadata
+contains the provider, opaque object ID, MIME type, byte size, optional MD5
+checksum, optional modification time, and optional revision. For Google Drive,
+`revision` is the Drive API `version` field returned by `files.get`/upload
+responses; it is not a Docs Hub version number. New uploads use a UUID plus the
+validated extension as their physical name and always use the configured
+`storageFolderId` as their physical parent. `Node.parentId` is never passed to
+Drive as a parent, and the logical `Node.name` remains authoritative for the
+user-visible filename.
+
+`GoogleDriveStorageProvider` owns the provider mapping for put/read/range-read/
+replace/delete/stat and maps raw Drive failures to provider-neutral storage
+errors. It reuses `DriveService`'s existing company-integration token refresh
+path; credentials and refresh tokens do not enter product services or the
+frontend. Ordinary upload, preview, Office fallback conversion input, and
+Drive-backed content/download reads use this boundary. The Google-native PDF
+export route remains a deliberately isolated legacy exception because native
+Google files do not expose ordinary binary media bytes.
+
+`replace()` preserves the Drive file ID. It checks `expectedRevision` with a
+fresh `files.get` before the resumable `files.update` upload. The current Drive
+API path and scopes do not provide an atomic revision precondition in the
+adapter, so this is a best-effort optimistic check with a documented race
+window; callers must not treat it as an atomic compare-and-swap. A later
+checkpoint can add a provider-specific atomic primitive if the selected API
+supports one without breaking the provider-neutral method shape.
+
+The database compromise is intentionally retained: `File.driveFileId` still
+points to the existing `DriveFile` catalog row, and `DriveFile` still stores
+transitional Drive fields such as `webViewLink`, physical parents, and native
+type. New provider-backed uploads populate only storage-relevant metadata plus
+safe neutral defaults for those legacy columns; no destructive schema cleanup,
+mass rename, or physical reorganization is performed in this checkpoint.
+
+`StorageProvider.delete()` is an explicit physical lifecycle operation. The
+Docs Hub operations that move, rename, reorganize, trash, or unlink a logical
+Node do not call it. The upload compensation path may call it after a remote
+object was created but registration failed; broader retention/purge policy is
+still a later lifecycle checkpoint.
 
 The existing `@dochub/storage` `StorageService`/`LocalFileStorage` is a useful
 legacy local-byte abstraction, but it is not the final provider boundary. Do
@@ -396,8 +433,8 @@ means audit/documentation or the small safe cleanup already performed.
   its database records, provider method, and tests remain staged.
 - Preserved the existing Docs Hub preview-modal work, including Drive PDF
   export and LibreOffice fallback preview.
-- Did not change production Drive objects, migrate schema, rename/move files,
-  restore ONLYOFFICE, or implement StorageProvider/FileEngine.
+- Did not change production Drive objects, migrate schema, rename/move existing
+  files, restore ONLYOFFICE, or implement FileEngine.
 
 ## Checkpoint 1 contract
 
@@ -416,6 +453,14 @@ Checkpoint 1 implements the StorageProvider abstraction only:
 The success criterion is that business and future file-engine code no longer
 needs to know whether `storageObjectId` is a Google Drive ID, an S3 key, a
 MinIO key, or a local object ID.
+
+## Checkpoint 2 boundary
+
+Checkpoint 2 is the File Engine framework. It may consume
+`StorageProvider.openRead()` and `StorageProvider.replace()` plus normalized
+metadata, but it must not import `DriveService`, `GoogleDriveApiProvider`,
+Drive IDs, Drive export methods, or Drive error types. It is intentionally not
+implemented here.
 
 ## ADR: Google Drive is an opaque storage backend
 

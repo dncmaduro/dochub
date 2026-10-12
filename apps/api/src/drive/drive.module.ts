@@ -4,8 +4,10 @@ import { AuthModule } from '../auth/auth.module.js';
 import { AUTH_CONFIG } from '../auth/auth.config.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { AuthorizationModule } from '../authorization/authorization.module.js';
-import { FilesModule } from '../files/files.module.js';
+import { FileValidationService } from '../files/file-validation.service.js';
 import { StorageModule } from '../storage/storage.module.js';
+import { STORAGE_PROVIDER } from '../storage/storage-provider.js';
+import { GoogleDriveStorageProvider } from '../storage/google-drive-storage.provider.js';
 import { DRIVE_CONFIG, loadDriveConfig } from './drive.config.js';
 import { DriveController } from './drive.controller.js';
 import { DrivePreviewController } from './drive-preview.controller.js';
@@ -28,7 +30,6 @@ import {
     AuthConfigModule,
     AuthModule,
     AuthorizationModule,
-    FilesModule,
     StorageModule,
   ],
   controllers: [DriveController, DrivePreviewController],
@@ -42,6 +43,12 @@ import {
       provide: DRIVE_PROVIDER,
       useClass: GoogleDriveApiProvider,
     },
+    GoogleDriveStorageProvider,
+    {
+      provide: STORAGE_PROVIDER,
+      useExisting: GoogleDriveStorageProvider,
+    },
+    FileValidationService,
     DriveOAuthStateService,
     DriveTokenCryptoService,
     DriveCreationTargetService,
@@ -51,6 +58,11 @@ import {
     DriveOrganizationService,
     DrivePreviewService,
   ],
-  exports: [DriveService, DriveOrganizationService, DriveFileMigrationService],
+  exports: [
+    DriveService,
+    DriveOrganizationService,
+    DriveFileMigrationService,
+    STORAGE_PROVIDER,
+  ],
 })
 export class DriveModule {}
