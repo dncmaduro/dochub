@@ -45,4 +45,32 @@ export class DrivePreviewController {
     response.setHeader('Referrer-Policy', 'no-referrer');
     this.previews.write(content, preview, response);
   }
+
+  @Get('drive-preview/:sessionId/content/model')
+  async model(
+    @Param('sessionId') sessionId: string,
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    const token = request.cookies?.[this.previews.cookieName(sessionId)];
+    const preview = await this.previews.verify(sessionId, token);
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.json(await this.previews.openModel(preview));
+  }
+
+  @Get('drive-preview/:sessionId/content/assets/:assetId')
+  async asset(
+    @Param('sessionId') sessionId: string,
+    @Param('assetId') assetId: string,
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    const token = request.cookies?.[this.previews.cookieName(sessionId)];
+    const preview = await this.previews.verify(sessionId, token);
+    const content = await this.previews.openAsset(preview, assetId);
+    applyPreviewContentSecurityHeaders(response);
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    this.previews.write(content, preview, response, content.mimeType);
+  }
 }

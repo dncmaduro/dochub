@@ -24,6 +24,7 @@ import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
 import { DriveService } from './drive.service.js';
 import { FileEngineRegistry } from '../file-engine/file-engine.registry.js';
+import { isDocxFile, isExpectedDocxFailure } from '../file-engine/engines/document.engine.js';
 import {
   extensionFromFilename,
   type FileDescriptor,
@@ -47,7 +48,7 @@ const MAX_OFFICE_INPUT_BYTES = 50 * 1024 * 1024;
 const MAX_OFFICE_OUTPUT_BYTES = 100 * 1024 * 1024;
 const MAX_CONVERTER_OUTPUT_BYTES = 8 * 1024;
 
-type DrivePreviewKind = 'direct' | 'google-export' | 'office';
+type DrivePreviewKind = 'direct' | 'google-export' | 'office' | 'document';
 
 type DrivePreviewToken = {
   typ: 'drive-preview';
@@ -93,6 +94,7 @@ export type DrivePreviewSession = {
   engine: FileEngineId;
   capabilities: ReturnType<FileEngineRegistry['resolve']>['capabilities'];
   preview: FilePreviewResult;
+  modelUrl?: string;
 };
 
 function safePreviewError(): ServiceUnavailableException {
@@ -168,11 +170,22 @@ export class DrivePreviewService {
       storageRef: { provider: 'GOOGLE_DRIVE', objectId: source.driveFileId },
     };
     const resolved = this.registry.resolve(descriptor);
-    const preview = await resolved.engine.openPreview(descriptor);
+    let preview = await resolved.engine.openPreview(descriptor);
+    if (resolved.engine.id === 'DOCUMENT' && isDocxFile(descriptor)) {
+      try {
+        await resolved.engine.openModel?.(descriptor, { storage: this.storage });
+      } catch (error) {
+        if (!isExpectedDocxFailure(error)) throw safePreviewError();
+        this.logger.warn(`Native DOCX preview fallback (${this.safeErrorKind(error)})`);
+        preview = { kind: 'pdf', mimeType: PREVIEW_PDF_MIME_TYPE, reason: 'failed' };
+      }
+    }
     const plan = preview.kind === 'unavailable'
       ? null
       : resolved.engine.id === 'LEGACY_GOOGLE_NATIVE'
         ? { kind: 'google-export' as const }
+        : preview.kind === 'document'
+          ? { kind: 'document' as const }
         : preview.kind === 'pdf' && ['DOCUMENT', 'SPREADSHEET', 'PRESENTATION'].includes(resolved.engine.id)
           ? { kind: 'office' as const }
           : { kind: 'direct' as const };
@@ -210,6 +223,7 @@ export class DrivePreviewService {
       engine: resolved.engine.id,
       capabilities: resolved.capabilities,
       preview,
+      ...(plan?.kind === 'document' ? { modelUrl: `/drive-preview/${sessionId}/content/model` } : {}),
     };
   }
 
@@ -274,6 +288,15 @@ export class DrivePreviewService {
       );
     }
     const reference = previewRef(preview);
+    if (preview.kind === 'document') {
+      let range = null;
+      if (rangeHeader) {
+        const current = await this.storage.stat(reference);
+        if (current.sizeBytes === null) throw safePreviewError();
+        range = parseSingleByteRange(rangeHeader, current.sizeBytes);
+      }
+      return previewContent(await this.storage.openRead(reference, range ? { range } : undefined));
+    }
     const descriptor: FileDescriptor = {
       fileId: preview.did,
       nodeId: preview.nid,
@@ -296,6 +319,7 @@ export class DrivePreviewService {
     return engine.openContent(descriptor, {
       storage: this.storage,
       range: range ?? undefined,
+      forceLibreOfficePreview: preview.kind === 'office',
       openLibreOfficePreview: (file) => this.convertOfficePreview(
         file.storageRef ?? reference,
         file.extension ?? preview.officeExtension,
@@ -307,14 +331,33 @@ export class DrivePreviewService {
     });
   }
 
-  write(content: PreviewContent, preview: DrivePreviewToken, response: Response): void {
+  async openModel(preview: DrivePreviewToken) {
+    if (preview.kind !== 'document') throw safePreviewError();
+    const descriptor = this.descriptor(preview);
+    const engine = preview.engineId ? this.registry.get(preview.engineId) : this.registry.resolve(descriptor).engine;
+    if (!engine.openModel) throw safePreviewError();
+    return engine.openModel(descriptor, {
+      storage: this.storage,
+      assetUrl: (assetId) => `/drive-preview/${preview.sid}/content/assets/${encodeURIComponent(assetId)}`,
+    });
+  }
+
+  async openAsset(preview: DrivePreviewToken, assetId: string): Promise<PreviewContent> {
+    if (preview.kind !== 'document' || !/^[a-z0-9-]+$/i.test(assetId)) throw safePreviewError();
+    const descriptor = this.descriptor(preview);
+    const engine = preview.engineId ? this.registry.get(preview.engineId) : this.registry.resolve(descriptor).engine;
+    if (!engine.openAsset) throw safePreviewError();
+    return engine.openAsset(descriptor, assetId, { storage: this.storage });
+  }
+
+  write(content: PreviewContent, preview: DrivePreviewToken, response: Response, mimeType = preview.mimeType): void {
     const length = content.range
       ? content.range.end - content.range.start + 1
       : content.sizeBytes === null
         ? null
         : Number(content.sizeBytes);
     response.status(content.range ? 206 : 200);
-    response.setHeader('Content-Type', preview.mimeType);
+    response.setHeader('Content-Type', mimeType);
     if (length !== null) response.setHeader('Content-Length', String(length));
     response.setHeader('Accept-Ranges', 'bytes');
     response.setHeader('Cache-Control', 'private, no-store');
@@ -339,6 +382,18 @@ export class DrivePreviewService {
       else response.destroy();
     });
     content.stream.pipe(response);
+  }
+
+  private descriptor(preview: DrivePreviewToken): FileDescriptor {
+    return {
+      fileId: preview.did,
+      nodeId: preview.nid,
+      name: preview.filename,
+      mimeType: preview.sourceMimeType ?? preview.mimeType,
+      extension: preview.extension ?? extensionFromFilename(preview.filename),
+      size: null,
+      storageRef: previewRef(preview),
+    };
   }
 
   private async convertOfficePreview(

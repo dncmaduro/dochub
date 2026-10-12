@@ -11,6 +11,7 @@ export type FileEngineId = string;
 
 export type FilePreviewKind =
   | 'pdf'
+  | 'document'
   | 'image'
   | 'text'
   | 'video'
@@ -53,6 +54,7 @@ export interface FilePreviewContent {
 export interface FileEngineOpenContext {
   storage: StorageProvider;
   range?: StorageByteRange;
+  forceLibreOfficePreview?: boolean;
   openLibreOfficePreview?: (
     file: FileDescriptor,
   ) => Promise<FilePreviewContent>;
@@ -75,6 +77,7 @@ export interface FileEngine {
   ): Promise<FilePreviewContent>;
   /** Reserved for a future DocumentModel/WorkbookModel/PresentationModel. */
   openModel?(file: FileDescriptor, context: FileEngineModelContext): Promise<unknown>;
+  openAsset?(file: FileDescriptor, assetId: string, context: FileEngineModelContext): Promise<FilePreviewContent>;
   /** Future implementations must serialize through StorageProvider.replace(). */
   save?(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<unknown>;
   extractText?(file: FileDescriptor, context: FileEngineModelContext): Promise<string>;
@@ -83,6 +86,8 @@ export interface FileEngine {
 
 export interface FileEngineModelContext {
   storage: StorageProvider;
+  /** Server-generated, preview-session-bound URL for an opaque model asset ID. */
+  assetUrl?: (assetId: string) => string;
 }
 
 export interface FileEngineSaveContext extends FileEngineModelContext {

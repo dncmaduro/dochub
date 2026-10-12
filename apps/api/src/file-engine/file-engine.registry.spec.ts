@@ -96,10 +96,17 @@ describe('FileEngineRegistry', () => {
   it('keeps office conversion behind the document engine', async () => {
     const converted = { stream: {}, mimeType: 'application/pdf', sizeBytes: 5n, range: null };
     const engine = registry.get('DOCUMENT');
-    await expect(engine.openContent?.(file('report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), {
+    await expect(engine.openContent?.(file('report.doc', 'application/msword'), {
       storage: {} as never,
       openLibreOfficePreview: vi.fn().mockResolvedValue(converted),
     })).resolves.toBe(converted);
+  });
+
+  it('keeps native DOCX content on the provider-backed download path', async () => {
+    const storage = { openRead: vi.fn().mockResolvedValue({ stream: {}, metadata: { mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', sizeBytes: 5n }, range: null }) };
+    const engine = registry.get('DOCUMENT');
+    await expect(engine.openContent?.(file('report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), { storage: storage as never, openLibreOfficePreview: vi.fn() })).resolves.toMatchObject({ mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    expect(storage.openRead).toHaveBeenCalledOnce();
   });
 
   it('produces an unavailable preview for fallback formats', async () => {

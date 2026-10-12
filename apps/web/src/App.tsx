@@ -41,6 +41,7 @@ import {
 } from "./api";
 import { changeLocale, getLocale, translate as t, type Locale } from "./i18n";
 import { canAdministerAccounts, canManageDocuments } from "./system-role-policy";
+import { DocumentViewer } from "./DocumentViewer";
 import "./App.css";
 
 const api = new ApiClient();
@@ -4070,6 +4071,8 @@ function PreviewDialog({
   );
   const [attempt, setAttempt] = useState(0);
   const [downloadError, setDownloadError] = useState("");
+  const documentReady = useCallback(() => setState("ready"), []);
+  const documentError = useCallback(() => setState("error"), []);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -4158,6 +4161,8 @@ function PreviewDialog({
                 <video key={attempt} src={session!.contentUrl} controls preload="metadata" onLoadedMetadata={() => setState("ready")} onError={() => setState("error")} />
               ) : kind === "audio" ? (
                 <audio key={attempt} src={session!.contentUrl} controls preload="metadata" onCanPlay={() => setState("ready")} onError={() => setState("error")} />
+              ) : kind === "document" && session!.modelUrl ? (
+                <DocumentViewer key={attempt} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} />
               ) : (
                 <iframe key={attempt} title={session!.filename} src={session!.contentUrl} onLoad={() => setState("ready")} onError={() => setState("error")} />
               )}

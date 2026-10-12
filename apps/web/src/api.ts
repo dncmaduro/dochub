@@ -30,7 +30,7 @@ export interface Node {
   processing?: { contentSearch: "READY" | "PROCESSING" | "FAILED" } | null;
 }
 export type FileEngineId = "DOCUMENT" | "SPREADSHEET" | "PRESENTATION" | "PDF" | "IMAGE" | "TEXT" | "VIDEO" | "AUDIO" | "LEGACY_GOOGLE_NATIVE" | "FALLBACK";
-export type FilePreviewKind = "pdf" | "image" | "text" | "video" | "audio" | "unavailable";
+export type FilePreviewKind = "document" | "pdf" | "image" | "text" | "video" | "audio" | "unavailable";
 export interface FileEngineCapabilities {
   preview: boolean;
   edit: boolean;
@@ -42,6 +42,93 @@ export interface FilePreviewDescriptor {
   kind: FilePreviewKind;
   mimeType: string | null;
   reason?: "unsupported" | "source-unavailable" | "failed";
+  modelUrl?: string;
+}
+export type DocumentAlignment = "left" | "center" | "right" | "justified";
+export type DocumentVerticalAlign = "baseline" | "superscript" | "subscript";
+export interface DocumentTextRun {
+  kind: "text";
+  id: string;
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  strike: boolean;
+  fontSize: number | null;
+  fontFamily: string | null;
+  color: string | null;
+  verticalAlign: DocumentVerticalAlign;
+  link: { href: string } | null;
+}
+export interface DocumentInlineImage {
+  kind: "image";
+  id: string;
+  assetId: string;
+  src?: string;
+  altText: string | null;
+  widthPx: number | null;
+  heightPx: number | null;
+}
+export type DocumentInline = DocumentTextRun | DocumentInlineImage;
+export interface DocumentParagraphLayout {
+  alignment: DocumentAlignment;
+  spacingBeforePt: number;
+  spacingAfterPt: number;
+  lineSpacing: number | null;
+  indentLeftPt: number;
+  indentRightPt: number;
+  firstLineIndentPt: number;
+}
+export interface DocumentParagraphBlock extends DocumentParagraphLayout {
+  type: "paragraph";
+  id: string;
+  styleId: string | null;
+  content: DocumentInline[];
+}
+export interface DocumentHeadingBlock extends Omit<DocumentParagraphBlock, "type"> {
+  type: "heading";
+  level: number;
+}
+export interface DocumentListItemBlock extends DocumentParagraphLayout {
+  type: "list-item";
+  id: string;
+  styleId: string | null;
+  content: DocumentInline[];
+  level: number;
+  ordered: boolean;
+  marker: string | null;
+}
+export interface DocumentTableCell {
+  id: string;
+  blocks: DocumentBlock[];
+  widthPx: number | null;
+  backgroundColor: string | null;
+  borders: Record<string, { style: string | null; color: string | null; widthPt: number | null }>;
+}
+export interface DocumentTableBlock {
+  type: "table";
+  id: string;
+  rows: Array<{ id: string; cells: DocumentTableCell[] }>;
+  columnWidthsPx: Array<number | null>;
+}
+export interface DocumentImageBlock {
+  type: "image";
+  id: string;
+  assetId: string;
+  src?: string;
+  altText: string | null;
+  widthPx: number | null;
+  heightPx: number | null;
+}
+export interface DocumentUnsupportedBlock {
+  type: "unsupported";
+  id: string;
+  label: string;
+}
+export type DocumentBlock = DocumentParagraphBlock | DocumentHeadingBlock | DocumentListItemBlock | DocumentTableBlock | DocumentImageBlock | DocumentUnsupportedBlock;
+export interface DocumentModel {
+  version: 1;
+  blocks: DocumentBlock[];
 }
 export type NodeSortBy = "name" | "lastModified";
 export type NodeSortDirection = "asc" | "desc";
@@ -79,6 +166,7 @@ export interface PreviewSession {
   engine?: FileEngineId;
   capabilities?: FileEngineCapabilities;
   preview?: FilePreviewDescriptor;
+  modelUrl?: string;
 }
 export interface DrivePreviewSession extends PreviewSession { previewable: boolean; }
 export interface FileWorkspacePreviewSession extends PreviewSession { previewable?: boolean; }
@@ -446,11 +534,16 @@ export class ApiClient {
   }
   async createFilePreviewSession(nodeId: string) {
     const result = await this.request<FileWorkspacePreviewSession | { previewable: false }>(`/nodes/${nodeId}/file-preview-session`, { method: "POST" });
-    return "contentUrl" in result ? { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` } : null;
+    return "contentUrl" in result ? { ...result, contentUrl: `${apiOrigin}${result.contentUrl}`, ...(result.modelUrl ? { modelUrl: `${apiOrigin}${result.modelUrl}` } : {}) } : null;
   }
   async createDrivePreviewSession(nodeId: string) {
     const result = await this.request<DrivePreviewSession | { previewable: false }>(`/nodes/${nodeId}/drive-preview-session`, { method: "POST" });
-    return "contentUrl" in result ? { ...result, contentUrl: `${apiOrigin}${result.contentUrl}` } : null;
+    return "contentUrl" in result ? { ...result, contentUrl: `${apiOrigin}${result.contentUrl}`, ...(result.modelUrl ? { modelUrl: `${apiOrigin}${result.modelUrl}` } : {}) } : null;
+  }
+  async getDocumentModel(modelUrl: string) {
+    const response = await fetch(modelUrl, { credentials: "include" });
+    if (!response.ok) throw await this.error(response);
+    return (await response.json()) as DocumentModel;
   }
   async downloadPreview(contentUrl: string, name: string) {
     const response = await fetch(contentUrl, { credentials: "include" });

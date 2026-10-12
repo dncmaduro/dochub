@@ -510,17 +510,62 @@ the responsibility of the existing Docs Hub authorization services; engine
 capabilities describe format support and are ANDed with user permissions by
 the product flow.
 
-## Checkpoint 3 contract
+## Checkpoint 3 — Document Engine V1: DOCX read/preview
 
-Checkpoint 3 is **Document Engine V1 — DOCX read/preview**. It will replace
-the DocumentEngine's LibreOffice fallback for DOCX with:
+Checkpoint 3 implements the native DOCX read path:
 
 ```text
-DOCX OOXML -> DocumentModel -> Docs Hub renderer
+FileWorkspacePreview
+  -> DocumentEngine
+  -> StorageProvider.openRead()
+  -> bounded DOCX package reader/parser
+  -> DocumentModel
+  -> Docs Hub DocumentViewer
 ```
 
-It is preview/read-only first. It must not begin XLSX/PPTX editing, saving,
-worker migration, Google-native conversion, or a new database model.
+`DocumentModel` is provider-neutral and currently contains stable parser IDs
+for paragraphs, headings, list items, tables/cells, images, text runs, and
+safe unsupported-content placeholders. Paragraph runs preserve whitespace,
+tabs, line breaks, direct formatting, common style inheritance, alignment,
+spacing, indentation, and heading metadata. Numbering maps common decimal and
+bullet `numId`/`ilvl` combinations to flat list items with nesting levels.
+Tables retain rows, cells, nested blocks, basic borders/shading, and width
+hints. Images resolve `document.xml` relationships to opaque, preview-session-
+bound asset IDs; the browser never receives ZIP paths or provider credentials.
+External hyperlinks are restricted to `http:`, `https:`, and `mailto:`.
+
+The package reader uses in-memory ZIP entry access with limits of 50 MiB
+compressed input, 100 MiB decompressed content, 25 MiB per entry, 10 MiB per
+XML part, 2,000 entries, 256 media entries, and 50,000 document blocks. ZIP
+paths are normalized and traversal/absolute paths are rejected. XML
+validation and parsing do not resolve external entities. No package is
+extracted to a filesystem directory, and parser diagnostics never log content,
+raw XML, or credentials.
+
+Native DOCX is the primary preview kind. Legacy DOC remains on the existing
+LibreOffice PDF path. If a DOCX is malformed, unsupported by this parser, or
+exceeds the bounded input/resource policy, the API records a safe diagnostic
+and deliberately plans the existing LibreOffice PDF fallback; internal
+programmer errors are not silently reclassified. XLS/XLSX, PPT/PPTX, PDF,
+media, text, CSV, and unknown-file behavior remains on the Checkpoint 2
+engine paths.
+
+The model is delivered through the existing HttpOnly preview session as a
+JSON model endpoint. Image assets are separately authenticated by that same
+session. The frontend uses a focused `DocumentViewer` flow renderer with a
+neutral document surface; it does not expose a Word ribbon, iframe Office UI,
+Google editor, or ONLYOFFICE surface.
+
+Checkpoint 3 is preview/read-only first. It does not add editing, save/export,
+DOCX serialization, search-worker migration, or a new database model.
+
+## Checkpoint 4 boundary
+
+Checkpoint 4 is **Document Engine V1 — edit and save DOCX**. It may add edit
+mode, selection/edit operations, minimal formatting commands, undo/redo,
+dirty/save state, DOCX patch/export, `StorageProvider.replace()`, and conflict
+handling foundations. None of those behaviors belong to the Checkpoint 3
+renderer or parser.
 
 ## ADR: Google Drive is an opaque storage backend
 

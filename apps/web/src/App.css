@@ -1988,10 +1988,108 @@ summary:focus-visible {
   max-height: 100%;
   object-fit: contain;
 }
+.document-viewer {
+  align-self: stretch;
+  min-height: 100%;
+  overflow: auto;
+  padding: 28px;
+}
+.document-surface {
+  box-sizing: border-box;
+  width: min(900px, 100%);
+  min-height: 100%;
+  margin: 0 auto;
+  padding: clamp(28px, 5vw, 72px);
+  overflow-wrap: anywhere;
+  color: #202124;
+  background: #fff;
+  border: 1px solid #dadce0;
+  box-shadow: 0 2px 8px rgb(60 64 67 / 15%);
+  font-family: Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  text-align: left;
+  user-select: text;
+}
+.document-surface a {
+  color: #1967d2;
+}
+.document-paragraph,
+.document-heading {
+  white-space: pre-wrap;
+}
+.document-heading {
+  line-height: 1.25;
+}
+.document-list {
+  margin: 0 0 12px;
+}
+.document-list-item {
+  display: flex;
+  position: relative;
+  min-height: 1.5em;
+  white-space: pre-wrap;
+}
+.document-list-marker {
+  flex: none;
+  width: 24px;
+  margin-left: -24px;
+  text-align: right;
+  padding-right: 7px;
+}
+.document-table {
+  width: 100%;
+  margin: 18px 0;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+.document-table td {
+  min-width: 42px;
+  padding: 7px 9px;
+  border: 1px solid #b7b7b7;
+  vertical-align: top;
+}
+.document-table .document-paragraph {
+  margin: 0;
+}
+.document-image-block {
+  margin: 18px 0;
+  text-align: center;
+}
+.document-image-block img,
+.document-inline-image {
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+.document-inline-image {
+  display: inline-block;
+  vertical-align: middle;
+}
+.document-unsupported {
+  margin: 16px 0;
+  padding: 9px 12px;
+  color: #5f6368;
+  background: #f8f9fa;
+  border-left: 3px solid #bdc1c6;
+  font-size: 12px;
+}
+.document-loading {
+  margin: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
 @media (max-width: 700px) {
   .preview-dialog {
     width: calc(100vw - 8px);
     height: calc(100dvh - 8px);
+  }
+  .document-viewer {
+    padding: 8px;
+  }
+  .document-surface {
+    min-height: calc(100% - 16px);
+    padding: 24px 20px;
   }
 }
 .preview-loading {
