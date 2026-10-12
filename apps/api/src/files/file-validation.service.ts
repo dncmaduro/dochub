@@ -21,6 +21,57 @@ const GENERIC_MIME_TYPES = new Set([
   'binary/octet-stream',
 ]);
 
+const MIME_ALIASES: Readonly<Record<string, string>> = {
+  'application/csv': 'text/csv',
+  'application/msexcel': 'application/vnd.ms-excel',
+  'application/vnd.ms-word': 'application/msword',
+  'application/x-ole-storage': 'application/octet-stream',
+  'image/jpg': 'image/jpeg',
+  'text/json': 'application/json',
+};
+
+const KNOWN_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.ms-word',
+  'application/x-ole-storage',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/msexcel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/csv',
+  'application/csv',
+  'text/plain',
+  'text/markdown',
+  'text/x-markdown',
+  'application/json',
+  'text/json',
+  'application/xml',
+  'text/xml',
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/wav',
+  'audio/ogg',
+  'audio/webm',
+]);
+
+const KNOWN_FILE_EXTENSIONS = new Set([
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+  'txt', 'md', 'markdown', 'json', 'xml', 'csv',
+  'jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'webm', 'mov',
+  'mp3', 'm4a', 'wav', 'ogg', 'oga',
+]);
+
 interface SupportedType {
   mimeType: string;
   declaredMimeTypes: readonly string[];
@@ -124,6 +175,30 @@ const SUPPORTED_TYPES: Readonly<Record<string, SupportedType>> = {
   },
 };
 
+/**
+ * Upload MIME metadata is advisory. Keep recognized values useful, normalize
+ * common browser aliases, and use a safe generic value for unknown/empty MIME
+ * declarations so the registry can apply its controlled extension fallback.
+ */
+export function normalizeUploadMimeType(
+  declaredMimeType: string,
+  extension?: string,
+): string {
+  const normalized = declaredMimeType.split(';', 1)[0].trim().toLowerCase();
+  if (GENERIC_MIME_TYPES.has(normalized)) return 'application/octet-stream';
+  // Busboy reports an omitted part Content-Type as text/plain. For an
+  // otherwise unknown extension that is not reliable metadata, so keep the
+  // upload on the safe generic path instead of accidentally selecting TEXT.
+  if (
+    normalized === 'text/plain' &&
+    (!extension || !KNOWN_FILE_EXTENSIONS.has(extension))
+  ) {
+    return 'application/octet-stream';
+  }
+  if (!KNOWN_MIME_TYPES.has(normalized)) return 'application/octet-stream';
+  return MIME_ALIASES[normalized] ?? normalized;
+}
+
 @Injectable()
 export class FileValidationService {
   beginStreamingValidation(
@@ -142,10 +217,6 @@ export class FileValidationService {
     const originalFilename = this.cleanedFilename(suppliedFilename);
     const extension = path.extname(originalFilename).slice(1).toLowerCase();
     const supported = SUPPORTED_TYPES[extension];
-    if (!supported) {
-      throw new UnsupportedMediaTypeException('Unsupported file type');
-    }
-    this.assertDeclaredMimeType(declaredMimeType, supported);
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
       throw new Error('The configured upload size limit is invalid');
     }
@@ -183,7 +254,7 @@ export class FileValidationService {
       nodeName: logicalName.name,
       normalizedNodeName: logicalName.normalizedName,
       extension,
-      mimeType: supported.mimeType,
+      mimeType: normalizeUploadMimeType(declaredMimeType, extension),
       finish: async () => {
         if (finished) return finished;
         if (sizeBytes === 0) {
@@ -192,13 +263,13 @@ export class FileValidationService {
         const detected = await fileTypeFromBuffer(prefix).catch(
           () => undefined,
         );
-        if (supported.kind === 'ole') {
+        if (supported?.kind === 'ole') {
           if (!prefix.subarray(0, OLE_SIGNATURE.length).equals(OLE_SIGNATURE)) {
             throw new UnsupportedMediaTypeException(
               'File signature does not match extension',
             );
           }
-        } else if (supported.kind === 'ooxml') {
+        } else if (supported?.kind === 'ooxml') {
           const inspection = tail.toString('latin1');
           if (
             !this.isOoxmlDetectorCompatible(
@@ -212,7 +283,7 @@ export class FileValidationService {
               'Invalid Office document package',
             );
           }
-        } else {
+        } else if (supported) {
           const matched =
             detected?.mime === supported.mimeType ||
             (supported.mimeType === 'application/pdf' &&
@@ -228,7 +299,7 @@ export class FileValidationService {
           nodeName: logicalName.name,
           normalizedNodeName: logicalName.normalizedName,
           extension,
-          mimeType: supported.mimeType,
+          mimeType: normalizeUploadMimeType(declaredMimeType, extension),
           sizeBytes: BigInt(sizeBytes),
           sha256: hash.digest('hex'),
         };
@@ -238,24 +309,23 @@ export class FileValidationService {
   }
 
   async validate(upload: TempUpload): Promise<ValidatedUpload> {
+    if (upload.sizeBytes <= 0n) {
+      throw new UnsupportedMediaTypeException('Uploaded file is empty');
+    }
     const originalFilename = this.cleanedFilename(upload.originalFilename);
     const extension = path.extname(originalFilename).slice(1).toLowerCase();
     const supported = SUPPORTED_TYPES[extension];
-    if (!supported) {
-      throw new UnsupportedMediaTypeException('Unsupported file type');
-    }
-    this.assertDeclaredMimeType(upload.declaredMimeType, supported);
 
-    const detected = await fileTypeFromFile(upload.tempPath).catch(
-      () => undefined,
-    );
-    if (supported.kind === 'ole') {
+    const detected = supported
+      ? await fileTypeFromFile(upload.tempPath).catch(() => undefined)
+      : undefined;
+    if (supported?.kind === 'ole') {
       if (!(await this.hasOleSignature(upload.tempPath))) {
         throw new UnsupportedMediaTypeException(
           'File signature does not match extension',
         );
       }
-    } else if (supported.kind === 'ooxml') {
+    } else if (supported?.kind === 'ooxml') {
       if (
         !this.isOoxmlDetectorCompatible(detected?.mime, supported.mimeType) ||
         !(await this.hasOoxmlMarkers(upload.tempPath, supported.ooxmlMarker!))
@@ -265,6 +335,7 @@ export class FileValidationService {
         );
       }
     } else if (
+      supported &&
       !(await this.signatureMatches(
         supported.mimeType,
         detected?.mime,
@@ -282,7 +353,7 @@ export class FileValidationService {
       nodeName: nodeName.name,
       normalizedNodeName: nodeName.normalizedName,
       extension,
-      mimeType: supported.mimeType,
+      mimeType: normalizeUploadMimeType(upload.declaredMimeType, extension),
       sizeBytes: upload.sizeBytes,
       sha256: upload.sha256,
     };
@@ -292,21 +363,6 @@ export class FileValidationService {
     // Client-supplied paths are metadata only; retain the final logical segment.
     const filename = value.split(/[\\/]/).at(-1) ?? '';
     return filename.trim().normalize('NFC');
-  }
-
-  private assertDeclaredMimeType(
-    declared: string,
-    supported: SupportedType,
-  ): void {
-    const normalized = declared.split(';', 1)[0].trim().toLowerCase();
-    if (
-      !GENERIC_MIME_TYPES.has(normalized) &&
-      !supported.declaredMimeTypes.includes(normalized)
-    ) {
-      throw new UnsupportedMediaTypeException(
-        'Declared MIME type does not match extension',
-      );
-    }
   }
 
   private async signatureMatches(

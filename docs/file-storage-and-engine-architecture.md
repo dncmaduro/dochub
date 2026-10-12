@@ -760,6 +760,20 @@ unrelated package parts.
 Checkpoint 7 completes the first-class file-family matrix without changing the
 StorageProvider boundary:
 
+Upload acceptance is intentionally broader than preview/edit capability. The
+active `/drive/uploads` ingress and the legacy local upload path accept any
+non-empty, size-bounded file with a valid sanitized filename after
+authorization, multipart, and storage checks. Known MIME values are
+normalized (including common CSV, JSON, and image aliases); empty, generic, or
+unrecognized MIME declarations are stored as `application/octet-stream` when
+they are not reliable. The filename extension remains metadata for the
+registry's controlled fallback and is never a product-level upload allowlist.
+Unknown files are stored as opaque bytes, resolve to `FALLBACK`, expose no
+preview/edit capability, and remain available through the authorized download
+flow. Downloads use `Content-Disposition: attachment` and
+`X-Content-Type-Options: nosniff`; SVG, HTML, and other active content are never rendered or
+executed as trusted markup.
+
 | Family | Engine | Preview | Edit | Product behavior |
 | --- | --- | --- | --- | --- |
 | DOCX | `DOCUMENT` | native | yes | native model/editor/save |

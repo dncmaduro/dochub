@@ -32,11 +32,11 @@ describe('DriveUploadValidationTransform', () => {
     });
   });
 
-  it('rejects a mismatched extension, declared MIME, actual signature, and oversized stream', async () => {
+  it('rejects a known signature mismatch but accepts unknown extensions and MIME collisions', async () => {
     await expect(validate('report.exe', 'application/pdf', Buffer.from('%PDF-1.7')))
-      .rejects.toMatchObject({ status: 415 });
+      .resolves.toMatchObject({ name: 'report.exe', mimeType: 'application/pdf' });
     await expect(validate('report.pdf', 'image/png', Buffer.from('%PDF-1.7')))
-      .rejects.toMatchObject({ status: 415 });
+      .resolves.toMatchObject({ name: 'report.pdf', mimeType: 'image/png' });
     await expect(validate('image.png', 'image/png', Buffer.from('%PDF-1.7')))
       .rejects.toMatchObject({ status: 415 });
     await expect(validate('report.pdf', 'application/pdf', Buffer.alloc(9, 0x25), 8))

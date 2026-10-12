@@ -121,4 +121,58 @@ describe('binary read authorization and stream lifecycle', () => {
       undefined,
     );
   });
+
+  it('uses safe attachment headers for an unknown binary download', async () => {
+    const bytes = Buffer.from([0, 1, 2, 255]);
+    const stream = Readable.from([bytes]);
+    const database = { prisma: {} };
+    const service = new FileReadService(
+      database as never,
+      {} as never,
+      {} as never,
+    );
+    const response = Object.assign(
+      new Writable({
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+      }),
+      {
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        headersSent: false,
+        destroy: vi.fn(),
+      },
+    );
+    const finished = new Promise<void>((resolve) => response.once('finish', resolve));
+
+    service.write(
+      {
+        stream,
+        version: {
+          originalFilename: 'archive.bin',
+          mimeType: 'application/octet-stream',
+          sizeBytes: BigInt(bytes.length),
+        },
+        totalSize: BigInt(bytes.length),
+        range: null,
+      },
+      response as never,
+      true,
+    );
+    await finished;
+
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Content-Type',
+      'application/octet-stream',
+    );
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'X-Content-Type-Options',
+      'nosniff',
+    );
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Content-Disposition',
+      expect.stringContaining('attachment'),
+    );
+  });
 });

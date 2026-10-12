@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Readable } from 'node:stream';
 import { FileEngineRegistry } from './file-engine.registry.js';
 import type { FileDescriptor } from './file-engine.types.js';
 
@@ -34,6 +35,7 @@ describe('FileEngineRegistry', () => {
     ['notes.txt', 'text/plain', 'TEXT'],
     ['notes.md', 'text/markdown', 'TEXT'],
     ['data.json', 'application/json', 'TEXT'],
+    ['data.json', 'text/json', 'TEXT'],
     ['data.xml', 'application/xml', 'TEXT'],
     ['movie.mp4', 'video/mp4', 'VIDEO'],
     ['movie.webm', 'video/webm', 'VIDEO'],
@@ -67,6 +69,8 @@ describe('FileEngineRegistry', () => {
   it('uses a controlled extension when the MIME is generic', () => {
     expect(registry.resolve(file('report.docx', 'application/octet-stream')).engine.id).toBe('DOCUMENT');
     expect(registry.resolve(file('report.docx', null)).engine.id).toBe('DOCUMENT');
+    expect(registry.resolve(file('data.csv', 'application/octet-stream')).engine.id).toBe('SPREADSHEET');
+    expect(registry.resolve(file('notes.md', null)).engine.id).toBe('TEXT');
   });
 
   it('routes CSV through the native spreadsheet preview path', async () => {
@@ -85,6 +89,12 @@ describe('FileEngineRegistry', () => {
 
   it('does not let an unsupported trusted MIME be reclassified by its extension', () => {
     expect(registry.resolve(file('report.docx', 'application/x-company-format')).engine.id).toBe('FALLBACK');
+  });
+
+  it('keeps the broad Excel MIME safe for a CSV-looking filename', () => {
+    const resolved = registry.resolve(file('budget.csv', 'application/vnd.ms-excel'));
+    expect(resolved.engine.id).toBe('SPREADSHEET');
+    expect(resolved.capabilities.edit).toBe(false);
   });
 
   it('returns capability metadata separately from authorization', () => {
@@ -136,5 +146,30 @@ describe('FileEngineRegistry', () => {
       reason: 'unsupported',
       engine: { id: 'FALLBACK' },
     });
+  });
+
+  it('keeps fallback downloads provider-backed and byte-exact', async () => {
+    const bytes = Buffer.from([0, 1, 2, 3, 255]);
+    const storage = {
+      openRead: vi.fn().mockResolvedValue({
+        stream: Readable.from([bytes]),
+        metadata: {
+          mimeType: 'application/octet-stream',
+          sizeBytes: BigInt(bytes.length),
+        },
+        range: null,
+      }),
+    };
+    const content = await registry.get('FALLBACK').openContent?.(
+      file('archive.bin', 'application/octet-stream'),
+      { storage: storage as never },
+    );
+    const chunks: Buffer[] = [];
+    for await (const chunk of content!.stream) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks)).toEqual(bytes);
+    expect(storage.openRead).toHaveBeenCalledWith(
+      { provider: 'GOOGLE_DRIVE', objectId: 'object-id' },
+      undefined,
+    );
   });
 });

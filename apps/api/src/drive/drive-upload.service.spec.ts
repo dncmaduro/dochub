@@ -34,9 +34,12 @@ function multipartRequest(
   declaredMimeType = 'application/pdf',
 ) {
   const boundary = `dochub-${randomUUID()}`;
+  const contentType = declaredMimeType
+    ? `Content-Type: ${declaredMimeType}\r\n`
+    : '';
   const head = Buffer.from(
     `--${boundary}\r\nContent-Disposition: form-data; name="parentId"\r\n\r\n${parentId ?? ''}\r\n` +
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${declaredMimeType}\r\n\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n${contentType}\r\n`,
   );
   const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
   const request = new PassThrough() as PassThrough & {
@@ -301,6 +304,34 @@ describe('DriveUploadService', () => {
       name: 'forecast.docx',
       mimeType: DOCX_MIME,
       bytes: DOCX.length,
+    });
+  });
+
+  it.each([
+    ['notes.txt', 'text/plain', Buffer.from('plain text')],
+    ['notes.md', 'text/markdown', Buffer.from('# Markdown')],
+    ['data.json', 'text/json', Buffer.from('{ malformed but stored }')],
+    ['data.xml', 'text/xml', Buffer.from('<not-well-formed')],
+    ['data.csv', 'application/csv', Buffer.from('name,value\nAda,1\n')],
+    ['archive.bin', '', Buffer.from([0, 1, 2, 3])],
+  ])('stores %s through the active Drive upload ingress', async (filename, mimeType, bytes) => {
+    const state = harness({ role: 'DOCUMENT_MANAGER' });
+    const result = await upload(
+      state,
+      `generic-${filename}`,
+      multipartRequest(bytes, null, filename, mimeType),
+    );
+
+    expect(result.node.name).toBe(filename);
+    expect(state.uploadCalls[0]).toMatchObject({
+      name: filename,
+      mimeType:
+        mimeType === 'text/json'
+          ? 'application/json'
+          : mimeType === 'application/csv'
+            ? 'text/csv'
+            : mimeType || 'application/octet-stream',
+      bytes: bytes.length,
     });
   });
 

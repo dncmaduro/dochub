@@ -1,10 +1,15 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileValidationService } from './file-validation.service.js';
 
 const directories: string[] = [];
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
 
 async function temporaryUpload(
   filename: string,
@@ -50,7 +55,7 @@ describe('FileValidationService', () => {
     });
   });
 
-  it('rejects extension/signature mismatch, unsupported types, and arbitrary ZIP renames', async () => {
+  it('rejects known binary signature mismatches but accepts unknown extensions', async () => {
     await expect(
       service.validate(
         await temporaryUpload('image.png', Buffer.from('%PDF-1.7\n')),
@@ -60,7 +65,10 @@ describe('FileValidationService', () => {
       service.validate(
         await temporaryUpload('unsafe.exe', Buffer.from('MZ fake executable')),
       ),
-    ).rejects.toMatchObject({ status: 415 });
+    ).resolves.toMatchObject({
+      extension: 'exe',
+      mimeType: 'application/octet-stream',
+    });
     await expect(
       service.validate(
         await temporaryUpload(
@@ -69,6 +77,73 @@ describe('FileValidationService', () => {
         ),
       ),
     ).rejects.toMatchObject({ status: 415 });
+  });
+
+  it.each([
+    ['test.txt', 'text/plain', Buffer.from('plain text')],
+    ['test.md', 'text/markdown', Buffer.from('# Markdown')],
+    ['test.json', 'text/json', Buffer.from('{ malformed but stored }')],
+    ['test.xml', 'text/xml', Buffer.from('<not-well-formed')],
+    ['test.csv', 'application/csv', Buffer.from('name,value\nAda,1\n')],
+    [
+      'test.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      Buffer.from('PK\x03\x04 [Content_Types].xml word/document.xml'),
+    ],
+    [
+      'test.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      Buffer.from('PK\x03\x04 [Content_Types].xml xl/workbook.xml'),
+    ],
+    [
+      'test.pptx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      Buffer.from('PK\x03\x04 [Content_Types].xml ppt/presentation.xml'),
+    ],
+    ['test.pdf', 'application/pdf', Buffer.from('%PDF-1.7\n')],
+    ['test.png', 'image/png', PNG],
+    ['test.bin', 'application/octet-stream', Buffer.from([0, 1, 2, 3])],
+    ['empty-mime.bin', '', Buffer.from([4, 5, 6])],
+  ])('accepts the generic repository fixture %s', async (filename, mime, contents) => {
+    await expect(
+      service.validate(await temporaryUpload(filename, contents, mime)),
+    ).resolves.toMatchObject({
+      originalFilename: filename,
+      extension: filename.split('.').at(-1),
+      mimeType:
+        mime === 'text/json'
+          ? 'application/json'
+          : mime === 'application/csv'
+            ? 'text/csv'
+            : mime || 'application/octet-stream',
+    });
+  });
+
+  it('accepts an Excel-reported CSV without reclassifying it as CSV metadata', async () => {
+    await expect(
+      service.validate(
+        await temporaryUpload(
+          'reported-as-excel.csv',
+          Buffer.from('name,value\nAda,1\n'),
+          'application/vnd.ms-excel',
+        ),
+      ),
+    ).resolves.toMatchObject({ mimeType: 'application/vnd.ms-excel' });
+  });
+
+  it('keeps oversized streams rejected independently of file type', async () => {
+    const validation = service.beginStreamingValidation(
+      'unknown.bin',
+      '',
+      3,
+    );
+    await expect(
+      (async () => {
+        for await (const _chunk of Readable.from([Buffer.from('1234')]).pipe(validation.stream)) {
+          // Consume the stream to surface the transform error.
+        }
+      })(),
+    ).rejects.toMatchObject({ status: 413 });
   });
 
   it('requires the OLE Compound File signature for legacy Office extensions', async () => {

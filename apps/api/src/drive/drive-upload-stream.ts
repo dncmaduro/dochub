@@ -8,11 +8,11 @@ import {
   UnsupportedMediaTypeException,
 } from '@nestjs/common';
 import { normalizeNodeName } from '../nodes/node-name.js';
+import { normalizeUploadMimeType } from '../files/file-validation.service.js';
 
 const PREFIX_BYTES = 4100;
 const TAIL_BYTES = 1024 * 1024;
 const OLE_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-const GENERIC_MIME_TYPES = new Set(['', 'application/octet-stream', 'binary/octet-stream']);
 
 interface SupportedUploadType {
   mimeType: string;
@@ -65,7 +65,7 @@ export class DriveUploadValidationTransform extends Transform {
   readonly mimeType: string;
   readonly extension: string;
 
-  private readonly supported: SupportedUploadType;
+  private readonly supported: SupportedUploadType | undefined;
   private readonly expectedSize: bigint;
   private readonly maxBytes: bigint;
   private readonly hash = createHash('sha256');
@@ -88,17 +88,12 @@ export class DriveUploadValidationTransform extends Transform {
     const name = normalizeNodeName(cleanFilename);
     const extension = path.extname(name.name).slice(1).toLowerCase();
     const supported = SUPPORTED_TYPES[extension];
-    if (!supported) throw new UnsupportedMediaTypeException('Unsupported file type');
-    const declared = options.declaredMimeType.split(';', 1)[0].trim().toLowerCase();
-    if (!GENERIC_MIME_TYPES.has(declared) && !supported.declaredMimeTypes.includes(declared)) {
-      throw new UnsupportedMediaTypeException('Declared MIME type does not match extension');
-    }
     if (options.expectedSize <= 0n) throw new BadRequestException('Empty uploads are not supported');
     if (options.expectedSize > BigInt(options.maxBytes)) {
       throw new PayloadTooLargeException('File exceeds upload limit');
     }
     this.name = name.name;
-    this.mimeType = supported.mimeType;
+    this.mimeType = normalizeUploadMimeType(options.declaredMimeType, extension);
     this.extension = extension;
     this.supported = supported;
     this.expectedSize = options.expectedSize;
@@ -147,7 +142,7 @@ export class DriveUploadValidationTransform extends Transform {
       throw new BadRequestException('Upload size did not match the request');
     }
     if (!this.magicValidated) await this.validateMagic(this.prefix);
-    if (this.supported.kind === 'ooxml') {
+    if (this.supported?.kind === 'ooxml') {
       const archiveEnd = this.readTail().toString('latin1');
       if (!archiveEnd.includes('[Content_Types].xml') || !archiveEnd.includes(this.supported.marker!)) {
         throw new UnsupportedMediaTypeException('Invalid Office document package');
@@ -163,6 +158,7 @@ export class DriveUploadValidationTransform extends Transform {
   }
 
   private async validateMagic(prefix: Buffer): Promise<void> {
+    if (!this.supported) return;
     if (this.supported.kind === 'ole') {
       if (!prefix.subarray(0, OLE_SIGNATURE.length).equals(OLE_SIGNATURE)) {
         throw new UnsupportedMediaTypeException('File signature does not match extension');

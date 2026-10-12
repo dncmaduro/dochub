@@ -30,6 +30,7 @@ const TEXT_MIME_TYPES = new Set([
   'text/markdown',
   'text/x-markdown',
   'application/json',
+  'text/json',
   'application/xml',
   'text/xml',
 ]);
@@ -37,7 +38,7 @@ const TEXT_MIME_TYPES = new Set([
 export function textFormat(file: FileDescriptor): TextFileFormat {
   const mime = normalizeMimeType(file.mimeType);
   if (mime === 'text/markdown' || mime === 'text/x-markdown') return 'markdown';
-  if (mime === 'application/json') return 'json';
+  if (mime === 'application/json' || mime === 'text/json') return 'json';
   if (mime === 'application/xml' || mime === 'text/xml') return 'xml';
   if (mime === 'text/plain') return 'text';
   const extension = normalizeTextExtension(file.extension ?? extensionFromFilename(file.name));
