@@ -543,6 +543,27 @@ function useDialogFocus() {
   return dialog;
 }
 
+export function UploadPicker({
+  inputRef,
+  disabled,
+  onChange,
+}: {
+  inputRef: RefObject<HTMLInputElement | null>;
+  disabled: boolean;
+  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <input
+      ref={inputRef}
+      className="visually-hidden"
+      type="file"
+      multiple
+      onChange={onChange}
+      disabled={disabled}
+    />
+  );
+}
+
 function App() {
   useTranslation();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -678,8 +699,8 @@ function App() {
     void runUploadItems(items);
   }
   function uploadFromMenu(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
     if (!files.length) return;
     beginUpload(files, currentFolderId());
   }
@@ -750,11 +771,8 @@ function App() {
       >
         {page}
       </AppShell>
-      <input
-        ref={menuUploadInput}
-        className="visually-hidden"
-        type="file"
-        multiple
+      <UploadPicker
+        inputRef={menuUploadInput}
         onChange={(event) => void uploadFromMenu(event)}
         disabled={uploadingFromMenu}
       />
