@@ -1,6 +1,7 @@
 import { createElement, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { ApiClient, type DocumentBlock, type DocumentInline, type DocumentModel, type DocumentTableCell, type DocumentTextRun } from "./api";
 import { DocumentEditor } from "./DocumentEditor";
+import type { RegisterWorkspaceActions, WorkspaceMode } from "./workspace";
 
 const api = new ApiClient();
 
@@ -107,7 +108,7 @@ function BlockList({ blocks, modelUrl }: { blocks: DocumentBlock[]; modelUrl: st
   return <>{output}</>;
 }
 
-export function DocumentViewer({ modelUrl, nodeId, canEdit, attempt, onReady, onError, onDirtyChange }: { modelUrl: string; nodeId: string; canEdit: boolean; attempt: number; onReady: () => void; onError: () => void; onDirtyChange: (dirty: boolean) => void }) {
+export function DocumentViewer({ modelUrl, nodeId, mode, onModeChange, onRegisterActions, attempt, onReady, onError, onDirtyChange }: { modelUrl: string; nodeId: string; mode: WorkspaceMode; onModeChange: (mode: WorkspaceMode) => void; onRegisterActions: RegisterWorkspaceActions; attempt: number; onReady: () => void; onError: () => void; onDirtyChange: (dirty: boolean) => void }) {
   const [model, setModel] = useState<DocumentModel | null>(null);
   useEffect(() => {
     let active = true;
@@ -122,5 +123,5 @@ export function DocumentViewer({ modelUrl, nodeId, canEdit, attempt, onReady, on
     return () => { active = false; };
   }, [modelUrl, attempt, onDirtyChange, onReady, onError]);
   const surface = useMemo(() => (current: DocumentModel) => <article className="document-surface"><BlockList blocks={current.blocks} modelUrl={modelUrl} /></article>, [modelUrl]);
-  return <div className="document-viewer" aria-busy={!model}>{model ? <DocumentEditor nodeId={nodeId} modelUrl={modelUrl} initialModel={model} canEdit={canEdit && Boolean(model.editable)} onDirtyChange={onDirtyChange} view={surface} /> : <div className="document-loading" role="status">Loading document…</div>}</div>;
+  return <div className="document-viewer" aria-busy={!model}>{model ? <DocumentEditor nodeId={nodeId} modelUrl={modelUrl} initialModel={model} mode={mode} onModeChange={onModeChange} onRegisterActions={onRegisterActions} onDirtyChange={onDirtyChange} view={surface} /> : <div className="document-loading" role="status">Loading document…</div>}</div>;
 }

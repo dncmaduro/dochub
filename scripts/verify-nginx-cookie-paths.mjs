@@ -46,5 +46,10 @@ assert.match(
   "host Nginx must have a route-specific preview location",
 );
 assert.match(hostTemplate, /proxy_hide_header X-Frame-Options;/, "host Nginx must not forward DENY for preview content");
+assert.doesNotMatch(
+  hostTemplate.match(/location ~ \^\/api\/\(preview\|drive-preview\)[\s\S]*?\n  }/)?.[0] ?? "",
+  /add_header X-Frame-Options/,
+  "host Nginx preview location must not restore X-Frame-Options: DENY",
+);
 
 console.log("Nginx preview/OAuth cookie rewrites and preview framing policy are present in the production templates.");

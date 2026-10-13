@@ -83,6 +83,59 @@ describe('DrivePreviewService', () => {
     await expect(service.create('editor', 'node')).resolves.toMatchObject({ previewable: true, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', modelUrl: expect.stringContaining('/content/model'), capabilities: { edit: true }, storageRevision: 'r1' });
   });
 
+  it('uses the filename extension when Drive upload metadata is generic', async () => {
+    const capabilities = new Set([DocumentCapability.VIEW, DocumentCapability.PREVIEW, DocumentCapability.DOWNLOAD, DocumentCapability.EDIT]);
+    const { service, storage } = serviceFor({ capabilities, node: {
+      id: 'node', name: 'report.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
+        driveFileId: 'drive-file', mimeType: 'application/octet-stream', sizeBytes: 10n, sourceStatus: 'CONNECTED', trashed: false,
+      } },
+    } });
+    storage.stat.mockResolvedValue({ sizeBytes: 10n, revision: 'r1' });
+    storage.openRead.mockResolvedValue({ stream: Readable.from([nativeXlsx]), metadata: { sizeBytes: BigInt(nativeXlsx.byteLength), mimeType: 'application/octet-stream' }, range: null });
+    await expect(service.create('editor', 'node')).resolves.toMatchObject({
+      previewable: true,
+      engine: 'SPREADSHEET',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      preview: { kind: 'spreadsheet' },
+      modelUrl: expect.stringContaining('/content/model'),
+      capabilities: { edit: true },
+      storageRevision: 'r1',
+    });
+  });
+
+  it('does not let a misleading PDF MIME become native XLSX', async () => {
+    const { service } = serviceFor({ node: {
+      id: 'node', name: 'report.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
+        driveFileId: 'drive-file', mimeType: 'application/pdf', sizeBytes: 10n, sourceStatus: 'CONNECTED', trashed: false,
+      } },
+    } });
+    await expect(service.create('user', 'node')).resolves.toMatchObject({
+      previewable: true,
+      engine: 'PDF',
+      mimeType: 'application/pdf',
+      preview: { kind: 'pdf' },
+    });
+  });
+
+  it('logs unexpected native parser failures before returning a safe preview error', async () => {
+    const { authorization, database, jwt, drive, storage } = serviceFor({ node: {
+      id: 'node', name: 'report.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
+        driveFileId: 'drive-file', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', sizeBytes: 10n, sourceStatus: 'CONNECTED', trashed: false,
+      } },
+    } });
+    const engine = {
+      id: 'SPREADSHEET',
+      openPreview: vi.fn().mockResolvedValue({ kind: 'spreadsheet', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+      openModel: vi.fn().mockRejectedValue(new Error('unexpected parser bug')),
+    };
+    const registry = { resolve: vi.fn().mockReturnValue({ engine, capabilities: { preview: true, edit: true, download: true, textExtraction: false, thumbnail: false } }) };
+    const service = new DrivePreviewService(database as never, authorization as never, jwt as never, drive as never, storage as never, registry as never);
+    const logger = (service as unknown as { logger: { error: (message: string) => void } }).logger;
+    const logError = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    await expect(service.create('user', 'node')).rejects.toMatchObject({ status: 503 });
+    expect(logError).toHaveBeenCalledWith('Native spreadsheet preview failed unexpectedly (Error)');
+  });
+
   it('re-authorizes and delegates native spreadsheet saves', async () => {
     const capabilities = new Set([DocumentCapability.VIEW, DocumentCapability.PREVIEW, DocumentCapability.DOWNLOAD, DocumentCapability.EDIT]);
     const authorization = { resolveCapabilities: vi.fn().mockResolvedValue({ capabilities }) };

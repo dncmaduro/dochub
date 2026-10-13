@@ -46,6 +46,7 @@ import { SpreadsheetViewer } from "./SpreadsheetViewer";
 import { PresentationViewer } from "./PresentationViewer";
 import { TextFileViewer } from "./TextFileViewer";
 import { ImageViewer } from "./ImageViewer";
+import type { WorkspaceActions, WorkspaceMode } from "./workspace";
 import "./App.css";
 
 const api = new ApiClient();
@@ -4068,15 +4069,26 @@ function DocumentAccessState({ kind, showSignIn, message }: {
   );
 }
 
-function PreviewDialog({
-  preview,
-  onClose,
-  onDownload,
-}: {
+type PreviewDialogProps = {
   preview: Preview;
   onClose: () => void;
   onDownload: () => Promise<void>;
-}) {
+};
+
+function PreviewDialog(props: PreviewDialogProps) {
+  const key = previewIsLoading(props.preview)
+    ? `loading:${props.preview.nodeId}`
+    : previewIsUnavailable(props.preview)
+      ? `unavailable:${props.preview.nodeId}:${props.preview.contentUrl ?? ""}`
+      : `available:${props.preview.nodeId}:${props.preview.contentUrl}`;
+  return <PreviewDialogContent key={key} {...props} />;
+}
+
+function PreviewDialogContent({
+  preview,
+  onClose,
+  onDownload,
+}: PreviewDialogProps) {
   const dialog = useDialogFocus();
   const [state, setState] = useState<"loading" | "ready" | "error">(
     "loading",
@@ -4084,8 +4096,15 @@ function PreviewDialog({
   const [attempt, setAttempt] = useState(0);
   const [downloadError, setDownloadError] = useState("");
   const [documentDirty, setDocumentDirty] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("view");
+  const [workspaceActions, setWorkspaceActions] = useState<WorkspaceActions | null>(null);
+  const workspaceActionsRef = useRef<WorkspaceActions | null>(null);
   const documentReady = useCallback(() => setState("ready"), []);
   const documentError = useCallback(() => setState("error"), []);
+  const registerWorkspaceActions = useCallback((actions: WorkspaceActions) => {
+    workspaceActionsRef.current = actions;
+    setWorkspaceActions(actions);
+  }, []);
   const requestClose = useCallback(() => {
     if (documentDirty && !window.confirm("Discard unsaved changes?")) return;
     onClose();
@@ -4105,8 +4124,13 @@ function PreviewDialog({
   const session = unavailable || loading ? null : preview;
   const kind = session?.preview?.kind;
   const previewLoading = state === "loading";
+  const nativeWorkspace = Boolean(session?.modelUrl && ["document", "spreadsheet", "presentation", "text"].includes(kind ?? ""));
   const retry = () => {
     setState("loading");
+    setWorkspaceMode("view");
+    workspaceActionsRef.current = null;
+    setWorkspaceActions(null);
+    setDocumentDirty(false);
     setAttempt((current) => current + 1);
   };
   async function download() {
@@ -4129,6 +4153,15 @@ function PreviewDialog({
         <header>
           <span>{preview.filename}</span>
           <div>
+            {nativeWorkspace && workspaceMode === "edit" && workspaceActions && (
+              <>
+                <button type="button" className="button" onClick={() => workspaceActionsRef.current?.save()} disabled={!workspaceActions.canSave || workspaceActions.saving}>{workspaceActions.saving ? "Saving…" : "Save"}</button>
+                <button type="button" className="button" onClick={() => workspaceActionsRef.current?.view()}>View</button>
+              </>
+            )}
+            {nativeWorkspace && workspaceMode === "view" && session?.capabilities?.edit && workspaceActions?.canEdit && (
+              <button type="button" className="button" onClick={() => setWorkspaceMode("edit")}>Edit</button>
+            )}
             {preview.openInGoogleUrl && (
               <button type="button" className="button" onClick={() => window.open(preview.openInGoogleUrl!, "_blank", "noopener,noreferrer")}>
                 {preview.canEditInGoogle ? t("drive.editInGoogle") : t("drive.openInGoogle")}
@@ -4179,13 +4212,13 @@ function PreviewDialog({
               ) : kind === "audio" ? (
                 <audio key={attempt} src={session!.contentUrl} controls preload="metadata" onCanPlay={() => setState("ready")} onError={() => setState("error")} />
               ) : kind === "document" && session!.modelUrl ? (
-                <DocumentViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
+                <DocumentViewer key={attempt} nodeId={session!.nodeId} modelUrl={session!.modelUrl} mode={workspaceMode} onModeChange={setWorkspaceMode} onRegisterActions={registerWorkspaceActions} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
               ) : kind === "spreadsheet" && session!.modelUrl ? (
-                <SpreadsheetViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
+                <SpreadsheetViewer key={attempt} nodeId={session!.nodeId} modelUrl={session!.modelUrl} mode={workspaceMode} onModeChange={setWorkspaceMode} onRegisterActions={registerWorkspaceActions} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
               ) : kind === "presentation" && session!.modelUrl ? (
-                <PresentationViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
+                <PresentationViewer key={attempt} nodeId={session!.nodeId} modelUrl={session!.modelUrl} mode={workspaceMode} onModeChange={setWorkspaceMode} onRegisterActions={registerWorkspaceActions} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
               ) : kind === "text" && session!.modelUrl ? (
-                <TextFileViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
+                <TextFileViewer key={attempt} nodeId={session!.nodeId} canEdit={Boolean(session!.capabilities?.edit)} modelUrl={session!.modelUrl} mode={workspaceMode} onModeChange={setWorkspaceMode} onRegisterActions={registerWorkspaceActions} attempt={attempt} onReady={documentReady} onError={documentError} onDirtyChange={setDocumentDirty} />
               ) : (
                 <iframe key={attempt} title={session!.filename} src={session!.contentUrl} onLoad={() => setState("ready")} onError={() => setState("error")} />
               )}

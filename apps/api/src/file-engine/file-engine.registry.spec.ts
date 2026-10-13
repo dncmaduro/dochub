@@ -67,10 +67,25 @@ describe('FileEngineRegistry', () => {
   });
 
   it('uses a controlled extension when the MIME is generic', () => {
+    expect(registry.resolve(file('report.xlsx', 'application/octet-stream')).engine.id).toBe('SPREADSHEET');
+    expect(registry.resolve(file('report.xlsx', null)).engine.id).toBe('SPREADSHEET');
+    expect(registry.resolve(file('report.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')).engine.id).toBe('SPREADSHEET');
     expect(registry.resolve(file('report.docx', 'application/octet-stream')).engine.id).toBe('DOCUMENT');
     expect(registry.resolve(file('report.docx', null)).engine.id).toBe('DOCUMENT');
     expect(registry.resolve(file('data.csv', 'application/octet-stream')).engine.id).toBe('SPREADSHEET');
     expect(registry.resolve(file('notes.md', null)).engine.id).toBe('TEXT');
+    expect(registry.resolve(file('data.json', 'application/octet-stream')).engine.id).toBe('TEXT');
+    expect(registry.resolve(file('data.xml', 'application/octet-stream')).engine.id).toBe('TEXT');
+  });
+
+  it('preserves a trusted MIME type over a misleading spreadsheet extension', async () => {
+    const resolved = registry.resolve(file('report.xlsx', 'application/pdf'));
+    expect(resolved.engine.id).toBe('PDF');
+    await expect(registry.openPreview(file('report.xlsx', 'application/pdf'))).resolves.toMatchObject({
+      kind: 'pdf',
+      mimeType: 'application/pdf',
+      engine: { id: 'PDF' },
+    });
   });
 
   it('routes CSV through the native spreadsheet preview path', async () => {

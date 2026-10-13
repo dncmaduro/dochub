@@ -1,32 +1,27 @@
 import type { DocumentAlignment } from "./api";
 import type { DocumentEditorState } from "./document-editor/editor-state";
+import type { WorkspaceMode } from "./workspace";
 
 export function DocumentToolbar({
   state,
-  canEdit,
-  onEdit,
+  mode,
   onUndo,
   onRedo,
   onFormat,
   onAlignment,
   onStyle,
   onFontSize,
-  onSave,
-  onView,
 }: {
   state: DocumentEditorState;
-  canEdit: boolean;
-  onEdit: () => void;
+  mode: WorkspaceMode;
   onUndo: () => void;
   onRedo: () => void;
   onFormat: (format: "bold" | "italic" | "underline" | "strike") => void;
   onAlignment: (alignment: DocumentAlignment) => void;
   onStyle: (style: "normal" | "heading-1" | "heading-2" | "heading-3") => void;
   onFontSize: (fontSize: number | null) => void;
-  onSave: () => void;
-  onView: () => void;
 }) {
-  if (state.mode === "view") return canEdit ? <div className="document-toolbar document-toolbar-view"><button type="button" className="button" onClick={onEdit}>Edit</button></div> : null;
+  if (mode === "view") return null;
   const disabled = !state.selection || state.selection.anchorOffset === state.selection.focusOffset;
   const commandButton = (label: string, action: () => void, isDisabled = false) => <button type="button" className="document-tool-button" aria-label={label} title={label} disabled={isDisabled} onMouseDown={(event) => event.preventDefault()} onClick={action}>{label}</button>;
   return <div className="document-toolbar" role="toolbar" aria-label="Document editing tools">
@@ -45,7 +40,5 @@ export function DocumentToolbar({
     </select>
     {(["left", "center", "right", "justified"] as DocumentAlignment[]).map((alignment) => commandButton(`Align ${alignment}`, () => onAlignment(alignment), !state.selection))}
     <span className="document-toolbar-status" role="status">{state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "unsaved" ? "Unsaved changes" : state.saveStatus === "failed" ? "Save failed" : "Saved"}</span>
-    {commandButton("Save", onSave, state.dirtyBlockIds.size === 0 || state.saveStatus === "saving")}
-    {commandButton("View", onView)}
   </div>;
 }

@@ -191,7 +191,10 @@ export class DrivePreviewService {
       try {
         await resolved.engine.openModel?.(descriptor, { storage: this.storage });
       } catch (error) {
-        if (!isExpectedDocxFailure(error)) throw safePreviewError();
+        if (!isExpectedDocxFailure(error)) {
+          this.logger.error(`Native DOCX preview failed unexpectedly (${this.safeErrorKind(error)})`);
+          throw safePreviewError();
+        }
         this.logger.warn(`Native DOCX preview fallback (${this.safeErrorKind(error)})`);
         preview = { kind: 'pdf', mimeType: PREVIEW_PDF_MIME_TYPE, reason: 'failed' };
       }
@@ -200,7 +203,10 @@ export class DrivePreviewService {
       try {
         await resolved.engine.openModel?.(descriptor, { storage: this.storage });
       } catch (error) {
-        if (!(error instanceof SpreadsheetPackageError)) throw safePreviewError();
+        if (!(error instanceof SpreadsheetPackageError)) {
+          this.logger.error(`Native spreadsheet preview failed unexpectedly (${this.safeErrorKind(error)})`);
+          throw safePreviewError();
+        }
         this.logger.warn(`Native spreadsheet preview unavailable (${this.safeErrorKind(error)})`);
         preview = { kind: 'unavailable', mimeType: source.mimeType, reason: 'failed' };
       }
@@ -209,7 +215,10 @@ export class DrivePreviewService {
       try {
         await resolved.engine.openModel?.(descriptor, { storage: this.storage });
       } catch (error) {
-        if (!(error instanceof PresentationPackageError)) throw safePreviewError();
+        if (!(error instanceof PresentationPackageError)) {
+          this.logger.error(`Native presentation preview failed unexpectedly (${this.safeErrorKind(error)})`);
+          throw safePreviewError();
+        }
         this.logger.warn(`Native presentation preview unavailable (${this.safeErrorKind(error)})`);
         preview = { kind: 'unavailable', mimeType: source.mimeType, reason: 'failed' };
       }
@@ -218,7 +227,10 @@ export class DrivePreviewService {
       try {
         await resolved.engine.openModel?.(descriptor, { storage: this.storage });
       } catch (error) {
-        if (!isExpectedTextFailure(error)) throw safePreviewError();
+        if (!isExpectedTextFailure(error)) {
+          this.logger.error(`Native text preview failed unexpectedly (${this.safeErrorKind(error)})`);
+          throw safePreviewError();
+        }
         this.logger.warn(`Native text preview unavailable (${this.safeErrorKind(error)})`);
         preview = { kind: 'unavailable', mimeType: source.mimeType, reason: 'failed' };
       }
@@ -713,6 +725,9 @@ export class DrivePreviewService {
     if (error instanceof Error && error.message === 'preview input too large') return 'input-limit';
     if (error instanceof Error && error.message === 'preview output too large') return 'output-limit';
     if (error instanceof Error && error.message === 'preview conversion timed out') return 'timeout';
-    return 'conversion-error';
+    if (error instanceof DocxPackageError || error instanceof SpreadsheetPackageError || error instanceof PresentationPackageError) return error.failureKind;
+    if (error instanceof TextSourceError) return 'source';
+    if (error instanceof Error && error.name) return error.name;
+    return 'unknown-error';
   }
 }

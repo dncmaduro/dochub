@@ -4,6 +4,7 @@ import { DocumentToolbar } from "./DocumentToolbar";
 import { createEditorState, executeEditorCommand, redo, replaceBaseline, setSelection, undo, type BlockSelection, type DocumentEditorState } from "./document-editor/editor-state";
 import type { DocumentCommand } from "./document-editor/commands";
 import { blockText, type EditableDocumentBlock } from "./document-editor/run-utils";
+import type { RegisterWorkspaceActions, WorkspaceMode } from "./workspace";
 
 const api = new ApiClient();
 
@@ -82,7 +83,7 @@ function patchBlock(block: EditableDocumentBlock): Record<string, unknown> {
   };
 }
 
-export function DocumentEditor({ nodeId, modelUrl, initialModel, canEdit, onDirtyChange, view }: { nodeId: string; modelUrl: string; initialModel: DocumentModel; canEdit: boolean; onDirtyChange: (dirty: boolean) => void; view: (model: DocumentModel) => ReactNode }) {
+export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeChange, onRegisterActions, onDirtyChange, view }: { nodeId: string; modelUrl: string; initialModel: DocumentModel; mode: WorkspaceMode; onModeChange: (mode: WorkspaceMode) => void; onRegisterActions: RegisterWorkspaceActions; onDirtyChange: (dirty: boolean) => void; view: (model: DocumentModel) => ReactNode }) {
   const [state, setState] = useState<DocumentEditorState>(() => createEditorState(initialModel));
   const [composing, setComposing] = useState<Record<string, string | undefined>>({});
   const [saveError, setSaveError] = useState("");
@@ -147,9 +148,26 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, canEdit, onDirt
     }
   }, [modelUrl, onDirtyChange, state.dirtyBlockIds.size]);
 
+  const discardAndView = useCallback(() => {
+    if (state.dirtyBlockIds.size && !window.confirm("Discard unsaved changes?")) return;
+    setState((current) => ({ ...replaceBaseline(current, current.baselineModel), mode: "view" }));
+    onDirtyChange(false);
+    onModeChange("view");
+  }, [onDirtyChange, onModeChange, state.dirtyBlockIds.size]);
+
+  useEffect(() => {
+    onRegisterActions({
+      save: () => { void save(); },
+      view: discardAndView,
+      canEdit: Boolean(initialModel.editable),
+      canSave: state.dirtyBlockIds.size > 0 && state.saveStatus !== "saving",
+      saving: state.saveStatus === "saving",
+    });
+  }, [discardAndView, initialModel.editable, onRegisterActions, save, state.dirtyBlockIds.size, state.saveStatus]);
+
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (state.mode !== "edit") return;
+      if (mode !== "edit") return;
       const modifier = event.metaKey || event.ctrlKey;
       if (!modifier) return;
       if (event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
@@ -162,12 +180,9 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, canEdit, onDirt
     };
     document.addEventListener("keydown", keydown);
     return () => document.removeEventListener("keydown", keydown);
-  }, [command, save, selected, state.mode, state.selection]);
+  }, [command, mode, save, selected, state.selection]);
 
-  const toolbar = useMemo(() => <DocumentToolbar state={state} canEdit={canEdit} onEdit={() => setState((current) => ({ ...current, mode: "edit" }))} onUndo={() => setState(undo)} onRedo={() => setState(redo)} onFormat={(format) => { if (selected && state.selection) command({ type: "toggle-format", blockId: state.selection.blockId, start: selected.start, end: selected.end, format }); }} onAlignment={(alignment) => { if (state.selection) command({ type: "set-alignment", blockId: state.selection.blockId, alignment }); }} onStyle={(style) => { if (state.selection && selectedBlock?.type !== "list-item") command({ type: "set-style", blockId: state.selection.blockId, style }); }} onFontSize={(fontSize) => { if (selected && state.selection) command({ type: "set-font-size", blockId: state.selection.blockId, start: selected.start, end: selected.end, fontSize }); }} onSave={() => void save()} onView={() => {
-    if (state.dirtyBlockIds.size && !window.confirm("Discard unsaved changes?")) return;
-    setState((current) => ({ ...replaceBaseline(current, current.baselineModel), mode: "view" }));
-  }} />, [canEdit, command, save, selected, selectedBlock, state]);
+  const toolbar = useMemo(() => <DocumentToolbar state={state} mode={mode} onUndo={() => setState(undo)} onRedo={() => setState(redo)} onFormat={(format) => { if (selected && state.selection) command({ type: "toggle-format", blockId: state.selection.blockId, start: selected.start, end: selected.end, format }); }} onAlignment={(alignment) => { if (state.selection) command({ type: "set-alignment", blockId: state.selection.blockId, alignment }); }} onStyle={(style) => { if (state.selection && selectedBlock?.type !== "list-item") command({ type: "set-style", blockId: state.selection.blockId, style }); }} onFontSize={(fontSize) => { if (selected && state.selection) command({ type: "set-font-size", blockId: state.selection.blockId, start: selected.start, end: selected.end, fontSize }); }} />, [command, mode, selected, selectedBlock, state]);
 
-  return <div className="document-editor">{toolbar}{saveError && <div className="document-editor-error" role="alert">{saveError}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}{state.mode === "edit" ? <article className="document-surface document-edit-surface"><EditorBlocks blocks={state.currentModel.blocks} state={state} onInput={commitText} onSelect={(selection) => setState((current) => setSelection(current, selection))} onComposition={composition} composing={composing} /></article> : view(state.currentModel)}</div>;
+  return <div className="document-editor">{toolbar}{saveError && <div className="document-editor-error" role="alert">{saveError}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}{mode === "edit" ? <article className="document-surface document-edit-surface"><EditorBlocks blocks={state.currentModel.blocks} state={state} onInput={commitText} onSelect={(selection) => setState((current) => setSelection(current, selection))} onComposition={composition} composing={composing} /></article> : view(state.currentModel)}</div>;
 }

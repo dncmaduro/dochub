@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiClient, ApiError, type TextFileFormat, type TextFileModel } from "./api";
+import type { RegisterWorkspaceActions, WorkspaceMode } from "./workspace";
 
 const api = new ApiClient();
 
@@ -105,11 +106,10 @@ function formatLabel(format: TextFileFormat): string {
   return format === "text" ? "Plain text" : format === "markdown" ? "Markdown" : format.toUpperCase();
 }
 
-export function TextFileEditor({ nodeId, initialModel, canEdit, onDirtyChange, onReload }: { nodeId: string; initialModel: TextFileModel; canEdit: boolean; onDirtyChange: (dirty: boolean) => void; onReload: () => void }) {
+export function TextFileEditor({ nodeId, initialModel, canEdit, mode: workspaceMode, onModeChange, onRegisterActions, onDirtyChange, onReload }: { nodeId: string; initialModel: TextFileModel; canEdit: boolean; mode: WorkspaceMode; onModeChange: (mode: WorkspaceMode) => void; onRegisterActions: RegisterWorkspaceActions; onDirtyChange: (dirty: boolean) => void; onReload: () => void }) {
   const [value, setValue] = useState(initialModel.content);
   const [baseline, setBaseline] = useState(initialModel.content);
-  const [mode, setMode] = useState<"preview" | "source">(initialModel.parseError || initialModel.format === "text" ? "source" : "preview");
-  const [editing, setEditing] = useState(false);
+  const [displayMode, setDisplayMode] = useState<"preview" | "source">(initialModel.parseError || initialModel.format === "text" ? "source" : "preview");
   const [status, setStatus] = useState<"clean" | "dirty" | "saving" | "save-failed" | "conflict">("clean");
   const [error, setError] = useState("");
   const [canUndo, setCanUndo] = useState(false);
@@ -173,6 +173,22 @@ export function TextFileEditor({ nodeId, initialModel, canEdit, onDirtyChange, o
     }
   }, [canEdit, dirty, initialModel.storageRevision, nodeId, value]);
 
+  const discardAndView = useCallback(() => {
+    if (dirty && !window.confirm("Discard unsaved changes?")) return;
+    setValue(baseline);
+    setStatus("clean");
+    setError("");
+    undoStack.current = [];
+    redoStack.current = [];
+    setCanUndo(false);
+    setCanRedo(false);
+    onDirtyChange(false);
+    onModeChange("view");
+  }, [baseline, dirty, onDirtyChange, onModeChange]);
+  useEffect(() => {
+    onRegisterActions({ save: () => { void save(); }, view: discardAndView, canEdit: canEdit && Boolean(initialModel.editable), canSave: dirty && status !== "saving", saving: status === "saving" });
+  }, [canEdit, discardAndView, dirty, initialModel.editable, onRegisterActions, save, status]);
+
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (composing.current) return;
     const modifier = event.metaKey || event.ctrlKey;
@@ -185,25 +201,24 @@ export function TextFileEditor({ nodeId, initialModel, canEdit, onDirtyChange, o
   const previewBody = initialModel.format === "markdown"
     ? <MarkdownPreview source={value} />
     : <pre className="text-plain-preview">{preview.value}</pre>;
-  const sourceEditor = <textarea aria-label={`${formatLabel(initialModel.format)} source`} className="text-source-editor" value={value} onChange={(event) => changeValue(event.target.value)} onKeyDown={onKeyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} spellCheck={initialModel.format === "text" || initialModel.format === "markdown"} />;
+  const editing = workspaceMode === "edit";
+  const sourceEditor = <textarea readOnly={!editing} aria-label={`${formatLabel(initialModel.format)} source`} className="text-source-editor" value={value} onChange={(event) => changeValue(event.target.value)} onKeyDown={onKeyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} spellCheck={initialModel.format === "text" || initialModel.format === "markdown"} />;
 
   return <div className="text-file-editor">
     <div className="text-file-toolbar">
       <span className="text-file-format">{formatLabel(initialModel.format)}</span>
-      <button type="button" className="text-file-tool" onClick={() => setMode("preview")} disabled={mode === "preview"}>{initialModel.format === "markdown" ? "Preview" : "Formatted preview"}</button>
-      <button type="button" className="text-file-tool" onClick={() => setMode("source")} disabled={mode === "source"}>Source</button>
-      {canEdit && initialModel.editable && <button type="button" className="text-file-tool" onClick={() => { setEditing(true); setMode("source"); }} disabled={editing}>Edit</button>}
+      <button type="button" className="text-file-tool" onClick={() => setDisplayMode("preview")} disabled={displayMode === "preview"}>{initialModel.format === "markdown" ? "Preview" : "Formatted preview"}</button>
+      <button type="button" className="text-file-tool" onClick={() => setDisplayMode("source")} disabled={displayMode === "source"}>Source</button>
       {editing && <>
         <button type="button" className="text-file-tool" onClick={undo} disabled={!canUndo}>Undo</button>
         <button type="button" className="text-file-tool" onClick={redo} disabled={!canRedo}>Redo</button>
-        <button type="button" className="text-file-tool text-file-tool-primary" onClick={() => void save()} disabled={!dirty || status === "saving"}>{status === "saving" ? "Saving…" : "Save"}</button>
       </>}
       <span className="text-file-status" role="status">{status === "saving" ? "Saving…" : status === "conflict" ? "Conflict" : status === "save-failed" ? "Save failed" : dirty ? "Unsaved changes" : "Saved"}</span>
     </div>
     {error && <div className="text-file-error" role="alert"><span>{error}</span>{status === "conflict" && <button type="button" className="text-file-tool" onClick={onReload}>Reload</button>}</div>}
     {preview.error && <div className="text-file-parse-error" role="alert">{preview.error} Source remains available for inspection and editing.</div>}
     <div className="text-file-body">
-      {editing ? sourceEditor : mode === "source" ? <div className="text-source-view">{sourceEditor}</div> : previewBody}
+      {editing ? sourceEditor : displayMode === "source" ? <div className="text-source-view">{sourceEditor}</div> : previewBody}
     </div>
   </div>;
 }

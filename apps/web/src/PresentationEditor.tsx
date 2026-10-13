@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiClient, type PresentationParagraph, type PresentationSlideModel, type PresentationTextElement } from "./api";
 import { PresentationToolbar } from "./PresentationToolbar";
 import { SlideCanvas } from "./SlideCanvas";
 import { SlideThumbnailRail } from "./SlideThumbnailRail";
 import { createPresentationEditorState, elementForId, loadSlide, moveElement, redo, replaceText, resizeElement, selectElement, selectSlide, setFirstRunFormat, textToString, undo, type PresentationEditorState } from "./presentation-editor/editor-state";
 import type { PresentationModel } from "./api";
+import { fitSlideScale } from "./presentation-layout";
+import type { RegisterWorkspaceActions, WorkspaceMode } from "./workspace";
 
 const api = new ApiClient();
 
@@ -49,7 +51,7 @@ function paragraphsForDraft(element: PresentationTextElement, draft: string): Pr
   });
 }
 
-export function PresentationEditor({ modelUrl, nodeId, initialModel, canEdit, onReady, onError, onDirtyChange }: { modelUrl: string; nodeId: string; initialModel: PresentationModel; canEdit: boolean; onReady: () => void; onError: () => void; onDirtyChange: (dirty: boolean) => void }) {
+export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onModeChange, onRegisterActions, onReady, onError, onDirtyChange }: { modelUrl: string; nodeId: string; initialModel: PresentationModel; mode: WorkspaceMode; onModeChange: (mode: WorkspaceMode) => void; onRegisterActions: RegisterWorkspaceActions; onReady: () => void; onError: () => void; onDirtyChange: (dirty: boolean) => void }) {
   const [state, setState] = useState<PresentationEditorState | null>(null);
   const [loadingSlide, setLoadingSlide] = useState(false);
   const [error, setError] = useState("");
@@ -57,18 +59,34 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, canEdit, on
   const [draftElementId, setDraftElementId] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
   const [ready, setReady] = useState(false);
+  const [thumbnailErrors, setThumbnailErrors] = useState<Record<string, string>>({});
+  const pendingSlides = useRef(new Set<string>());
+  const stageScrollRef = useRef<HTMLDivElement>(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const activeSlide = state?.slides[state.activeSlideId];
   const selected = elementForId(activeSlide, state?.selectedElementId ?? null);
 
-  const fetchSlide = useCallback(async (current: PresentationEditorState, slideId: string) => {
-    if (current.slides[slideId]) { setState((value) => value ? selectSlide(value, slideId) : value); return; }
-    setLoadingSlide(true);
+  const fetchSlide = useCallback(async (slideId: string, select: boolean) => {
+    if (state?.slides[slideId]) {
+      if (select) setState((value) => value ? selectSlide(value, slideId) : value);
+      return;
+    }
+    if (pendingSlides.current.has(slideId)) return;
+    pendingSlides.current.add(slideId);
+    if (select) setLoadingSlide(true);
     try {
       const slide = await api.getPresentationSlide(modelUrl, slideId);
       setState((value) => value ? loadSlide(value, slide) : value);
-    } catch { setError("The slide could not be loaded."); onError(); }
-    finally { setLoadingSlide(false); }
-  }, [modelUrl, onError]);
+      setThumbnailErrors((current) => { const next = { ...current }; delete next[slideId]; return next; });
+      if (select) setState((value) => value ? selectSlide(value, slideId) : value);
+    } catch {
+      if (select) { setError("The slide could not be loaded."); onError(); }
+      else setThumbnailErrors((current) => ({ ...current, [slideId]: "The thumbnail could not be loaded." }));
+    } finally {
+      pendingSlides.current.delete(slideId);
+      if (select) setLoadingSlide(false);
+    }
+  }, [modelUrl, onError, state?.slides]);
 
   useEffect(() => {
     let active = true;
@@ -82,6 +100,16 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, canEdit, on
   }, [initialModel, modelUrl, onError, onReady]);
 
   useEffect(() => { onDirtyChange(Boolean(state && state.saveStatus !== "saved")); }, [onDirtyChange, state]);
+  useLayoutEffect(() => {
+    const node = stageScrollRef.current;
+    if (!node) return undefined;
+    const measure = () => setStageSize({ width: node.clientWidth, height: node.clientHeight });
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
 
   const save = useCallback(async () => {
     if (!state || state.saveStatus === "saving") return;
@@ -116,12 +144,17 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, canEdit, on
     setDraftElementId(null);
   }, [composing, draft, draftElementId, selected, state]);
 
-  const chooseSlide = useCallback((slideId: string) => { if (state) void fetchSlide(state, slideId); }, [fetchSlide, state]);
-  const edit = useCallback(() => setState((current) => current ? { ...current, mode: "edit" } : current), []);
-  const view = useCallback(() => {
+  const chooseSlide = useCallback((slideId: string) => { void fetchSlide(slideId, true); }, [fetchSlide]);
+  const loadThumbnail = useCallback((slideId: string) => { void fetchSlide(slideId, false); }, [fetchSlide]);
+  const discardAndView = useCallback(() => {
     if (state?.saveStatus !== "saved" && !window.confirm("Discard unsaved changes?")) return;
     setState((current) => current ? { ...current, mode: "view", slides: current.originalSlides, history: [], future: [], selectedElementId: null, saveStatus: "saved" } : current);
-  }, [state?.saveStatus]);
+    onDirtyChange(false);
+    onModeChange("view");
+  }, [onDirtyChange, onModeChange, state?.saveStatus]);
+  useEffect(() => {
+    onRegisterActions({ save: () => { void save(); }, view: discardAndView, canEdit: Boolean(state?.model.editable), canSave: state?.saveStatus === "dirty", saving: state?.saveStatus === "saving" });
+  }, [discardAndView, onRegisterActions, save, state?.model.editable, state?.saveStatus]);
   const format = useCallback((key: "bold" | "italic" | "underline") => setState((current) => current && selected?.type === "text" ? setFirstRunFormat(current, selected.id, { [key]: !(selected.paragraphs[0]?.runs[0]?.[key] ?? false) }) : current), [selected]);
   const align = useCallback((alignment: "left" | "center" | "right" | "justified") => setState((current) => current && selected?.type === "text" ? replaceText(current, selected.id, selected.paragraphs.map((paragraph) => ({ ...paragraph, alignment }))) : current), [selected]);
   const fontSize = useCallback((size: number) => setState((current) => current && selected?.type === "text" ? setFirstRunFormat(current, selected.id, { fontSize: size }) : current), [selected]);
@@ -139,12 +172,12 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, canEdit, on
 
   const current = state && activeSlide ? activeSlide : null;
   const selectedText = selected?.type === "text" ? selected : null;
-  const scale = state?.zoom ?? 1;
-  const canvasStyle = useMemo(() => ({ transform: `scale(${scale})`, transformOrigin: "top center" }), [scale]);
+  const scale = current ? fitSlideScale({ width: stageSize.width, height: stageSize.height, slideWidth: current.width, slideHeight: current.height, zoom: state?.zoom ?? 1 }) : 1;
+  const canvasStyle = useMemo(() => current ? ({ width: current.width * scale, height: current.height * scale }) : ({}), [current, scale]);
   if (!state || !current) return <div className="presentation-loading" role="status">{loadingSlide ? "Loading slide…" : "Loading presentation…"}</div>;
   return <div className="presentation-editor" onBlur={commitDraft}>
-    <PresentationToolbar state={state} canEdit={canEdit && state.model.editable} onEdit={edit} onView={view} onUndo={() => setState((value) => value ? undo(value) : value)} onRedo={() => setState((value) => value ? redo(value) : value)} onSave={() => void save()} onBold={() => format("bold")} onItalic={() => format("italic")} onUnderline={() => format("underline")} onAlign={align} onFontSize={fontSize} onZoom={(delta) => setState((value) => value ? { ...value, zoom: Math.min(1.5, Math.max(0.5, value.zoom + delta)) } : value)} />
+    <PresentationToolbar state={state} mode={mode} onUndo={() => setState((value) => value ? undo(value) : value)} onRedo={() => setState((value) => value ? redo(value) : value)} onBold={() => format("bold")} onItalic={() => format("italic")} onUnderline={() => format("underline")} onAlign={align} onFontSize={fontSize} onZoom={(delta) => setState((value) => value ? { ...value, zoom: Math.min(1.5, Math.max(0.5, value.zoom + delta)) } : value)} />
     {error && <div className="presentation-editor-error" role="alert">{error}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}
-    <div className="presentation-workspace"><SlideThumbnailRail descriptors={state.model.slides} slides={state.slides} modelUrl={modelUrl} activeSlideId={state.activeSlideId} onSelect={chooseSlide} /><main className="presentation-stage"><div className="presentation-stage-scroll"><div className="presentation-canvas-scale" style={canvasStyle}><SlideCanvas modelUrl={modelUrl} slide={current} mode={state.mode} selectedElementId={state.selectedElementId} onSelect={(id) => { if (id && selectedText?.id !== id) setDraftElementId(null); setState((value) => value ? selectElement(value, id) : value); }} onMove={(id, x, y) => setState((value) => value ? moveElement(value, id, x, y) : value)} onResize={(id, width, height) => setState((value) => value ? resizeElement(value, id, width, height) : value)} /></div></div>{selectedText && state.mode === "edit" && <div className="presentation-text-editor"><label htmlFor="presentation-text-input">Text</label><textarea id="presentation-text-input" value={draftElementId === selectedText.id ? draft : textToString(selectedText)} onChange={(event) => { setDraftElementId(selectedText.id); setDraft(event.target.value); }} onCompositionStart={() => setComposing(true)} onCompositionEnd={(event) => { setComposing(false); setDraftElementId(selectedText.id); setDraft(event.currentTarget.value); }} onBlur={commitDraft} rows={3} /></div>}</main></div>
+    <div className="presentation-workspace"><SlideThumbnailRail descriptors={state.model.slides} slides={state.slides} modelUrl={modelUrl} activeSlideId={state.activeSlideId} thumbnailErrors={thumbnailErrors} onLoad={loadThumbnail} onSelect={chooseSlide} /><main className="presentation-stage"><div ref={stageScrollRef} className="presentation-stage-scroll"><div className="presentation-canvas-scale" style={canvasStyle}><SlideCanvas modelUrl={modelUrl} slide={current} scale={scale} mode={mode} selectedElementId={state.selectedElementId} onSelect={(id) => { if (id && selectedText?.id !== id) setDraftElementId(null); setState((value) => value ? selectElement(value, id) : value); }} onMove={(id, x, y) => setState((value) => value ? moveElement(value, id, x, y) : value)} onResize={(id, width, height) => setState((value) => value ? resizeElement(value, id, width, height) : value)} /></div></div>{selectedText && mode === "edit" && <div className="presentation-text-editor"><label htmlFor="presentation-text-input">Text</label><textarea id="presentation-text-input" value={draftElementId === selectedText.id ? draft : textToString(selectedText)} onChange={(event) => { setDraftElementId(selectedText.id); setDraft(event.target.value); }} onCompositionStart={() => setComposing(true)} onCompositionEnd={(event) => { setComposing(false); setDraftElementId(selectedText.id); setDraft(event.currentTarget.value); }} onBlur={commitDraft} rows={3} /></div>}</main></div>
   </div>;
 }
