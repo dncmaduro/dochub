@@ -46,6 +46,11 @@ import { SpreadsheetViewer } from "./SpreadsheetViewer";
 import { PresentationViewer } from "./PresentationViewer";
 import { TextFileViewer } from "./TextFileViewer";
 import { ImageViewer } from "./ImageViewer";
+import {
+  createUploadQueueItems,
+  runUploadQueue,
+  type UploadQueueItem,
+} from "./upload-queue";
 import type { WorkspaceActions, WorkspaceMode } from "./workspace";
 import "./App.css";
 
@@ -548,6 +553,7 @@ function App() {
   const [driveImportOpen, setDriveImportOpen] = useState(false);
   const [folderCreationParentId, setFolderCreationParentId] = useState<string | null>(null);
   const [uploadingFromMenu, setUploadingFromMenu] = useState(false);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [creationNotice, setCreationNotice] = useState<Notice>(null);
   const menuUploadInput = useRef<HTMLInputElement>(null);
   const creationParentId = location.route === "drive" ? currentFolderId() : null;
@@ -639,22 +645,62 @@ function App() {
     window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: folderCreationParentId } }));
     setCreationNotice({ tone: "success", message: t("files.created", { name: node.name }) });
   }
-  async function uploadFromMenu(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    setCreateNewOpen(false);
+  async function runUploadItems(items: UploadQueueItem[]) {
+    if (!items.length) return;
     setUploadingFromMenu(true);
-    setCreationNotice({ tone: "info", message: t("files.uploadingFile", { name: file.name }), durationMs: 0 });
     try {
-      const result = await api.upload(file, creationParentId, crypto.randomUUID());
-      window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: creationParentId } }));
-      setCreationNotice({ tone: "success", message: t("files.uploaded", { name: result.node.name }) });
-    } catch (requestError) {
-      setCreationNotice({ tone: "error", message: displayError(requestError) });
+      await runUploadQueue(
+        items,
+        (item) => api.upload(item.file, item.destinationFolderId, item.idempotencyKey),
+        (id, update) => {
+          setUploadQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
+        },
+        {
+          concurrency: 3,
+          isAuthorizationError: (error) => error instanceof ApiError && (error.status === 401 || error.status === 403),
+          getErrorMessage: displayError,
+          authorizationMessage: t("files.uploadAuthorizationFailed"),
+        },
+      );
     } finally {
       setUploadingFromMenu(false);
+      window.dispatchEvent(new CustomEvent("nodes-changed", {
+        detail: { parentId: items[0]?.destinationFolderId ?? null },
+      }));
     }
+  }
+  function beginUpload(files: readonly File[], destinationFolderId: string | null) {
+    if (!files.length || uploadingFromMenu) return;
+    setCreateNewOpen(false);
+    setCreationNotice(null);
+    const items = createUploadQueueItems(files, destinationFolderId);
+    setUploadQueue(items);
+    void runUploadItems(items);
+  }
+  function uploadFromMenu(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!files.length) return;
+    beginUpload(files, currentFolderId());
+  }
+  function retryFailedUploads() {
+    if (uploadingFromMenu) return;
+    const failed = uploadQueue.filter((item) => item.status === "failed");
+    if (!failed.length) return;
+    const retryItems = failed.map((item) => ({ ...item, idempotencyKey: crypto.randomUUID(), status: "queued" as const, error: null }));
+    setUploadQueue((current) => current.map((item) => retryItems.some((retry) => retry.id === item.id) ? { ...item, status: "queued", error: null } : item));
+    void runUploadItems(retryItems);
+  }
+  function retryUploadItem(id: string) {
+    if (uploadingFromMenu) return;
+    const failed = uploadQueue.find((item) => item.id === id && item.status === "failed");
+    if (!failed) return;
+    const retryItem = { ...failed, idempotencyKey: crypto.randomUUID(), status: "queued" as const, error: null };
+    setUploadQueue((current) => current.map((item) => item.id === id ? retryItem : item));
+    void runUploadItems([retryItem]);
+  }
+  function openUploadPicker() {
+    if (!uploadingFromMenu) menuUploadInput.current?.click();
   }
   async function signOut() {
     try {
@@ -685,7 +731,7 @@ function App() {
       page = <ProfileApp profile={profile} onSignOut={() => void signOut()} />;
       break;
     default:
-      page = <DriveApp canCreate={canCreate} canManageDocuments={canManage} onCreateFolder={beginCreateFolder} />;
+      page = <DriveApp canCreate={canCreate} canManageDocuments={canManage} uploading={uploadingFromMenu} onCreateFolder={beginCreateFolder} onUpload={openUploadPicker} />;
   }
   const active: SidebarRoute = location.route === "drive" || location.route === "recent" || location.route === "favorites" || location.route === "trash"
     ? location.route
@@ -708,6 +754,7 @@ function App() {
         ref={menuUploadInput}
         className="visually-hidden"
         type="file"
+        multiple
         onChange={(event) => void uploadFromMenu(event)}
         disabled={uploadingFromMenu}
       />
@@ -735,7 +782,80 @@ function App() {
           onUpload={() => menuUploadInput.current?.click()}
         />
       )}
+      {uploadQueue.length > 0 && (
+        <UploadQueuePanel
+          items={uploadQueue}
+          active={uploadingFromMenu}
+          onRetryItem={retryUploadItem}
+          onRetryFailed={retryFailedUploads}
+          onClear={() => setUploadQueue([])}
+        />
+      )}
     </>
+  );
+}
+function UploadQueuePanel({
+  items,
+  active,
+  onRetryItem,
+  onRetryFailed,
+  onClear,
+}: {
+  items: UploadQueueItem[];
+  active: boolean;
+  onRetryItem: (id: string) => void;
+  onRetryFailed: () => void;
+  onClear: () => void;
+}) {
+  const uploaded = items.filter((item) => item.status === "success").length;
+  const failed = items.filter((item) => item.status === "failed").length;
+  const uploading = items.filter((item) => item.status === "uploading").length;
+  const queued = items.filter((item) => item.status === "queued").length;
+  const statusLabel = (item: UploadQueueItem) => {
+    if (item.status === "queued") return t("files.uploadQueueQueued");
+    if (item.status === "uploading") return t("files.uploadQueueUploading");
+    if (item.status === "success") return t("files.uploadQueueSuccess");
+    return item.error ? t("files.uploadQueueFailedWithReason", { error: item.error }) : t("files.uploadQueueFailed");
+  };
+  return (
+    <section className="upload-queue-panel" aria-label={t("files.uploadQueueTitle")} aria-live="polite">
+      <header className="upload-queue-header">
+        <div>
+          <h2>{t("files.uploadQueueTitle")}</h2>
+          <p>
+            {active
+              ? t("files.uploadQueueProgress", { completed: uploaded + failed, total: items.length, uploading, queued })
+              : t("files.uploadQueueSummary", { uploaded, failed })}
+          </p>
+        </div>
+        <button type="button" className="icon-button" onClick={onClear} disabled={active} aria-label={t("files.uploadQueueDismiss")}>
+          <Icon name="close" size={16} />
+        </button>
+      </header>
+      <ul className="upload-queue-list">
+        {items.map((item) => (
+          <li key={item.id} className={`upload-queue-item is-${item.status}`}>
+            <span className="upload-queue-name" title={item.file.name}>{item.file.name}</span>
+            <span className="upload-queue-status">{statusLabel(item)}</span>
+            {!active && item.status === "failed" && (
+              <button type="button" className="upload-queue-retry" onClick={() => onRetryItem(item.id)}>
+                {t("files.uploadQueueRetry")}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {!active && (
+        <footer className="upload-queue-actions">
+          <button type="button" className="button" onClick={onRetryFailed} disabled={failed === 0}>
+            {t("files.uploadQueueRetryFailed")}
+          </button>
+          <button type="button" className="button button-primary" onClick={onClear}>
+            {t("files.uploadQueueDismiss")}
+          </button>
+        </footer>
+      )}
+    </section>
   );
 }
 function AccessDenied() {
@@ -1797,11 +1917,15 @@ function AccountMenu({ profile, onSignOut }: { profile: CurrentUser; onSignOut: 
 function DriveApp({
   canCreate,
   canManageDocuments,
+  uploading,
   onCreateFolder,
+  onUpload,
 }: {
   canCreate: boolean;
   canManageDocuments: boolean;
+  uploading: boolean;
   onCreateFolder: () => void;
+  onUpload: () => void;
 }) {
   const [folderId, setFolderId] = useState(currentFolderId);
   const [sort, setSort] = useState<DriveSort>(currentDriveSort);
@@ -1824,8 +1948,6 @@ function DriveApp({
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [driveIntegration, setDriveIntegration] = useState<DriveIntegration | null>(null);
   const [driveIntegrationLoading, setDriveIntegrationLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const uploadInput = useRef<HTMLInputElement>(null);
   const loadController = useRef<AbortController | null>(null);
   const load = useCallback(async (id: string | null) => {
     loadController.current?.abort();
@@ -1894,26 +2016,6 @@ function DriveApp({
     await api.renameNode(node.id, name);
     await load(folderId);
     setNotice({ tone: "success", message: t("files.renamed") });
-  }
-  async function upload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    try {
-      setNotice(null);
-      setUploading(true);
-      setNotice({ tone: "info", message: t("files.uploadingFile", { name: file.name }) });
-      const result = await api.upload(file, folderId, crypto.randomUUID());
-      await load(folderId);
-      setNotice({
-        tone: "success",
-        message: t("files.uploaded", { name: result.node.name }),
-      });
-    } catch (requestError) {
-      setNotice({ tone: "error", message: displayError(requestError) });
-    } finally {
-      setUploading(false);
-    }
   }
   function changeSort(next: DriveSort) {
     setSort(next);
@@ -1989,22 +2091,15 @@ function DriveApp({
             </button>
             {canManageDocuments ? (
               <>
-                <button
-                  type="button"
-                  className="button button-primary"
-                  onClick={() => uploadInput.current?.click()}
-                  disabled={uploading || driveIntegrationLoading || !driveIntegration?.connected || !driveIntegration.configured || !driveIntegration.canWrite}
-                >
-                  <Icon name="upload" />
-                  {uploading ? t("files.uploading") : t("files.upload")}
-                </button>
-                <input
-                  className="visually-hidden"
-                  ref={uploadInput}
-                  type="file"
-                  onChange={upload}
-                  disabled={!canManageDocuments || uploading}
-                />
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={onUpload}
+              disabled={uploading || driveIntegrationLoading || !driveIntegration?.connected || !driveIntegration.configured || !driveIntegration.canWrite}
+            >
+              <Icon name="upload" />
+              {uploading ? t("files.uploading") : t("files.upload")}
+            </button>
               </>
             ) : null}
         </PageHeader>
@@ -2020,7 +2115,7 @@ function DriveApp({
               canUpload={canManageDocuments}
               uploadDisabled={uploading || driveIntegrationLoading || !driveIntegration?.connected || !driveIntegration.configured || !driveIntegration.canWrite}
               onFolder={onCreateFolder}
-              onUpload={() => uploadInput.current?.click()}
+              onUpload={onUpload}
             />
           )}
           {status === "ready" && nodes.length > 0 && (
