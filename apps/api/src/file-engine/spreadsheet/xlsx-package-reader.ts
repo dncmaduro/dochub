@@ -4,10 +4,22 @@ import type { StorageObjectRef, StorageProvider } from '../../storage/storage-pr
 import { FileEngineError } from '../file-engine.errors.js';
 import { SPREADSHEET_LIMITS } from './spreadsheet-limits.js';
 
+export type XlsxFailureKind =
+  | 'source'
+  | 'package-read'
+  | 'resource-limit'
+  | 'model-limit'
+  | 'workbook'
+  | 'relationships'
+  | 'worksheet'
+  | 'styles'
+  | 'shared-strings'
+  | 'corrupt';
+
 export class SpreadsheetPackageError extends FileEngineError {
   readonly expected = true;
-  constructor(message: string, readonly failureKind: 'source' | 'resource-limit' | 'corrupt' = 'corrupt') {
-    super(message, `XLSX_${failureKind.toUpperCase()}`);
+  constructor(message: string, readonly failureKind: XlsxFailureKind = 'corrupt') {
+    super(message, `XLSX_${failureKind.replaceAll('-', '_').toUpperCase()}`);
   }
 }
 
@@ -76,10 +88,10 @@ export class XlsxPackageReader {
       for (const [path, value] of Object.entries(unzipped)) entries.set(safePath(path), value);
     } catch (error) {
       if (error instanceof SpreadsheetPackageError) throw error;
-      throw new SpreadsheetPackageError('XLSX package could not be read');
+      throw new SpreadsheetPackageError('XLSX package could not be read', 'package-read');
     }
-    if (!entries.has('xl/workbook.xml')) throw new SpreadsheetPackageError('XLSX workbook part is missing');
-    if (!entries.has('xl/_rels/workbook.xml.rels')) throw new SpreadsheetPackageError('XLSX workbook relationships are missing');
+    if (!entries.has('xl/workbook.xml')) throw new SpreadsheetPackageError('XLSX workbook part is missing', 'workbook');
+    if (!entries.has('xl/_rels/workbook.xml.rels')) throw new SpreadsheetPackageError('XLSX workbook relationships are missing', 'relationships');
     return new XlsxPackageReader(entries);
   }
 
@@ -94,8 +106,11 @@ export class XlsxPackageReader {
     catch { throw new SpreadsheetPackageError(`XLSX XML part is not valid UTF-8: ${path}`); }
   }
   resolveTarget(sourcePart: string, target: string): string | null {
-    if (!target || target.startsWith('/') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return null;
-    const parts = [...sourcePart.split('/').slice(0, -1), ...target.replaceAll('\\', '/').split('/')];
+    const normalizedTarget = target.trim().replaceAll('\\', '/');
+    if (!normalizedTarget || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(normalizedTarget)) return null;
+    const packageRootTarget = normalizedTarget.startsWith('/');
+    const targetParts = (packageRootTarget ? normalizedTarget.slice(1) : normalizedTarget).split('/');
+    const parts = [...(packageRootTarget ? [] : sourcePart.split('/').slice(0, -1)), ...targetParts];
     const result: string[] = [];
     for (const part of parts) {
       if (!part || part === '.') continue;

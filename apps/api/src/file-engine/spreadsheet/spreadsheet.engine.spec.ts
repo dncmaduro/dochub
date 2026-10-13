@@ -2,6 +2,7 @@ import { zipSync } from 'fflate';
 import { Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { SpreadsheetEngine } from '../engines/spreadsheet.engine.js';
+import { affiliateOrdersFixture } from './affiliate-orders.fixture.js';
 import { parseCsv } from './csv-parser.js';
 import { parseSpreadsheetPatchRequest } from './spreadsheet-edit.types.js';
 import { XlsxPackageReader } from './xlsx-package-reader.js';
@@ -31,6 +32,46 @@ function descriptor(name: string, mimeType: string) {
 }
 
 describe('SpreadsheetEngine', () => {
+  it('opens a production-shaped affiliate workbook through the native engine', async () => {
+    const source = affiliateOrdersFixture();
+    const storage = {
+      openRead: vi.fn().mockImplementation(async () => ({
+        stream: Readable.from([source]),
+        metadata: { revision: 'affiliate-r1', sizeBytes: BigInt(source.byteLength), mimeType: 'application/octet-stream' },
+        range: null,
+      })),
+    };
+    const file = descriptor('affiliate_orders_7695543313789257492.xlsx', 'application/octet-stream');
+    const engine = new SpreadsheetEngine();
+
+    await expect(engine.openPreview(file)).resolves.toMatchObject({ kind: 'spreadsheet' });
+    const workbook = await engine.openModel(file, { storage: storage as never, storageRevision: 'affiliate-r1' });
+    expect(workbook).toMatchObject({
+      id: 'xlsx-workbook',
+      activeSheetId: expect.stringContaining('s-'),
+      sheets: [
+        { name: 'Affiliate Orders', rowCount: 1000000, columnCount: 6 },
+        { name: 'Summary', rowCount: 3, columnCount: 2 },
+      ],
+    });
+    const sheet = await engine.openSheet(file, workbook.sheets[0]!.id, { storage: storage as never, storageRevision: 'affiliate-r1' });
+    expect(sheet).toMatchObject({ frozenPane: { row: 1, column: 1 } });
+    expect(sheet.cells).toEqual(expect.arrayContaining([
+      expect.objectContaining({ address: 'A2', value: 'AO-1001', valueType: 'string' }),
+      expect.objectContaining({ address: 'C2', value: '2026-01-15T00:00:00Z', valueType: 'datetime' }),
+      expect.objectContaining({ address: 'E5', value: 'read-only fallback', valueType: 'string' }),
+      expect.objectContaining({ address: 'F1000000', valueType: 'formula', editable: false }),
+    ]));
+  });
+
+  it('normalizes package-root and owner-relative relationship targets safely', () => {
+    const source = affiliateOrdersFixture();
+    const reader = XlsxPackageReader.fromBytes(source);
+    expect(reader.resolveTarget('xl/workbook.xml', '/xl/worksheets/orders.xml')).toBe('xl/worksheets/orders.xml');
+    expect(reader.resolveTarget('xl/worksheets/orders.xml', '../tables/orders.xml')).toBe('xl/tables/orders.xml');
+    expect(reader.resolveTarget('xl/worksheets/orders.xml', '../../../outside.xml')).toBeNull();
+  });
+
   it('parses a sparse workbook manifest and common cell types', () => {
     const reader = XlsxPackageReader.fromBytes(fixture());
     const parser = new XlsxParser(reader);

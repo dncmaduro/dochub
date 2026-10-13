@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { zipSync } from 'fflate';
 import { Readable } from 'node:stream';
 import { DocumentCapability } from '../authorization/document-capability.js';
+import { affiliateOrdersFixture } from '../file-engine/spreadsheet/affiliate-orders.fixture.js';
 import { DrivePreviewService } from './drive-preview.service.js';
 
 const nativeXlsx = Buffer.from(zipSync({
@@ -103,6 +104,45 @@ describe('DrivePreviewService', () => {
     });
   });
 
+  it('returns a native spreadsheet preview session for a realistic uploaded XLSX', async () => {
+    const capabilities = new Set([DocumentCapability.VIEW, DocumentCapability.PREVIEW, DocumentCapability.DOWNLOAD, DocumentCapability.EDIT]);
+    const { service, storage } = serviceFor({ capabilities, node: {
+      id: 'node', name: 'affiliate_orders_7695543313789257492.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
+        driveFileId: 'drive-file', mimeType: 'application/octet-stream', sizeBytes: BigInt(affiliateOrdersFixture().byteLength), sourceStatus: 'CONNECTED', trashed: false,
+      } },
+    } });
+    const source = affiliateOrdersFixture();
+    storage.stat.mockResolvedValue({ sizeBytes: BigInt(source.byteLength), revision: 'affiliate-r1' });
+    storage.openRead.mockResolvedValue({ stream: Readable.from([source]), metadata: { sizeBytes: BigInt(source.byteLength), mimeType: 'application/octet-stream' }, range: null });
+
+    await expect(service.create('editor', 'node')).resolves.toMatchObject({
+      previewable: true,
+      engine: 'SPREADSHEET',
+      preview: { kind: 'spreadsheet' },
+      modelUrl: expect.stringContaining('/content/model'),
+      storageRevision: 'affiliate-r1',
+      capabilities: { edit: true },
+    });
+  });
+
+  it('logs a safe parser failure category before marking a broken workbook unavailable', async () => {
+    const brokenRelationships = Buffer.from(zipSync({
+      'xl/workbook.xml': new TextEncoder().encode('<workbook xmlns:r="urn:r"><sheets><sheet name="Orders" r:id="missing"/></sheets></workbook>'),
+      'xl/_rels/workbook.xml.rels': new TextEncoder().encode('<Relationships/>'),
+    }));
+    const { service, storage } = serviceFor({ node: {
+      id: 'node', name: 'affiliate_orders_7695543313789257492.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
+        driveFileId: 'drive-file', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', sizeBytes: BigInt(brokenRelationships.byteLength), sourceStatus: 'CONNECTED', trashed: false,
+      } },
+    } });
+    storage.openRead.mockResolvedValue({ stream: Readable.from([brokenRelationships]), metadata: { sizeBytes: BigInt(brokenRelationships.byteLength), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, range: null });
+    const logger = (service as unknown as { logger: { warn: (message: string) => void } }).logger;
+    const logWarning = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await expect(service.create('user', 'node')).resolves.toMatchObject({ previewable: false, preview: { kind: 'unavailable' } });
+    expect(logWarning).toHaveBeenCalledWith('Native spreadsheet preview unavailable (relationships)');
+  });
+
   it('does not let a misleading PDF MIME become native XLSX', async () => {
     const { service } = serviceFor({ node: {
       id: 'node', name: 'report.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
@@ -133,7 +173,22 @@ describe('DrivePreviewService', () => {
     const logger = (service as unknown as { logger: { error: (message: string) => void } }).logger;
     const logError = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
     await expect(service.create('user', 'node')).rejects.toMatchObject({ status: 503 });
-    expect(logError).toHaveBeenCalledWith('Native spreadsheet preview failed unexpectedly (Error)');
+    expect(logError).toHaveBeenCalledWith('Native spreadsheet preview failed unexpectedly (preview-session)');
+  });
+
+  it('logs registry resolution failures before returning a safe preview error', async () => {
+    const { authorization, database, jwt, drive, storage } = serviceFor({ node: {
+      id: 'node', name: 'report.xlsx', type: 'FILE', file: { backingType: 'GOOGLE_DRIVE', id: 'file', driveFile: {
+        driveFileId: 'drive-file', mimeType: 'application/octet-stream', sizeBytes: 10n, sourceStatus: 'CONNECTED', trashed: false,
+      } },
+    } });
+    const registry = { resolve: vi.fn().mockImplementation(() => { throw new Error('registry bug'); }) };
+    const service = new DrivePreviewService(database as never, authorization as never, jwt as never, drive as never, storage as never, registry as never);
+    const logger = (service as unknown as { logger: { error: (message: string) => void } }).logger;
+    const logError = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+
+    await expect(service.create('user', 'node')).rejects.toMatchObject({ status: 503 });
+    expect(logError).toHaveBeenCalledWith('Preview engine registry failure (registry)');
   });
 
   it('re-authorizes and delegates native spreadsheet saves', async () => {

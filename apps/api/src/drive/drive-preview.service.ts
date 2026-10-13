@@ -185,8 +185,20 @@ export class DrivePreviewService {
       size: source.sizeBytes === null ? null : Number(source.sizeBytes),
       storageRef: { provider: 'GOOGLE_DRIVE', objectId: source.driveFileId },
     };
-    const resolved = this.registry.resolve(descriptor);
-    let preview = await resolved.engine.openPreview(descriptor);
+    let resolved: ReturnType<FileEngineRegistry['resolve']>;
+    try {
+      resolved = this.registry.resolve(descriptor);
+    } catch {
+      this.logger.error('Preview engine registry failure (registry)');
+      throw safePreviewError();
+    }
+    let preview: FilePreviewResult;
+    try {
+      preview = await resolved.engine.openPreview(descriptor);
+    } catch {
+      this.logger.error('Preview session failed unexpectedly (preview-session)');
+      throw safePreviewError();
+    }
     if (resolved.engine.id === 'DOCUMENT' && isDocxFile(descriptor)) {
       try {
         await resolved.engine.openModel?.(descriptor, { storage: this.storage });
@@ -204,7 +216,7 @@ export class DrivePreviewService {
         await resolved.engine.openModel?.(descriptor, { storage: this.storage });
       } catch (error) {
         if (!(error instanceof SpreadsheetPackageError)) {
-          this.logger.error(`Native spreadsheet preview failed unexpectedly (${this.safeErrorKind(error)})`);
+          this.logger.error('Native spreadsheet preview failed unexpectedly (preview-session)');
           throw safePreviewError();
         }
         this.logger.warn(`Native spreadsheet preview unavailable (${this.safeErrorKind(error)})`);
