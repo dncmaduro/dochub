@@ -128,9 +128,9 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
     setState((current) => ({ ...current, saveStatus: "saving" }));
     try {
       const changed = [...state.dirtyBlockIds].map((id) => modelBlock(state.currentModel, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
-      await api.saveDocument(nodeId, { expectedRevision: state.currentModel.storageRevision, blocks: changed });
-      const fresh = await api.getDocumentModel(modelUrl);
-      setState((current) => acceptSavedModel(current, fresh));
+      const saved = await api.saveDocument(nodeId, { expectedRevision: state.currentModel.storageRevision, blocks: changed });
+      console.debug("[Docs Hub save revision]", { expectedRevision: state.currentModel.storageRevision, returnedRevision: saved.storageRevision, frontendBaseRevision: saved.model.storageRevision });
+      setState((current) => acceptSavedModel(current, saved.model));
       if (saveGeneration.current === generation) onDirtyChange(false);
     } catch (error) {
       const conflict = error instanceof ApiError && error.status === 409;
@@ -138,7 +138,7 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
       setState((current) => ({ ...current, saveStatus: conflict ? "conflict" : "failed" }));
       setSaveError(message);
     }
-  }, [modelUrl, nodeId, onDirtyChange, state.currentModel, state.dirtyBlockIds, state.saveStatus]);
+  }, [nodeId, onDirtyChange, state.currentModel, state.dirtyBlockIds, state.saveStatus]);
 
   const saveAsCopy = useCallback(async (name: string) => {
     if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0) return;
@@ -193,7 +193,7 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
       const modifier = event.metaKey || event.ctrlKey;
       if (!modifier) return;
       if (event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
-      else if (event.key.toLowerCase() === "z") { event.preventDefault(); setState((current) => event.shiftKey ? redo(current) : undo(current)); }
+      else if (event.key.toLowerCase() === "z") { event.preventDefault(); saveGeneration.current += 1; setState((current) => event.shiftKey ? redo(current) : undo(current)); }
       else if (event.key.toLowerCase() === "b" || event.key.toLowerCase() === "i" || event.key.toLowerCase() === "u") {
         event.preventDefault();
         if (!selected || !state.selection) return;
@@ -204,7 +204,7 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
     return () => document.removeEventListener("keydown", keydown);
   }, [command, mode, save, selected, state.selection]);
 
-  const toolbar = useMemo(() => <DocumentToolbar state={state} mode={mode} onUndo={() => setState(undo)} onRedo={() => setState(redo)} onFormat={(format) => { if (selected && state.selection) command({ type: "toggle-format", blockId: state.selection.blockId, start: selected.start, end: selected.end, format }); }} onAlignment={(alignment) => { if (state.selection) command({ type: "set-alignment", blockId: state.selection.blockId, alignment }); }} onStyle={(style) => { if (state.selection && selectedBlock?.type !== "list-item") command({ type: "set-style", blockId: state.selection.blockId, style }); }} onFontSize={(fontSize) => { if (selected && state.selection) command({ type: "set-font-size", blockId: state.selection.blockId, start: selected.start, end: selected.end, fontSize }); }} />, [command, mode, selected, selectedBlock, state]);
+  const toolbar = useMemo(() => <DocumentToolbar state={state} mode={mode} onUndo={() => { saveGeneration.current += 1; setState(undo); }} onRedo={() => { saveGeneration.current += 1; setState(redo); }} onFormat={(format) => { if (selected && state.selection) command({ type: "toggle-format", blockId: state.selection.blockId, start: selected.start, end: selected.end, format }); }} onAlignment={(alignment) => { if (state.selection) command({ type: "set-alignment", blockId: state.selection.blockId, alignment }); }} onStyle={(style) => { if (state.selection && selectedBlock?.type !== "list-item") command({ type: "set-style", blockId: state.selection.blockId, style }); }} onFontSize={(fontSize) => { if (selected && state.selection) command({ type: "set-font-size", blockId: state.selection.blockId, start: selected.start, end: selected.end, fontSize }); }} />, [command, mode, selected, selectedBlock, state]);
 
   return <div className="document-editor">{toolbar}{recoveryDraft.recovery && <div className="document-editor-error" role="alert"><span>{recoveryDraft.recoveryIsOutdated ? "An older recovery draft is based on a previous file revision. Review it before saving; Save as copy is available." : "Unsaved changes from a previous session were found."}</span><button type="button" className="button" onClick={recoveryDraft.restore}>Restore</button><button type="button" className="button" onClick={recoveryDraft.discardRecovery}>Discard</button></div>}{saveError && <div className="document-editor-error" role="alert">{saveError}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}{mode === "edit" ? <article className="document-surface document-edit-surface"><EditorBlocks blocks={state.currentModel.blocks} state={state} onInput={commitText} onSelect={(selection) => setState((current) => setSelection(current, selection))} onComposition={composition} composing={composing} /></article> : view(state.currentModel)}</div>;
 }

@@ -158,6 +158,24 @@ describe('GoogleDriveStorageProvider', () => {
     expect(drive.deleteStorageRevision).toHaveBeenCalledWith('drive-object-1', 'rev-7');
   });
 
+  it('reads the final storage version after revision preservation can advance metadata', async () => {
+    const { provider, drive } = driveHarness();
+    const reference = { provider: 'GOOGLE_DRIVE' as const, objectId: 'drive-object-1' };
+    drive.statStorageObject
+      .mockResolvedValueOnce({ id: 'drive-object-1', mimeType: 'application/pdf', size: '5', version: '7', headRevisionId: 'rev-7' })
+      .mockResolvedValueOnce({ id: 'drive-object-1', mimeType: 'application/pdf', size: '6', version: '8', headRevisionId: 'rev-8' })
+      .mockResolvedValueOnce({ id: 'drive-object-1', mimeType: 'application/pdf', size: '6', version: '9', headRevisionId: 'rev-8' });
+
+    const replaced = await provider.replace(reference, { stream: Readable.from([Buffer.from('updated')]), mimeType: 'application/pdf' }, { expectedRevision: '7' });
+    const replacedVersion = await provider.getCurrentVersion(reference);
+    await provider.preserveVersion(reference, replacedVersion.ref);
+    const finalVersion = await provider.getCurrentVersion(reference);
+
+    expect(replaced.metadata.revision).toBe('8');
+    expect(replacedVersion.storageRevision).toBe('8');
+    expect(finalVersion.storageRevision).toBe('9');
+  });
+
   it('maps provider failures to safe storage errors', async () => {
     const { provider, drive } = driveHarness();
     drive.statStorageObject.mockRejectedValueOnce(new DriveProviderError('provider', 404));

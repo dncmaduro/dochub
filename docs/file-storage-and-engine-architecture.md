@@ -858,9 +858,12 @@ fully complete.
 
 `FileSaveOperation` is the write-ahead record for this boundary. Reusing the
 same operation ID is idempotent after completion and is rejected while the
-same operation is still being finalized. The browser creates an operation ID
-for each explicit save request; a caller that retries a request outside the
-browser can reuse the original ID.
+same operation is still being finalized. After the replacement revision is
+preserved, the coordinator reads provider metadata again; the transaction,
+response, and returned editor model all use that final storage revision rather
+than the intermediate revision returned by the replace call. The browser
+creates an operation ID for each explicit save request; a caller that retries a
+request outside the browser can reuse the original ID.
 
 ### Provider-neutral product history
 

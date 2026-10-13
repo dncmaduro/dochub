@@ -63,16 +63,16 @@ export class FileHistoryService {
       if (error instanceof StorageObjectNotFoundError) throw new NotFoundException('The historical version is unavailable.');
       throw new ServiceUnavailableException('The historical version is unavailable.');
     }
-    let stored;
     try {
       if (historical.metadata.sizeBytes === null) throw new ServiceUnavailableException('The historical version is unavailable.');
       await this.versions.preserveVersion(ref, current.ref);
-      stored = await this.storageReplace(ref, historical, current.storageRevision, historical.metadata.mimeType);
+      await this.storageReplace(ref, historical, current.storageRevision, historical.metadata.mimeType);
     } finally {
       await historical.cleanup?.().catch(() => undefined);
     }
+    const replacedVersion = await this.versions.getCurrentVersion(ref);
+    await this.versions.preserveVersion(ref, replacedVersion.ref);
     const next = await this.versions.getCurrentVersion(ref);
-    await this.versions.preserveVersion(ref, next.ref);
     await this.database.prisma.$transaction(async (tx) => {
       const fileRow = await tx.file.update({ where: { id: file.fileId }, data: { revisionSequence: { increment: 1 } }, select: { revisionSequence: true, driveFileId: true } });
       if (fileRow.driveFileId) await tx.driveFile.update({ where: { id: fileRow.driveFileId }, data: { sizeBytes: next.sizeBytes, driveVersion: next.storageRevision, syncedAt: new Date() } });
@@ -81,7 +81,7 @@ export class FileHistoryService {
       await tx.outboxEvent.create({ data: { eventType: 'FILE_CONTENT_CHANGED', aggregateType: 'FILE', aggregateId: file.fileId, payload: { fileId: file.fileId, storageRevision: next.storageRevision, source: 'RESTORE' } } });
     });
     await this.prune(file.fileId, ref);
-    return { storageRevision: stored.metadata.revision ?? next.storageRevision };
+    return { storageRevision: next.storageRevision };
   }
 
   private async prune(fileId: string, ref: StorageObjectRef) {

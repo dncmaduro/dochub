@@ -74,6 +74,7 @@ export class FileSaveCoordinator {
     }
 
     const current = await this.storage.stat(target.ref);
+    this.logger.debug(`save revision trace expected=${expectedRevision} precheck=${current.revision ?? 'missing'}`);
     if (current.revision !== expectedRevision) {
       await this.recordConflict(request.userId, target, request.engine.id, expectedRevision, current.revision);
       throw this.revisionConflict(current.revision, current.modifiedAt);
@@ -92,14 +93,20 @@ export class FileSaveCoordinator {
     let oldVersion: StorageVersionMetadata;
     try {
       oldVersion = await this.versions.getCurrentVersion(target.ref);
+      this.logger.debug(`save revision trace oldCurrent=${oldVersion.storageRevision} oldProviderRevision=${oldVersion.ref.versionId}`);
       await this.versions.preserveVersion(target.ref, oldVersion.ref);
       const stored = await this.storage.replace(target.ref, { stream: prepared.stream, mimeType: prepared.mimeType }, { expectedRevision });
       if (!stored.metadata.revision) throw new ServiceUnavailableException('Storage did not return a new revision.');
-      const newVersion = await this.versions.getCurrentVersion(target.ref);
-      await this.versions.preserveVersion(target.ref, newVersion.ref);
-      await this.finalizeSave({ request, target, operationId, oldVersion, newVersion });
+      this.logger.debug(`save revision trace replaced=${stored.metadata.revision}`);
+      const replacedVersion = await this.versions.getCurrentVersion(target.ref);
+      this.logger.debug(`save revision trace preserveNew=${replacedVersion.storageRevision} newProviderRevision=${replacedVersion.ref.versionId}`);
+      await this.versions.preserveVersion(target.ref, replacedVersion.ref);
+      const finalVersion = await this.versions.getCurrentVersion(target.ref);
+      this.logger.debug(`save revision trace postPreserve=${finalVersion.storageRevision}`);
+      await this.finalizeSave({ request, target, operationId, oldVersion, newVersion: finalVersion });
       await this.prune(target.fileId, target.ref);
-      return { storageRevision: stored.metadata.revision, model: await this.openModel(target, request.engine, stored.metadata.revision) };
+      this.logger.debug(`save revision trace returned=${finalVersion.storageRevision}`);
+      return { storageRevision: finalVersion.storageRevision, model: await this.openModel(target, request.engine, finalVersion.storageRevision) };
     } catch (error) {
       if (error instanceof StorageConflictError) {
         const latest = await this.storage.stat(target.ref).catch(() => undefined);
@@ -126,7 +133,8 @@ export class FileSaveCoordinator {
     try {
       const createdVersion = await this.versions.getCurrentVersion(stored.ref);
       await this.versions.preserveVersion(stored.ref, createdVersion.ref);
-      const result = await this.registerCopy(request, target, stored.ref, createdVersion, request.name);
+      const finalVersion = await this.versions.getCurrentVersion(stored.ref);
+      const result = await this.registerCopy(request, target, stored.ref, finalVersion, request.name);
       return result;
     } catch (error) {
       await this.storage.delete(stored.ref).catch(() => undefined);

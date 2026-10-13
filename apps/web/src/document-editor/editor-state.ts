@@ -94,7 +94,8 @@ export function replaceBaseline(state: DocumentEditorState, model: DocumentModel
 
 export function acceptSavedModel(state: DocumentEditorState, model: DocumentModel): DocumentEditorState {
   const dirtyBlockIds = dirtyBlocks(model, state.currentModel);
-  return { ...state, baselineModel: model, dirtyBlockIds, saveStatus: dirtyBlockIds.size ? "unsaved" : "saved" };
+  const currentModel = { ...state.currentModel, storageRevision: model.storageRevision };
+  return { ...state, baselineModel: model, currentModel, dirtyBlockIds, saveStatus: dirtyBlockIds.size ? "unsaved" : "saved" };
 }
 
 export function restoreRecoveredModel(state: DocumentEditorState, model: DocumentModel): DocumentEditorState {

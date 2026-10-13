@@ -460,6 +460,7 @@ export class DriveUploadService {
       try {
         initialVersion = await this.versions.getCurrentVersion(storedObject.ref);
         await this.versions.preserveVersion(storedObject.ref, initialVersion.ref);
+        initialVersion = await this.versions.getCurrentVersion(storedObject.ref);
       } catch {
         this.logger.warn('Initial provider version could not be preserved; upload will remain available without managed history.');
         initialVersion = undefined;
