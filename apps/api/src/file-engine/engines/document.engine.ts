@@ -13,7 +13,9 @@ import type {
   FileEngineOpenContext,
   FilePreviewContent,
   FilePreviewResult,
+  PreparedFileSave,
 } from '../file-engine.types.js';
+import { readSourceBytes } from '../file-engine.types.js';
 
 export const DOCX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const DOC_MIME_TYPES = new Set(['application/msword', 'application/vnd.ms-word']);
@@ -83,19 +85,26 @@ export class DocumentEngine extends BaseFileEngine {
     };
   }
 
-  async save(file: FileDescriptor, model: unknown, context: import('../file-engine.types.js').FileEngineSaveContext): Promise<{ storageRevision: string; model: DocumentModel }> {
+  async prepareSave(file: FileDescriptor, model: unknown, context: import('../file-engine.types.js').FileEngineSaveContext): Promise<PreparedFileSave> {
     if (!isDocxFile(file)) throw new FileFormatUnsupportedError('Native document editing supports DOCX only.');
     if (!file.storageRef) throw new FileFormatUnsupportedError('A storage reference is required for native DOCX editing.');
     const request = parseDocumentPatchRequest(model);
     DocxPatcher.assertWithinLimits(request);
-    const current = await context.storage.stat(file.storageRef);
+    const source = context.source ?? { stat: () => context.storage.stat(file.storageRef!), openRead: () => context.storage.openRead(file.storageRef!) };
+    const current = await source.stat();
     if (current.revision !== request.expectedRevision) throw new StorageConflictError('Storage object revision has changed');
-    const source = await DocxPackageReader.readStorageBytes(context.storage, file.storageRef);
-    const patched = DocxPatcher.apply(source, request);
+    const sourceBytes = await readSourceBytes(source);
+    const patched = DocxPatcher.apply(sourceBytes, request);
+    return { stream: Readable.from([patched.bytes]), mimeType: DOCX_MIME_TYPE, sizeBytes: BigInt(patched.bytes.byteLength) };
+  }
+
+  async save(file: FileDescriptor, model: unknown, context: import('../file-engine.types.js').FileEngineSaveContext): Promise<{ storageRevision: string; model: DocumentModel }> {
+    if (!file.storageRef) throw new FileFormatUnsupportedError('A storage reference is required for native DOCX editing.');
+    const prepared = await this.prepareSave(file, model, context);
     const stored = await context.storage.replace(
       file.storageRef,
-      { stream: Readable.from([patched.bytes]), mimeType: DOCX_MIME_TYPE },
-      { expectedRevision: request.expectedRevision },
+      { stream: prepared.stream, mimeType: prepared.mimeType },
+      { expectedRevision: context.expectedRevision },
     );
     if (!stored.metadata.revision) throw new Error('Storage provider did not return a new revision');
     const savedPackage = await DocxPackageReader.fromStorage(context.storage, file.storageRef);

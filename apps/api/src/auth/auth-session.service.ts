@@ -115,6 +115,7 @@ export class AuthSessionService {
     });
     this.assertActiveUser(user);
     return {
+      id: user.id,
       displayName: user.displayName,
       email: user.email,
       status: user.status,

@@ -5,6 +5,7 @@ export interface StorageConfig {
   root: string;
   uploadTempRoot: string;
   uploadMaxBytes: number;
+  versionHistoryLimit: number;
 }
 
 export const STORAGE_CONFIG = Symbol('STORAGE_CONFIG');
@@ -50,5 +51,12 @@ export function loadStorageConfig(
     root,
     uploadTempRoot,
     uploadMaxBytes: positiveInteger('UPLOAD_MAX_BYTES', env.UPLOAD_MAX_BYTES),
+    versionHistoryLimit: boundedInteger('FILE_VERSION_HISTORY_LIMIT', env.FILE_VERSION_HISTORY_LIMIT ?? '50', 1, 190),
   };
+}
+
+function boundedInteger(name: string, value: string, min: number, max: number): number {
+  const parsed = positiveInteger(name, value);
+  if (parsed < min || parsed > max) throw new Error(`${name} must be between ${min} and ${max}`);
+  return parsed;
 }

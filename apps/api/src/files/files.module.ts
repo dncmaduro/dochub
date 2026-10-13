@@ -15,6 +15,7 @@ import { PreviewService } from './preview.service.js';
 import { OfficeTemplateService } from './office-template.service.js';
 import { FileWorkspacePreviewService } from './file-workspace-preview.service.js';
 import { FileEngineModule } from '../file-engine/file-engine.module.js';
+import { FileHistoryService } from './file-history.service.js';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { FileEngineModule } from '../file-engine/file-engine.module.js';
     PreviewService,
     OfficeTemplateService,
     FileWorkspacePreviewService,
+    FileHistoryService,
   ],
   exports: [FileReadService, FileValidationService],
 })

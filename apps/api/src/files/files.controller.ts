@@ -20,6 +20,7 @@ import { FileReadService } from './file-read.service.js';
 import { UnsatisfiableRangeError } from './byte-range.js';
 import { MultipartUploadService } from './multipart-upload.service.js';
 import { CreateOfficeFileDto } from './dto/create-office-file.dto.js';
+import { FileHistoryService } from './file-history.service.js';
 
 @Controller()
 @UseGuards(AccessTokenGuard)
@@ -28,6 +29,7 @@ export class FilesController {
     private readonly files: FilesService,
     private readonly reads: FileReadService,
     private readonly multipart: MultipartUploadService,
+    private readonly history: FileHistoryService,
   ) {}
 
   @Post('files')
@@ -80,7 +82,7 @@ export class FilesController {
     @CurrentAuth() auth: AuthPrincipal,
     @Param('nodeId') nodeId: string,
   ) {
-    return this.files.listVersions(auth.userId, nodeId);
+    return this.history.listVersions(auth.userId, nodeId);
   }
 
   @Post('nodes/:nodeId/versions/:versionId/restore')
@@ -88,8 +90,9 @@ export class FilesController {
     @CurrentAuth() auth: AuthPrincipal,
     @Param('nodeId') nodeId: string,
     @Param('versionId') versionId: string,
+    @Body() body: { expectedRevision?: string },
   ) {
-    return this.files.restoreVersion(auth.userId, nodeId, versionId);
+    return this.history.restoreVersion(auth.userId, nodeId, versionId, body?.expectedRevision);
   }
 
   @Get('nodes/:nodeId/content')

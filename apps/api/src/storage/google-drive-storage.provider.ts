@@ -18,6 +18,9 @@ import type {
   StorageReadResult,
   StoredObject,
   StoredObjectMetadata,
+  StorageVersionMetadata,
+  StorageVersionRef,
+  VersionedStorageProvider,
 } from './storage-provider.js';
 import { DriveProviderError, type DriveApiFile, type DriveContent } from '../drive/google-drive.provider.js';
 import { DriveService } from '../drive/drive.service.js';
@@ -56,7 +59,7 @@ function assertReference(reference: StorageObjectRef): void {
 }
 
 @Injectable()
-export class GoogleDriveStorageProvider implements StorageProvider {
+export class GoogleDriveStorageProvider implements StorageProvider, VersionedStorageProvider {
   constructor(private readonly drive: DriveService) {}
 
   async put(input: PutObjectInput): Promise<StoredObject> {
@@ -133,6 +136,76 @@ export class GoogleDriveStorageProvider implements StorageProvider {
     } catch (error) {
       throw this.mapError(error, 'Unable to inspect object');
     }
+  }
+
+  async getCurrentVersion(reference: StorageObjectRef): Promise<StorageVersionMetadata> {
+    assertReference(reference);
+    try {
+      const file = await this.drive.statStorageObject(reference.objectId);
+      if (!file.headRevisionId || !file.version) {
+        throw new StorageProviderUnavailableError('Storage provider did not return version metadata');
+      }
+      return this.versionMetadata(reference, {
+        id: file.headRevisionId,
+        mimeType: file.mimeType,
+        size: file.size,
+        md5Checksum: file.md5Checksum,
+        modifiedTime: file.modifiedTime,
+      }, file.version);
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw this.mapError(error, 'Unable to inspect storage version');
+    }
+  }
+
+  async preserveVersion(reference: StorageObjectRef, versionRef: StorageVersionRef): Promise<StorageVersionMetadata> {
+    assertReference(reference);
+    if (versionRef.provider !== GOOGLE_DRIVE || !versionRef.versionId.trim()) {
+      throw new StorageObjectNotFoundError('Storage version reference is invalid');
+    }
+    try {
+      const revision = await this.drive.updateStorageRevision(reference.objectId, versionRef.versionId, true);
+      return this.versionMetadata(reference, revision, undefined);
+    } catch (error) {
+      throw this.mapError(error, 'Unable to preserve storage version');
+    }
+  }
+
+  async openVersion(reference: StorageObjectRef, versionRef: StorageVersionRef, options?: StorageReadOptions): Promise<StorageReadResult> {
+    assertReference(reference);
+    if (versionRef.provider !== GOOGLE_DRIVE || !versionRef.versionId.trim()) {
+      throw new StorageObjectNotFoundError('Storage version reference is invalid');
+    }
+    try {
+      const content = await this.drive.openStorageRevision(reference.objectId, versionRef.versionId, options?.range ? rangeHeader(options.range) : undefined);
+      return this.readResult(reference, content);
+    } catch (error) {
+      throw this.mapError(error, 'Unable to read historical version');
+    }
+  }
+
+  async releaseVersion(reference: StorageObjectRef, versionRef: StorageVersionRef): Promise<void> {
+    assertReference(reference);
+    if (versionRef.provider !== GOOGLE_DRIVE || !versionRef.versionId.trim()) {
+      throw new StorageObjectNotFoundError('Storage version reference is invalid');
+    }
+    try {
+      await this.drive.deleteStorageRevision(reference.objectId, versionRef.versionId);
+    } catch (error) {
+      throw this.mapError(error, 'Unable to release historical version');
+    }
+  }
+
+  private versionMetadata(reference: StorageObjectRef, revision: { id: string; mimeType?: string; size?: string; md5Checksum?: string; modifiedTime?: string }, storageRevision?: string): StorageVersionMetadata {
+    if (!storageRevision) storageRevision = revision.id;
+    return {
+      ref: { provider: reference.provider, versionId: revision.id },
+      storageRevision,
+      mimeType: revision.mimeType ?? 'application/octet-stream',
+      sizeBytes: revision.size ? BigInt(revision.size) : null,
+      checksum: revision.md5Checksum,
+      modifiedAt: revision.modifiedTime ? new Date(revision.modifiedTime) : undefined,
+    };
   }
 
   private readResult(

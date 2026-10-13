@@ -43,6 +43,7 @@ export interface PresentationSlidePatch {
 export interface PresentationPatchRequest {
   expectedRevision: string;
   slides: PresentationSlidePatch[];
+  operationId?: string;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -63,6 +64,8 @@ function finite(value: unknown, message: string): number {
 export function parsePresentationPatchRequest(value: unknown): PresentationPatchRequest {
   const root = record(value);
   const expectedRevision = stringValue(root.expectedRevision, 'A presentation revision is required.');
+  const operationId = root.operationId === undefined ? undefined : stringValue(root.operationId, 'A presentation operation ID is required.');
+  if (operationId !== undefined && operationId.length > 200) throw new PresentationEditValidationError('The presentation operation ID is invalid.');
   if (!Array.isArray(root.slides) || root.slides.length > PRESENTATION_LIMITS.maxSlides) throw new PresentationEditValidationError('The presentation slide patch is invalid.');
   let patchCount = 0;
   const slides = root.slides.map((rawSlide) => {
@@ -133,5 +136,5 @@ export function parsePresentationPatchRequest(value: unknown): PresentationPatch
     });
     return { slideId, elements };
   });
-  return { expectedRevision, slides };
+  return { expectedRevision, slides, ...(operationId ? { operationId } : {}) };
 }

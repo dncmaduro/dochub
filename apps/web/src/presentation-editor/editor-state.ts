@@ -1,7 +1,7 @@
 import type { PresentationElement, PresentationModel, PresentationParagraph, PresentationSlideModel, PresentationTextElement } from "../api";
 
 export type PresentationMode = "view" | "edit";
-export type PresentationSaveStatus = "saved" | "dirty" | "saving" | "error";
+export type PresentationSaveStatus = "saved" | "dirty" | "saving" | "error" | "conflict";
 
 export interface PresentationEditorState {
   model: PresentationModel;

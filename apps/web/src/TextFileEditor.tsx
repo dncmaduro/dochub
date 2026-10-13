@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ApiClient, ApiError, type TextFileFormat, type TextFileModel } from "./api";
+import { ApiClient, type TextFileFormat, type TextFileModel } from "./api";
 import type { RegisterWorkspaceActions, WorkspaceMode } from "./workspace";
+import { useEditorPersistence } from "./useEditorPersistence";
 
 const api = new ApiClient();
 
@@ -110,7 +111,7 @@ export function TextFileEditor({ nodeId, initialModel, canEdit, mode: workspaceM
   const [value, setValue] = useState(initialModel.content);
   const [baseline, setBaseline] = useState(initialModel.content);
   const [displayMode, setDisplayMode] = useState<"preview" | "source">(initialModel.parseError || initialModel.format === "text" ? "source" : "preview");
-  const [status, setStatus] = useState<"clean" | "dirty" | "saving" | "save-failed" | "conflict">("clean");
+  const [baseRevision, setBaseRevision] = useState(initialModel.storageRevision ?? "");
   const [error, setError] = useState("");
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -149,34 +150,37 @@ export function TextFileEditor({ nodeId, initialModel, canEdit, mode: workspaceM
     setCanRedo(redoStack.current.length > 0);
   }, []);
 
-  const save = useCallback(async () => {
-    if (!canEdit || !initialModel.storageRevision || !dirty) return;
-    setStatus("saving");
-    setError("");
-    try {
-      const saved = await api.saveText(nodeId, { expectedRevision: initialModel.storageRevision, content: value });
-      setBaseline(saved.model.content);
+  const draftPayload = useCallback(() => ({ content: value }), [value]);
+  const saveDraft = useCallback((payload: { content: string }) => api.saveText(nodeId, { expectedRevision: baseRevision, content: payload.content }), [baseRevision, nodeId]);
+  const applyRecoveredDraft = useCallback((payload: { content: string }) => { changeValue(payload.content); onModeChange("edit"); }, [changeValue, onModeChange]);
+  const onSaved = useCallback((saved: Awaited<ReturnType<ApiClient["saveText"]>>, allLocalChangesSaved: boolean) => {
+    setBaseline(saved.model.content);
+    setBaseRevision(saved.storageRevision);
+    if (allLocalChangesSaved) {
       setValue(saved.model.content);
       undoStack.current = [];
       redoStack.current = [];
       setCanUndo(false);
       setCanRedo(false);
-      setStatus("clean");
-    } catch (requestError) {
-      if (requestError instanceof ApiError && requestError.status === 409) {
-        setStatus("conflict");
-        setError("This file changed after it was opened. Reload to discard local edits.");
-      } else {
-        setStatus("save-failed");
-        setError(requestError instanceof ApiError ? requestError.message : "The text could not be saved.");
-      }
     }
-  }, [canEdit, dirty, initialModel.storageRevision, nodeId, value]);
+  }, []);
+  const persistence = useEditorPersistence({ fileId: nodeId, engine: "TEXT", baseRevision, isDirty: dirty, buildDraftPayload: draftPayload, save: saveDraft, applyRecoveredDraft, onSaved });
+
+  const save = useCallback(() => { if (canEdit && baseRevision && dirty) void persistence.requestSave(); }, [baseRevision, canEdit, dirty, persistence]);
+  const saveAsCopy = useCallback(async (name: string) => {
+    if (!baseRevision || !dirty) return;
+    await api.saveAsCopy(nodeId, { name, expectedRevision: baseRevision, content: value });
+  }, [baseRevision, dirty, nodeId, value]);
+  const reload = useCallback(() => {
+    if (dirty && !window.confirm("Reload and discard unsaved changes?")) return;
+    persistence.reset();
+    onReload();
+  }, [dirty, onReload, persistence]);
 
   const discardAndView = useCallback(() => {
     if (dirty && !window.confirm("Discard unsaved changes?")) return;
     setValue(baseline);
-    setStatus("clean");
+    persistence.reset();
     setError("");
     undoStack.current = [];
     redoStack.current = [];
@@ -184,10 +188,10 @@ export function TextFileEditor({ nodeId, initialModel, canEdit, mode: workspaceM
     setCanRedo(false);
     onDirtyChange(false);
     onModeChange("view");
-  }, [baseline, dirty, onDirtyChange, onModeChange]);
+  }, [baseline, dirty, onDirtyChange, onModeChange, persistence]);
   useEffect(() => {
-    onRegisterActions({ save: () => { void save(); }, view: discardAndView, canEdit: canEdit && Boolean(initialModel.editable), canSave: dirty && status !== "saving", saving: status === "saving" });
-  }, [canEdit, discardAndView, dirty, initialModel.editable, onRegisterActions, save, status]);
+    onRegisterActions({ save: () => { save(); }, saveAsCopy, view: discardAndView, canEdit: canEdit && Boolean(initialModel.editable), canSave: dirty && persistence.status !== "saving" && persistence.status !== "conflict", saving: persistence.status === "saving" });
+  }, [canEdit, discardAndView, dirty, initialModel.editable, onRegisterActions, persistence.status, save, saveAsCopy]);
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (composing.current) return;
@@ -213,9 +217,10 @@ export function TextFileEditor({ nodeId, initialModel, canEdit, mode: workspaceM
         <button type="button" className="text-file-tool" onClick={undo} disabled={!canUndo}>Undo</button>
         <button type="button" className="text-file-tool" onClick={redo} disabled={!canRedo}>Redo</button>
       </>}
-      <span className="text-file-status" role="status">{status === "saving" ? "Saving…" : status === "conflict" ? "Conflict" : status === "save-failed" ? "Save failed" : dirty ? "Unsaved changes" : "Saved"}</span>
+      <span className="text-file-status" role="status">{persistence.status === "saving" ? "Saving…" : persistence.status === "conflict" ? "Conflict" : persistence.status === "save-failed" ? "Save failed" : dirty ? "Unsaved changes" : "Saved"}</span>
     </div>
-    {error && <div className="text-file-error" role="alert"><span>{error}</span>{status === "conflict" && <button type="button" className="text-file-tool" onClick={onReload}>Reload</button>}</div>}
+    {persistence.recovery && <div className="text-file-error" role="alert"><span>{persistence.recoveryIsOutdated ? "An older recovery draft is based on a previous file revision. Review it before saving; Save as copy is available." : "Unsaved changes from a previous session were found."}</span><button type="button" className="text-file-tool" onClick={persistence.restore}>Restore</button><button type="button" className="text-file-tool" onClick={persistence.discardRecovery}>Discard</button></div>}
+    {(error || persistence.error) && <div className="text-file-error" role="alert"><span>{persistence.error || error}</span>{persistence.status === "conflict" && <button type="button" className="text-file-tool" onClick={reload}>Reload</button>}</div>}
     {preview.error && <div className="text-file-parse-error" role="alert">{preview.error} Source remains available for inspection and editing.</div>}
     <div className="text-file-body">
       {editing ? sourceEditor : displayMode === "source" ? <div className="text-source-view">{sourceEditor}</div> : previewBody}

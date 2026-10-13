@@ -26,6 +26,8 @@ import {
   type CurrentUser,
   type DocumentRole,
   type FileVersion,
+  type FileRevisionHistoryItem,
+  type VersionHistoryItem,
   type FilePreviewDescriptor,
   type Node,
   type NodeSortBy,
@@ -51,7 +53,8 @@ import {
   runUploadQueue,
   type UploadQueueItem,
 } from "./upload-queue";
-import type { WorkspaceActions, WorkspaceMode } from "./workspace";
+import { confirmEditorNavigation, setActiveEditorDirty, type WorkspaceActions, type WorkspaceMode } from "./workspace";
+import { clearRecoveryDraftsForUser, clearRecoveryUser, setRecoveryUser } from "./recovery-drafts";
 import "./App.css";
 
 const api = new ApiClient();
@@ -168,12 +171,14 @@ function currentAdminTab(): "users" | "groups" | "drive" {
 function navigateAdmin(tab: "users" | "groups" | "drive" = "users") {
   const path = `/admin${tab === "users" ? "" : `?tab=${tab}`}`;
   if (`${window.location.pathname}${window.location.search}` !== path) {
+    if (!confirmEditorNavigation()) return;
     window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
 function navigateProfile() {
   if (window.location.pathname !== "/profile") {
+    if (!confirmEditorNavigation()) return;
     window.history.pushState({}, "", "/profile");
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
@@ -184,12 +189,14 @@ function currentSearchQuery() {
 function navigate(folderId: string | null) {
   const path = drivePath(folderId, currentDriveSort());
   if (`${window.location.pathname}${window.location.search}` !== path) {
+    if (!confirmEditorNavigation()) return;
     window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
 function navigateTrash() {
   if (window.location.pathname !== "/trash") {
+    if (!confirmEditorNavigation()) return;
     window.history.pushState({}, "", "/trash");
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
@@ -197,6 +204,7 @@ function navigateTrash() {
 function navigateCollection(route: "recent" | "favorites") {
   const path = `/${route}`;
   if (window.location.pathname !== path) {
+    if (!confirmEditorNavigation()) return;
     window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
@@ -206,6 +214,7 @@ function navigateSearch(query: string) {
   if (query) parameters.set("q", query);
   const path = `/search${parameters.size ? `?${parameters}` : ""}`;
   if (`${window.location.pathname}${window.location.search}` !== path) {
+    if (!confirmEditorNavigation()) return;
     window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
@@ -343,7 +352,8 @@ function driveActorLabel(actor: FileVersion["actor"]) {
   if (actor.type === "USER") return t("actors.UNKNOWN");
   return t(`actors.${actor.type}`);
 }
-function formatBytes(value: string) {
+function formatBytes(value: string | null) {
+  if (value === null) return "—";
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
   const locale = getLocale() === "vi" ? "vi-VN" : "en-US";
@@ -352,7 +362,7 @@ function formatBytes(value: string) {
   if (bytes < 1024 * 1024) return `${number(bytes / 1024)} ${t("files.units.kilobytes")}`;
   return `${number(bytes / (1024 * 1024))} ${t("files.units.megabytes")}`;
 }
-function formatVersionSource(source: FileVersion["source"]) {
+function formatVersionSource(source: FileVersion["source"] | FileRevisionHistoryItem["source"]) {
   return t(`versions.sources.${source}`);
 }
 function systemRoleLabel(role: SystemRole) {
@@ -598,6 +608,7 @@ function App() {
         ) window.history.replaceState({}, "", "/drive");
         setLocation(currentLocation());
         setProfile(user);
+        setRecoveryUser(user.id);
         setAuthenticated(true);
       },
       () => active && setAuthenticated(false),
@@ -724,9 +735,12 @@ function App() {
     if (!uploadingFromMenu) menuUploadInput.current?.click();
   }
   async function signOut() {
+    const userId = profile?.id;
     try {
       await api.logout();
     } finally {
+      if (userId) await clearRecoveryDraftsForUser(userId);
+      clearRecoveryUser();
       setAuthenticated(false);
       setProfile(null);
     }
@@ -2490,7 +2504,7 @@ function FileTile({
         {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>{t("drive.openInGoogle")}</button>}
         {!isFolder && hasCapability(node, "DOWNLOAD") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); void download(); }}><Icon name="download" size={16} />{t("common.download")}</button>}
         {hasCapability(node, "RENAME") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onRename(node); }}><Icon name="edit" size={16} />{t("files.rename")}</button>}
-        {!isFolder && node.backing?.type !== "GOOGLE_DRIVE" && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onVersions(node); }}>{t("files.versionHistory")}</button>}
+        {!isFolder && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onVersions(node); }}>{t("files.versionHistory")}</button>}
         {node.backing?.type !== "GOOGLE_DRIVE" && hasCapability(node, "SHARE") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onShare(node); }}><Icon name="share" size={16} />{t("files.share")}</button>}
         {hasCapability(node, "DELETE") && <button type="button" role="menuitem" className="menu-danger" onClick={() => { onCloseMenu(); onTrash(node); }}><Icon name="trash" size={16} />{t("files.moveToTrash")}</button>}
         {node.backing?.type === "GOOGLE_DRIVE" && canManageDocuments && onRemoveDrive && <button type="button" role="menuitem" className="menu-danger" onClick={() => { onCloseMenu(); onRemoveDrive(node); }}><Icon name="trash" size={16} />{t("drive.removeFromDocsHub")}</button>}
@@ -2695,7 +2709,7 @@ function FileRow({
                 {t("files.rename")}
               </button>
             )}
-            {!isFolder && node.backing?.type !== "GOOGLE_DRIVE" && (
+            {!isFolder && (
               <button
                 type="button"
                 role="menuitem"
@@ -3713,14 +3727,19 @@ function TrashRow({
   );
 }
 function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () => void; onNotice: (notice: Notice) => void }) {
-  const [versions, setVersions] = useState<FileVersion[] | null>(null);
+  const [versions, setVersions] = useState<VersionHistoryItem[] | null>(null);
+  const [currentRevision, setCurrentRevision] = useState<string | undefined>();
   const [error, setError] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   const dialog = useDialogFocus();
   const load = useCallback(async () => {
     setError("");
     try {
-      setVersions((await api.listVersions(node.id)).items);
+      const result = await api.listVersions(node.id);
+      setVersions(result.items);
+      // Legacy local history has no provider revision marker; its existing
+      // restore path still performs its own authorization/locking.
+      setCurrentRevision(result.currentRevision ?? "legacy");
     } catch (requestError) {
       setError(displayError(requestError));
     }
@@ -3736,12 +3755,13 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
   }, [onClose]);
-  async function restore(version: FileVersion) {
-    if (!window.confirm(t("versions.restoreConfirm", { number: version.versionNumber }))) return;
+  async function restore(version: VersionHistoryItem) {
+    const number = "versionNumber" in version ? version.versionNumber : version.sequence;
+    if (!window.confirm(t("versions.restoreConfirm", { number }))) return;
     setPending(version.id);
     setError("");
     try {
-      await api.restoreVersion(node.id, version.id);
+      await api.restoreVersion(node.id, version.id, currentRevision);
       await load();
       onNotice({ tone: "success", message: t("versions.restored") });
     } catch (requestError) {
@@ -3762,12 +3782,12 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
           <div className="version-list">{versions.map((version) => (
             <div className="version-row" key={version.id}>
               <div className="version-title-row">
-                <strong>{t("versions.version", { number: version.versionNumber })}</strong>
+                <strong>{t("versions.version", { number: "versionNumber" in version ? version.versionNumber : version.sequence })}</strong>
                 {version.isCurrent && <span className="version-current">{t("versions.current")}</span>}
               </div>
               <div className="version-metadata">
                 <span className="version-attribution">
-                  <strong>{actorLabel(version.actor)}</strong>
+                  <strong>{"actor" in version ? actorLabel(version.actor) : version.actorDisplayName ?? t("actors.UNKNOWN")}</strong>
                   <span aria-hidden="true"> · </span>
                   <span>{formatVersionTimestamp(version.createdAt)}</span>
                 </span>
@@ -3776,7 +3796,7 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
               </div>
               <div className="version-actions">
                 {hasCapability(node, "DOWNLOAD") && <button type="button" className="version-action" disabled={pending !== null} onClick={() => void api.downloadVersion(node, version).catch((requestError) => onNotice({ tone: "error", message: displayError(requestError) }))}>{t("versions.downloadVersion")}</button>}
-                {!version.isCurrent && hasCapability(node, "RESTORE_VERSION") && <button type="button" className="version-action" disabled={pending !== null} onClick={() => void restore(version)}>{pending === version.id ? t("common.restoring") : t("versions.restoreThisVersion")}</button>}
+                {!version.isCurrent && hasCapability(node, "RESTORE_VERSION") && <button type="button" className="version-action" disabled={pending !== null || !currentRevision} onClick={() => void restore(version)}>{pending === version.id ? t("common.restoring") : t("versions.restoreThisVersion")}</button>}
               </div>
             </div>
           ))}</div>
@@ -4208,6 +4228,9 @@ function PreviewDialogContent({
   );
   const [attempt, setAttempt] = useState(0);
   const [downloadError, setDownloadError] = useState("");
+  const [copyError, setCopyError] = useState("");
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyName, setCopyName] = useState("");
   const [documentDirty, setDocumentDirty] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("view");
   const [workspaceActions, setWorkspaceActions] = useState<WorkspaceActions | null>(null);
@@ -4232,6 +4255,19 @@ function PreviewDialogContent({
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
   }, [requestClose]);
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!documentDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    if (documentDirty) window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [documentDirty]);
+  useEffect(() => {
+    setActiveEditorDirty(documentDirty);
+    return () => setActiveEditorDirty(false);
+  }, [documentDirty]);
   const unavailable = previewIsUnavailable(preview);
   const loading = previewIsLoading(preview);
   const session = unavailable || loading ? null : preview;
@@ -4244,6 +4280,7 @@ function PreviewDialogContent({
     workspaceActionsRef.current = null;
     setWorkspaceActions(null);
     setDocumentDirty(false);
+    setCopyOpen(false);
     setAttempt((current) => current + 1);
   };
   async function download() {
@@ -4253,6 +4290,21 @@ function PreviewDialogContent({
     } catch (error) {
       setDownloadError(displayError(error));
     }
+  }
+  function beginSaveAsCopy() {
+    if (!workspaceActionsRef.current?.saveAsCopy) return;
+    const suggested = preview.filename.replace(/(\.[^.]+)$/u, " - Copy$1");
+    setCopyName(suggested);
+    setCopyError("");
+    setCopyOpen(true);
+  }
+  async function saveAsCopy() {
+    const name = copyName.trim();
+    if (!name) { setCopyError("A copy name is required."); return; }
+    if (!workspaceActionsRef.current?.saveAsCopy) return;
+    try { await workspaceActionsRef.current.saveAsCopy(name.trim()); }
+    catch (error) { setCopyError(displayError(error)); return; }
+    setCopyOpen(false);
   }
   return (
     <div className="dialog-backdrop" role="presentation">
@@ -4269,6 +4321,7 @@ function PreviewDialogContent({
             {nativeWorkspace && workspaceMode === "edit" && workspaceActions && (
               <>
                 <button type="button" className="button" onClick={() => workspaceActionsRef.current?.save()} disabled={!workspaceActions.canSave || workspaceActions.saving}>{workspaceActions.saving ? "Saving…" : "Save"}</button>
+                {documentDirty && <button type="button" className="button" onClick={beginSaveAsCopy}>Save as copy</button>}
                 <button type="button" className="button" onClick={() => workspaceActionsRef.current?.view()}>View</button>
               </>
             )}
@@ -4295,6 +4348,8 @@ function PreviewDialogContent({
             </button>
           </div>
         </header>
+        {copyError && <div className="preview-error" role="alert">{copyError}</div>}
+        {copyOpen && <div className="preview-copy-panel" role="dialog" aria-modal="false" aria-labelledby="preview-copy-title"><strong id="preview-copy-title">Save as copy</strong><label htmlFor="preview-copy-name">Copy name</label><input id="preview-copy-name" autoFocus value={copyName} onChange={(event) => setCopyName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void saveAsCopy(); } }} maxLength={255} /><div className="dialog-actions"><button type="button" className="button" onClick={() => setCopyOpen(false)}>Cancel</button><button type="button" className="button button-primary" onClick={() => void saveAsCopy()}>Save as copy</button></div></div>}
         <div className="preview-content" aria-busy={previewLoading}>
           {loading ? (
             <PreviewState

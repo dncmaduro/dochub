@@ -7,6 +7,6 @@ export function SpreadsheetToolbar({ state, mode, onUndo, onRedo }: { state: Spr
   return <div className="spreadsheet-toolbar" role="toolbar" aria-label="Spreadsheet editing tools">
     {button("Undo", onUndo, !state.undoStack.length)}{button("Redo", onRedo, !state.redoStack.length)}
     <span className="spreadsheet-toolbar-divider" aria-hidden="true" />
-    <span className="spreadsheet-toolbar-status" role="status">{state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "unsaved" ? "Unsaved changes" : state.saveStatus === "failed" ? "Save failed" : "Saved"}</span>
+    <span className="spreadsheet-toolbar-status" role="status">{state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "unsaved" ? "Unsaved changes" : state.saveStatus === "conflict" ? "Conflict" : state.saveStatus === "failed" ? "Save failed" : "Saved"}</span>
   </div>;
 }

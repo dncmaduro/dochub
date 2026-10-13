@@ -170,6 +170,15 @@ export class TrashPurgeEngine {
               where: { id: { in: plan.fileIds } },
               data: { currentVersionId: null },
             });
+            // Provider-backed history and write-ahead save records are product
+            // metadata, not storage objects. They must be removed before the
+            // restrictive File foreign keys are deleted.
+            await tx.fileSaveOperation.deleteMany({
+              where: { fileId: { in: plan.fileIds } },
+            });
+            await tx.fileRevision.deleteMany({
+              where: { fileId: { in: plan.fileIds } },
+            });
             await tx.fileVersion.deleteMany({
               where: { id: { in: plan.versionIds } },
             });

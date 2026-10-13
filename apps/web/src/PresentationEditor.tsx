@@ -7,6 +7,7 @@ import { createPresentationEditorState, elementForId, loadSlide, moveElement, re
 import type { PresentationModel } from "./api";
 import { fitSlideScale } from "./presentation-layout";
 import type { RegisterWorkspaceActions, WorkspaceMode } from "./workspace";
+import { useRecoveryDraft } from "./useEditorPersistence";
 
 const api = new ApiClient();
 
@@ -61,6 +62,7 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
   const [ready, setReady] = useState(false);
   const [thumbnailErrors, setThumbnailErrors] = useState<Record<string, string>>({});
   const pendingSlides = useRef(new Set<string>());
+  const saveGeneration = useRef(0);
   const stageScrollRef = useRef<HTMLDivElement>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const activeSlide = state?.slides[state.activeSlideId];
@@ -100,6 +102,7 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
   }, [initialModel, modelUrl, onError, onReady]);
 
   useEffect(() => { onDirtyChange(Boolean(state && state.saveStatus !== "saved")); }, [onDirtyChange, state]);
+  useEffect(() => { if (state?.saveStatus === "dirty") saveGeneration.current += 1; }, [state?.history.length, state?.saveStatus]);
   useLayoutEffect(() => {
     const node = stageScrollRef.current;
     if (!node) return undefined;
@@ -112,29 +115,47 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
   }, []);
 
   const save = useCallback(async () => {
-    if (!state || state.saveStatus === "saving") return;
+    if (!state || state.saveStatus === "saving" || state.saveStatus === "conflict") return;
+    const generation = saveGeneration.current;
     const slides = changedPatches(state.slides, state.originalSlides);
     if (!slides.length) { setState((current) => current ? { ...current, saveStatus: "saved" } : current); return; }
+    const savedSlides = state.slides;
     setState((current) => current ? { ...current, saveStatus: "saving" } : current);
     try {
       const result = await api.savePresentation(nodeId, { expectedRevision: state.model.storageRevision ?? "", slides });
-      setState((current) => current ? { ...current, model: result.model, originalSlides: current.slides, history: [], future: [], saveStatus: "saved" } : current);
+      setState((current) => current ? { ...current, model: result.model, originalSlides: saveGeneration.current === generation ? current.slides : savedSlides, history: saveGeneration.current === generation ? [] : current.history, future: saveGeneration.current === generation ? [] : current.future, saveStatus: saveGeneration.current === generation ? "saved" : "dirty" } : current);
       setError("");
     } catch (caught) {
-      setState((current) => current ? { ...current, saveStatus: "error" } : current);
-      setError(caught instanceof Error && "status" in caught && (caught as { status?: number }).status === 409 ? "This file changed after you opened it." : caught instanceof Error ? caught.message : "The presentation could not be saved.");
+      const conflict = caught instanceof Error && "status" in caught && (caught as { status?: number }).status === 409;
+      setState((current) => current ? { ...current, saveStatus: conflict ? "conflict" : "error" } : current);
+      setError(conflict ? "This file changed after you opened it." : caught instanceof Error ? caught.message : "The presentation could not be saved.");
     }
   }, [nodeId, state]);
+  const saveAsCopy = useCallback(async (name: string) => {
+    if (!state || !state.model.storageRevision) return;
+    const slides = changedPatches(state.slides, state.originalSlides);
+    if (!slides.length) return;
+    await api.saveAsCopy(nodeId, { name, expectedRevision: state.model.storageRevision, slides });
+  }, [nodeId, state]);
+  const recoveryDraft = useRecoveryDraft({
+    fileId: nodeId,
+    engine: "PRESENTATION",
+    baseRevision: state?.model.storageRevision ?? "",
+    isDirty: state?.saveStatus === "dirty",
+    buildDraftPayload: useCallback(() => ({ slides: state?.slides ?? {} }), [state?.slides]),
+    applyRecoveredDraft: useCallback((payload: { slides: PresentationEditorState["slides"] }) => { setState((current) => current ? { ...current, slides: payload.slides, saveStatus: "dirty" } : current); onModeChange("edit"); }, [onModeChange]),
+  });
 
   const reload = useCallback(async () => {
     if (state && state.saveStatus !== "saved" && !window.confirm("Reload and discard unsaved changes?")) return;
     try {
       const model = await api.getPresentationModel(modelUrl);
       const slide = await api.getPresentationSlide(modelUrl, model.activeSlideId);
+      recoveryDraft.clearCurrentDraft();
       setState(createPresentationEditorState(model, slide));
       setError("");
     } catch { setError("The presentation could not be reloaded."); }
-  }, [modelUrl, state]);
+  }, [modelUrl, recoveryDraft, state]);
 
   const commitDraft = useCallback(() => {
     if (!state || !selected || selected.type !== "text" || composing) return;
@@ -148,13 +169,14 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
   const loadThumbnail = useCallback((slideId: string) => { void fetchSlide(slideId, false); }, [fetchSlide]);
   const discardAndView = useCallback(() => {
     if (state?.saveStatus !== "saved" && !window.confirm("Discard unsaved changes?")) return;
+    recoveryDraft.clearCurrentDraft();
     setState((current) => current ? { ...current, mode: "view", slides: current.originalSlides, history: [], future: [], selectedElementId: null, saveStatus: "saved" } : current);
     onDirtyChange(false);
     onModeChange("view");
-  }, [onDirtyChange, onModeChange, state?.saveStatus]);
+  }, [onDirtyChange, onModeChange, recoveryDraft, state?.saveStatus]);
   useEffect(() => {
-    onRegisterActions({ save: () => { void save(); }, view: discardAndView, canEdit: Boolean(state?.model.editable), canSave: state?.saveStatus === "dirty", saving: state?.saveStatus === "saving" });
-  }, [discardAndView, onRegisterActions, save, state?.model.editable, state?.saveStatus]);
+    onRegisterActions({ save: () => { void save(); }, saveAsCopy, view: discardAndView, canEdit: Boolean(state?.model.editable), canSave: state?.saveStatus === "dirty", saving: state?.saveStatus === "saving" });
+  }, [discardAndView, onRegisterActions, save, saveAsCopy, state?.model.editable, state?.saveStatus]);
   const format = useCallback((key: "bold" | "italic" | "underline") => setState((current) => current && selected?.type === "text" ? setFirstRunFormat(current, selected.id, { [key]: !(selected.paragraphs[0]?.runs[0]?.[key] ?? false) }) : current), [selected]);
   const align = useCallback((alignment: "left" | "center" | "right" | "justified") => setState((current) => current && selected?.type === "text" ? replaceText(current, selected.id, selected.paragraphs.map((paragraph) => ({ ...paragraph, alignment }))) : current), [selected]);
   const fontSize = useCallback((size: number) => setState((current) => current && selected?.type === "text" ? setFirstRunFormat(current, selected.id, { fontSize: size }) : current), [selected]);
@@ -177,6 +199,7 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
   if (!state || !current) return <div className="presentation-loading" role="status">{loadingSlide ? "Loading slide…" : "Loading presentation…"}</div>;
   return <div className="presentation-editor" onBlur={commitDraft}>
     <PresentationToolbar state={state} mode={mode} onUndo={() => setState((value) => value ? undo(value) : value)} onRedo={() => setState((value) => value ? redo(value) : value)} onBold={() => format("bold")} onItalic={() => format("italic")} onUnderline={() => format("underline")} onAlign={align} onFontSize={fontSize} onZoom={(delta) => setState((value) => value ? { ...value, zoom: Math.min(1.5, Math.max(0.5, value.zoom + delta)) } : value)} />
+    {recoveryDraft.recovery && <div className="presentation-editor-error" role="alert"><span>{recoveryDraft.recoveryIsOutdated ? "An older recovery draft is based on a previous file revision. Review it before saving; Save as copy is available." : "Unsaved changes from a previous session were found."}</span><button type="button" className="button" onClick={recoveryDraft.restore}>Restore</button><button type="button" className="button" onClick={recoveryDraft.discardRecovery}>Discard</button></div>}
     {error && <div className="presentation-editor-error" role="alert">{error}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}
     <div className="presentation-workspace"><SlideThumbnailRail descriptors={state.model.slides} slides={state.slides} modelUrl={modelUrl} activeSlideId={state.activeSlideId} thumbnailErrors={thumbnailErrors} onLoad={loadThumbnail} onSelect={chooseSlide} /><main className="presentation-stage"><div ref={stageScrollRef} className="presentation-stage-scroll"><div className="presentation-canvas-scale" style={canvasStyle}><SlideCanvas modelUrl={modelUrl} slide={current} scale={scale} mode={mode} selectedElementId={state.selectedElementId} onSelect={(id) => { if (id && selectedText?.id !== id) setDraftElementId(null); setState((value) => value ? selectElement(value, id) : value); }} onMove={(id, x, y) => setState((value) => value ? moveElement(value, id, x, y) : value)} onResize={(id, width, height) => setState((value) => value ? resizeElement(value, id, width, height) : value)} /></div></div>{selectedText && mode === "edit" && <div className="presentation-text-editor"><label htmlFor="presentation-text-input">Text</label><textarea id="presentation-text-input" value={draftElementId === selectedText.id ? draft : textToString(selectedText)} onChange={(event) => { setDraftElementId(selectedText.id); setDraft(event.target.value); }} onCompositionStart={() => setComposing(true)} onCompositionEnd={(event) => { setComposing(false); setDraftElementId(selectedText.id); setDraft(event.currentTarget.value); }} onBlur={commitDraft} rows={3} /></div>}</main></div>
   </div>;

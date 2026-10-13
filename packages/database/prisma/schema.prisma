@@ -180,6 +180,8 @@ model User {
   createdNodes             Node[]                   @relation("NodeCreatedBy")
   updatedNodes             Node[]                   @relation("NodeUpdatedBy")
   createdFileVersions      FileVersion[]            @relation("FileVersionCreatedBy")
+  createdFileRevisions     FileRevision[]           @relation("FileRevisionCreatedBy")
+  createdSaveOperations    FileSaveOperation[]      @relation("FileSaveOperationCreatedBy")
   permissionEntries        PermissionEntry[]        @relation("PermissionEntryUser")
   createdPermissionEntries PermissionEntry[]        @relation("PermissionEntryCreatedBy")
   trashOperations          TrashOperation[]         @relation("TrashOperationTrashedBy")
@@ -325,6 +327,24 @@ enum FileVersionActorType {
   COLLABORATIVE
 }
 
+enum FileRevisionSource {
+  INITIAL
+  MANUAL_SAVE
+  RESTORE
+  SAVE_AS_COPY_INITIAL
+  SYSTEM
+}
+
+enum FileRevisionProvider {
+  LOCAL
+  GOOGLE_DRIVE
+}
+
+enum FileSaveOperationStatus {
+  PENDING
+  COMPLETED
+}
+
 enum DocumentRole {
   VIEWER
   EDITOR
@@ -338,6 +358,7 @@ model File {
   driveFileId      String?              @unique @db.Uuid
   currentVersionId String?              @db.Uuid
   versionCounter   Int                  @default(0)
+  revisionSequence Int                  @default(0)
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
   node             Node                 @relation(fields: [nodeId], references: [id], onDelete: Restrict)
@@ -347,9 +368,54 @@ model File {
   searchDocument   SearchDocument?      @relation("SearchDocumentFile")
   editorSessions   EditorSession[]      @relation("EditorSessionFile")
   driveMigrations  DriveFileMigration[]
+  revisions        FileRevision[]       @relation("FileRevisions")
+  saveOperations   FileSaveOperation[]  @relation("FileSaveOperations")
 
   // Required by Prisma for the composite current-version ownership relation.
   @@unique([id, currentVersionId])
+}
+
+// Provider-neutral product history. The immutable bytes remain in the provider;
+// this row records how Docs Hub exposed and attributed that provider version.
+model FileRevision {
+  id                String            @id @default(uuid()) @db.Uuid
+  fileId            String            @db.Uuid
+  sequence          Int
+  provider          FileRevisionProvider
+  providerVersionId String
+  storageRevision   String
+  sizeBytes         BigInt?
+  checksum          String?
+  source            FileRevisionSource
+  createdById       String?           @db.Uuid
+  createdAt         DateTime          @default(now())
+  file              File              @relation("FileRevisions", fields: [fileId], references: [id], onDelete: Restrict)
+  createdBy         User?             @relation("FileRevisionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([fileId, sequence])
+  @@unique([fileId, provider, providerVersionId])
+  @@index([fileId, createdAt])
+}
+
+// A write-ahead record makes a successful provider replace observable even if
+// the DB finalization transaction fails after the bytes were written.
+model FileSaveOperation {
+  id                String                  @id @default(uuid()) @db.Uuid
+  operationId       String                  @unique
+  fileId            String                  @db.Uuid
+  expectedRevision  String
+  status            FileSaveOperationStatus @default(PENDING)
+  source            FileRevisionSource
+  resultRevision    String?
+  providerVersionId String?
+  createdById       String?                 @db.Uuid
+  createdAt         DateTime                @default(now())
+  completedAt       DateTime?
+  file              File                    @relation("FileSaveOperations", fields: [fileId], references: [id], onDelete: Restrict)
+  createdBy         User?                   @relation("FileSaveOperationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([fileId, createdAt])
+  @@index([status, createdAt])
 }
 
 model FileVersion {

@@ -20,6 +20,7 @@ import { DriveFileMigrationService } from './drive-file-migration.service.js';
 import { DriveUploadService } from './drive-upload.service.js';
 import { DriveTokenCryptoService } from './drive-token-crypto.service.js';
 import { DrivePreviewService } from './drive-preview.service.js';
+import { FileSaveCoordinator } from '../file-save/file-save-coordinator.js';
 import {
   DRIVE_PROVIDER,
   GoogleDriveApiProvider,
@@ -59,6 +60,7 @@ import {
     DriveUploadService,
     DriveOrganizationService,
     DrivePreviewService,
+    FileSaveCoordinator,
   ],
   exports: [
     DriveService,
@@ -67,6 +69,7 @@ import {
     DrivePreviewService,
     STORAGE_PROVIDER,
     FileEngineModule,
+    FileSaveCoordinator,
   ],
 })
 export class DriveModule {}

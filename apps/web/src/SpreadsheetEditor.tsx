@@ -4,6 +4,7 @@ import { SpreadsheetToolbar } from "./SpreadsheetToolbar";
 import { columnName } from "./spreadsheet-editor/selection";
 import { createSpreadsheetEditorState, editKey, executeCellCommand, redo, undo, type SpreadsheetEditorState } from "./spreadsheet-editor/editor-state";
 import type { RegisterWorkspaceActions, WorkspaceMode } from "./workspace";
+import { useRecoveryDraft } from "./useEditorPersistence";
 
 const api = new ApiClient();
 const ROW_HEIGHT = 28;
@@ -24,6 +25,8 @@ function cellsByAddress(sheet: SpreadsheetSheetModel): Map<string, SpreadsheetCe
 export function SpreadsheetEditor({ nodeId, modelUrl, initialModel, mode, onModeChange, onRegisterActions, onDirtyChange }: { nodeId: string; modelUrl: string; initialModel: SpreadsheetWorkbookModel; mode: WorkspaceMode; onModeChange: (mode: WorkspaceMode) => void; onRegisterActions: RegisterWorkspaceActions; onDirtyChange: (dirty: boolean) => void }) {
   const [state, setState] = useState<SpreadsheetEditorState | null>(null);
   const [error, setError] = useState("");
+  const saveGeneration = useRef(0);
+  const pendingSignature = useRef("");
   const [draft, setDraft] = useState("");
   const [composing, setComposing] = useState(false);
   const [viewport, setViewport] = useState({ width: 900, height: 500, scrollTop: 0, scrollLeft: 0 });
@@ -31,6 +34,10 @@ export function SpreadsheetEditor({ nodeId, modelUrl, initialModel, mode, onMode
   const [loadingSheet, setLoadingSheet] = useState(false);
   useEffect(() => { let active = true; void api.getSpreadsheetSheet(modelUrl, initialModel.activeSheetId).then((sheet) => { if (active) setState(createSpreadsheetEditorState(initialModel, sheet)); }).catch(() => { if (active) setError("The spreadsheet sheet could not be loaded."); }); return () => { active = false; }; }, [initialModel, modelUrl]);
   useEffect(() => onDirtyChange(Boolean(state && Object.keys(state.pendingEdits).length)), [onDirtyChange, state]);
+  useEffect(() => {
+    const signature = JSON.stringify(state?.pendingEdits ?? {});
+    if (signature !== pendingSignature.current) { pendingSignature.current = signature; saveGeneration.current += 1; }
+  }, [state?.pendingEdits]);
   const sheet = state?.sheets[state.activeSheetId];
   const baseCells = useMemo(() => sheet ? cellsByAddress(sheet) : new Map<string, SpreadsheetCell>(), [sheet]);
   const selectedAddress = state ? `${columnName(state.selection.column)}${state.selection.row}` : "A1";
@@ -48,12 +55,26 @@ export function SpreadsheetEditor({ nodeId, modelUrl, initialModel, mode, onMode
   }, [baseCells, draft, state]);
   const moveSelection = useCallback((row: number, column: number) => setState((current) => current ? { ...current, selection: { row: Math.min(Math.max(1, row), Math.min(MAX_RENDER_ROWS, current.sheets[current.activeSheetId]?.dimensions.rowCount ?? 1)), column: Math.min(Math.max(1, column), current.sheets[current.activeSheetId]?.dimensions.columnCount ?? 1) } } : current), []);
   const save = useCallback(async () => {
-    if (!state || !state.workbook.storageRevision || !Object.keys(state.pendingEdits).length) return;
+    if (!state || !state.workbook.storageRevision || !Object.keys(state.pendingEdits).length || state.saveStatus === "saving" || state.saveStatus === "conflict") return;
+    const generation = saveGeneration.current;
     setState((current) => current ? { ...current, saveStatus: "saving" } : current); setError("");
     const edits = Object.entries(state.pendingEdits).map(([key, value]) => { const [sheetId, cell] = key.split("\u0000"); return { sheetId, cell, value }; });
-    try { const result = await api.saveSpreadsheet(nodeId, { expectedRevision: state.workbook.storageRevision, edits }); const freshSheet = await api.getSpreadsheetSheet(modelUrl, state.activeSheetId); setState((current) => current ? { ...current, workbook: result.model, sheets: { [freshSheet.id]: freshSheet }, pendingEdits: {}, undoStack: [], redoStack: [], editingCell: null, saveStatus: "saved" } : current); }
-    catch (caught) { setState((current) => current ? { ...current, saveStatus: "failed" } : current); setError(caught instanceof ApiError && caught.status === 409 ? "This file changed after you opened it." : caught instanceof Error ? caught.message : "The spreadsheet could not be saved."); }
+    try { const result = await api.saveSpreadsheet(nodeId, { expectedRevision: state.workbook.storageRevision, edits }); const freshSheet = await api.getSpreadsheetSheet(modelUrl, state.activeSheetId); setState((current) => current ? { ...current, workbook: result.model, sheets: { ...current.sheets, [freshSheet.id]: freshSheet }, pendingEdits: saveGeneration.current === generation ? {} : current.pendingEdits, undoStack: saveGeneration.current === generation ? [] : current.undoStack, redoStack: saveGeneration.current === generation ? [] : current.redoStack, editingCell: null, saveStatus: saveGeneration.current === generation ? "saved" : "unsaved" } : current); }
+    catch (caught) { const conflict = caught instanceof ApiError && caught.status === 409; setState((current) => current ? { ...current, saveStatus: conflict ? "conflict" : "failed" } : current); setError(conflict ? "This file changed after you opened it." : caught instanceof Error ? caught.message : "The spreadsheet could not be saved."); }
   }, [modelUrl, nodeId, state]);
+  const saveAsCopy = useCallback(async (name: string) => {
+    if (!state?.workbook.storageRevision || !Object.keys(state.pendingEdits).length) return;
+    const edits = Object.entries(state.pendingEdits).map(([key, value]) => { const [sheetId, cell] = key.split("\u0000"); return { sheetId, cell, value }; });
+    await api.saveAsCopy(nodeId, { name, expectedRevision: state.workbook.storageRevision, edits });
+  }, [nodeId, state]);
+  const recoveryDraft = useRecoveryDraft({
+    fileId: nodeId,
+    engine: "SPREADSHEET",
+    baseRevision: state?.workbook.storageRevision ?? "",
+    isDirty: Boolean(state && Object.keys(state.pendingEdits).length),
+    buildDraftPayload: useCallback(() => ({ pendingEdits: state?.pendingEdits ?? {}, activeSheetId: state?.activeSheetId ?? initialModel.activeSheetId }), [initialModel.activeSheetId, state?.activeSheetId, state?.pendingEdits]),
+    applyRecoveredDraft: useCallback((payload: { pendingEdits: Record<string, SpreadsheetCellValue>; activeSheetId: string }) => { setState((current) => current ? { ...current, pendingEdits: payload.pendingEdits, activeSheetId: payload.activeSheetId, saveStatus: "unsaved" } : current); onModeChange("edit"); }, [onModeChange]),
+  });
   const onGridKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (!state) return;
     if (state.editingCell) { if (event.key === "Enter") { event.preventDefault(); commitDraft(); } else if (event.key === "Escape") { event.preventDefault(); setState((current) => current ? { ...current, editingCell: null } : current); } return; }
@@ -72,16 +93,17 @@ export function SpreadsheetEditor({ nodeId, modelUrl, initialModel, mode, onMode
     if (!state || state.sheets[sheetId]) { setState((current) => current ? { ...current, activeSheetId: sheetId, selection: { row: 1, column: 1 } } : current); return; }
     setLoadingSheet(true); try { const loaded = await api.getSpreadsheetSheet(modelUrl, sheetId); setState((current) => current ? { ...current, activeSheetId: sheetId, sheets: { ...current.sheets, [sheetId]: loaded }, selection: { row: 1, column: 1 } } : current); } catch { setError("The worksheet could not be loaded."); } finally { setLoadingSheet(false); }
   }, [modelUrl, state]);
-  const reload = useCallback(async () => { if (!state) return; if (Object.keys(state.pendingEdits).length && !window.confirm("Reload and discard unsaved changes?")) return; try { const workbook = await api.getSpreadsheetModel(modelUrl); const loaded = await api.getSpreadsheetSheet(modelUrl, workbook.activeSheetId); setState(createSpreadsheetEditorState(workbook, loaded)); setError(""); } catch { setError("The spreadsheet could not be reloaded."); } }, [modelUrl, state]);
+  const reload = useCallback(async () => { if (!state) return; if (Object.keys(state.pendingEdits).length && !window.confirm("Reload and discard unsaved changes?")) return; try { const workbook = await api.getSpreadsheetModel(modelUrl); const loaded = await api.getSpreadsheetSheet(modelUrl, workbook.activeSheetId); recoveryDraft.clearCurrentDraft(); setState(createSpreadsheetEditorState(workbook, loaded)); setError(""); } catch { setError("The spreadsheet could not be reloaded."); } }, [modelUrl, recoveryDraft, state]);
   const discardAndView = useCallback(() => {
     if (state && Object.keys(state.pendingEdits).length && !window.confirm("Discard unsaved changes?")) return;
+    recoveryDraft.clearCurrentDraft();
     setState((current) => current ? { ...current, mode: "view", pendingEdits: {}, undoStack: [], redoStack: [], editingCell: null, saveStatus: "saved" } : current);
     onDirtyChange(false);
     onModeChange("view");
-  }, [onDirtyChange, onModeChange, state]);
+  }, [onDirtyChange, onModeChange, recoveryDraft, state]);
   useEffect(() => {
-    onRegisterActions({ save: () => { void save(); }, view: discardAndView, canEdit: Boolean(state?.workbook.editable ?? initialModel.editable), canSave: Boolean(state && Object.keys(state.pendingEdits).length && state.saveStatus !== "saving"), saving: state?.saveStatus === "saving" });
-  }, [discardAndView, initialModel.editable, onRegisterActions, save, state]);
+    onRegisterActions({ save: () => { void save(); }, saveAsCopy, view: discardAndView, canEdit: Boolean(state?.workbook.editable ?? initialModel.editable), canSave: Boolean(state && Object.keys(state.pendingEdits).length && state.saveStatus !== "saving" && state.saveStatus !== "conflict"), saving: state?.saveStatus === "saving" });
+  }, [discardAndView, initialModel.editable, onRegisterActions, save, saveAsCopy, state]);
   if (!state || !sheet) return <div className="spreadsheet-loading" role="status">{loadingSheet ? "Loading worksheet…" : "Loading spreadsheet…"}</div>;
   const rows = Math.min(MAX_RENDER_ROWS, Math.max(1, sheet.dimensions.rowCount, state.selection.row)); const columns = Math.max(1, sheet.dimensions.columnCount, state.selection.column);
   const rowStart = Math.max(1, Math.floor(viewport.scrollTop / ROW_HEIGHT) - 4); const rowEnd = Math.min(rows, rowStart + Math.ceil(viewport.height / ROW_HEIGHT) + 8); const colStart = Math.max(1, Math.floor(viewport.scrollLeft / COLUMN_WIDTH) - 2); const colEnd = Math.min(columns, colStart + Math.ceil(viewport.width / COLUMN_WIDTH) + 4);
@@ -89,6 +111,7 @@ export function SpreadsheetEditor({ nodeId, modelUrl, initialModel, mode, onMode
   const effective = (row: number, column: number) => { const address = `${columnName(column)}${row}`; const key = editKey(state.activeSheetId, address); const has = Object.prototype.hasOwnProperty.call(state.pendingEdits, key); return cellWithPending(baseCells.get(address), state.pendingEdits[key], has, address, row, column); };
   const styleFor = (cell: SpreadsheetCell): CSSProperties => ({ fontWeight: cell.style?.bold ? 700 : undefined, fontStyle: cell.style?.italic ? "italic" : undefined, textDecoration: cell.style?.underline ? "underline" : undefined, color: cell.style?.textColor ?? undefined, backgroundColor: cell.style?.fillColor ?? undefined, textAlign: cell.style?.horizontalAlign === "general" ? undefined : cell.style?.horizontalAlign, alignItems: cell.style?.verticalAlign === "top" ? "flex-start" : cell.style?.verticalAlign === "center" ? "center" : "flex-end" });
   return <div className="spreadsheet-editor"><SpreadsheetToolbar state={state} mode={mode} onUndo={() => setState((current) => current ? undo(current) : current)} onRedo={() => setState((current) => current ? redo(current) : current)} />
+    {recoveryDraft.recovery && <div className="spreadsheet-editor-error" role="alert"><span>{recoveryDraft.recoveryIsOutdated ? "An older recovery draft is based on a previous file revision. Review it before saving; Save as copy is available." : "Unsaved changes from a previous session were found."}</span><button type="button" className="button" onClick={recoveryDraft.restore}>Restore</button><button type="button" className="button" onClick={recoveryDraft.discardRecovery}>Discard</button></div>}
     {error && <div className="spreadsheet-editor-error" role="alert">{error}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}
     <div className="spreadsheet-tabs" role="tablist">{state.workbook.sheets.filter((descriptor) => !descriptor.hidden).map((descriptor) => <button key={descriptor.id} type="button" role="tab" aria-selected={descriptor.id === state.activeSheetId} className={descriptor.id === state.activeSheetId ? "active" : ""} onClick={() => void loadSheet(descriptor.id)}>{descriptor.name}</button>)}</div>
     <div ref={viewportRef} className="spreadsheet-grid-viewport" tabIndex={0} onKeyDown={onGridKeyDown} onScroll={(event) => setViewport({ width: event.currentTarget.clientWidth, height: event.currentTarget.clientHeight, scrollTop: event.currentTarget.scrollTop, scrollLeft: event.currentTarget.scrollLeft })} onFocus={() => setViewport((current) => ({ ...current, width: viewportRef.current?.clientWidth ?? current.width, height: viewportRef.current?.clientHeight ?? current.height }))}>

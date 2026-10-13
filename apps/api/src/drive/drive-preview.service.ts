@@ -53,6 +53,7 @@ import { PresentationPackageError } from '../file-engine/presentation/pptx-packa
 import { isExpectedTextFailure, isTextFile } from '../file-engine/engines/text.engine.js';
 import { TextEditValidationError, parseTextPatchRequest } from '../file-engine/text/text-edit.types.js';
 import { TextSourceError } from '../file-engine/text/text-source.js';
+import { FileSaveCoordinator } from '../file-save/file-save-coordinator.js';
 
 const DRIVE_PREVIEW_AUDIENCE = 'dochub-drive-preview';
 const DRIVE_PREVIEW_TTL_SECONDS = 300;
@@ -127,6 +128,7 @@ export class DrivePreviewService {
     private readonly drive: DriveService,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
     @Optional() private readonly injectedRegistry?: FileEngineRegistry,
+    @Optional() private readonly saveCoordinator?: FileSaveCoordinator,
   ) {}
 
   private get registry(): FileEngineRegistry {
@@ -498,7 +500,9 @@ export class DrivePreviewService {
     }
     try {
       const request = parseDocumentPatchRequest(body);
-      return await resolved.engine.save(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision });
+      return await (this.saveCoordinator
+        ? this.saveCoordinator.save({ userId, nodeId, engine: resolved.engine, payload: request })
+        : resolved.engine.save!(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision }));
     } catch (error) {
       if (error instanceof StorageConflictError) throw new ConflictException('This file changed after you opened it.');
       if (error instanceof DocxPackageError || error instanceof DocumentEditValidationError || error instanceof BadRequestException) {
@@ -522,7 +526,9 @@ export class DrivePreviewService {
     if (resolved.engine.id !== 'SPREADSHEET' || (!isXlsxFile(descriptor) && !isCsvFile(descriptor)) || !resolved.capabilities.edit || !resolved.engine.save) throw new BadRequestException('This file is not editable as a native XLSX or CSV spreadsheet');
     try {
       const request = parseSpreadsheetPatchRequest(body);
-      return await resolved.engine.save(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision });
+      return await (this.saveCoordinator
+        ? this.saveCoordinator.save({ userId, nodeId, engine: resolved.engine, payload: request })
+        : resolved.engine.save!(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision }));
     } catch (error) {
       if (error instanceof StorageConflictError) throw new ConflictException('This file changed after you opened it.');
       if (error instanceof SpreadsheetPackageError || error instanceof SpreadsheetEditValidationError || error instanceof BadRequestException) throw new BadRequestException('The spreadsheet changes are invalid.');
@@ -544,7 +550,9 @@ export class DrivePreviewService {
     if (resolved.engine.id !== 'PRESENTATION' || !isPptxFile(descriptor) || !resolved.capabilities.edit || !resolved.engine.save) throw new BadRequestException('This file is not editable as a native PPTX presentation');
     try {
       const request = parsePresentationPatchRequest(body);
-      return await resolved.engine.save(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision });
+      return await (this.saveCoordinator
+        ? this.saveCoordinator.save({ userId, nodeId, engine: resolved.engine, payload: request })
+        : resolved.engine.save!(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision }));
     } catch (error) {
       if (error instanceof StorageConflictError) throw new ConflictException('This file changed after you opened it.');
       if (error instanceof PresentationPackageError || error instanceof PresentationEditValidationError || error instanceof BadRequestException) throw new BadRequestException('The presentation changes are invalid.');
@@ -566,12 +574,38 @@ export class DrivePreviewService {
     if (resolved.engine.id !== 'TEXT' || !isTextFile(descriptor) || !resolved.capabilities.edit || !resolved.engine.save) throw new BadRequestException('This file is not editable as native text');
     try {
       const request = parseTextPatchRequest(body);
-      return await resolved.engine.save(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision });
+      return await (this.saveCoordinator
+        ? this.saveCoordinator.save({ userId, nodeId, engine: resolved.engine, payload: request })
+        : resolved.engine.save!(descriptor, request, { storage: this.storage, expectedRevision: request.expectedRevision }));
     } catch (error) {
       if (error instanceof StorageConflictError) throw new ConflictException('This file changed after you opened it.');
       if (error instanceof TextSourceError || error instanceof TextEditValidationError || error instanceof BadRequestException) throw new BadRequestException(error instanceof TextEditValidationError ? error.message : 'The text changes are invalid.');
       throw error;
     }
+  }
+
+  async saveAsCopy(userId: string, nodeId: string, body: unknown) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestException('Save as copy request is invalid.');
+    const input = body as Record<string, unknown>;
+    if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 255) throw new BadRequestException('A copy name is required.');
+    const node = await this.database.prisma.node.findFirst({ where: { id: nodeId, type: 'FILE', trashOperationId: null }, select: { id: true, name: true, parentId: true, file: { select: { id: true, backingType: true, driveFile: { select: { driveFileId: true, mimeType: true, sizeBytes: true, sourceStatus: true, trashed: true } } } } } });
+    const source = node?.file?.backingType === FileBackingType.GOOGLE_DRIVE ? node.file.driveFile : null;
+    if (!node || !node.file || !source || source.trashed || source.sourceStatus === 'UNAVAILABLE') throw new NotFoundException('Node not found');
+    const descriptor: FileDescriptor = { fileId: node.file.id, nodeId, name: node.name, mimeType: source.mimeType, extension: extensionFromFilename(node.name), size: source.sizeBytes === null ? null : Number(source.sizeBytes), storageRef: { provider: 'GOOGLE_DRIVE', objectId: source.driveFileId } };
+    const resolved = this.registry.resolve(descriptor);
+    let request: unknown;
+    try {
+      if (resolved.engine.id === 'DOCUMENT') request = parseDocumentPatchRequest(body);
+      else if (resolved.engine.id === 'SPREADSHEET') request = parseSpreadsheetPatchRequest(body);
+      else if (resolved.engine.id === 'PRESENTATION') request = parsePresentationPatchRequest(body);
+      else if (resolved.engine.id === 'TEXT') request = parseTextPatchRequest(body);
+      else throw new BadRequestException('This file is not editable as a native file.');
+    } catch (error) {
+      if (error instanceof DocxPackageError || error instanceof DocumentEditValidationError || error instanceof SpreadsheetPackageError || error instanceof SpreadsheetEditValidationError || error instanceof PresentationPackageError || error instanceof PresentationEditValidationError || error instanceof TextSourceError || error instanceof TextEditValidationError || error instanceof BadRequestException) throw new BadRequestException('The changes for this copy are invalid.');
+      throw error;
+    }
+    if (!this.saveCoordinator) throw new ServiceUnavailableException('Save as copy is unavailable.');
+    return this.saveCoordinator.saveAsCopy({ userId, nodeId, engine: resolved.engine, payload: request, name: input.name.trim(), parentId: typeof input.parentId === 'string' ? input.parentId : node.parentId });
   }
 
   write(content: PreviewContent, preview: DrivePreviewToken, response: Response, mimeType = preview.mimeType): void {

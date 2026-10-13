@@ -2,7 +2,7 @@ import type { DocumentBlock, DocumentModel } from "../api";
 import { executeCommand, type DocumentCommand } from "./commands";
 
 export type EditorMode = "view" | "edit";
-export type SaveStatus = "saved" | "unsaved" | "saving" | "failed";
+export type SaveStatus = "saved" | "unsaved" | "saving" | "failed" | "conflict";
 
 export interface BlockSelection {
   blockId: string;
@@ -92,7 +92,16 @@ export function replaceBaseline(state: DocumentEditorState, model: DocumentModel
   return { ...state, baselineModel: model, currentModel: model, dirtyBlockIds: new Set(), undoStack: [], redoStack: [], saveStatus: "saved", selection: null };
 }
 
+export function acceptSavedModel(state: DocumentEditorState, model: DocumentModel): DocumentEditorState {
+  const dirtyBlockIds = dirtyBlocks(model, state.currentModel);
+  return { ...state, baselineModel: model, dirtyBlockIds, saveStatus: dirtyBlockIds.size ? "unsaved" : "saved" };
+}
+
+export function restoreRecoveredModel(state: DocumentEditorState, model: DocumentModel): DocumentEditorState {
+  const dirtyBlockIds = dirtyBlocks(state.baselineModel, model);
+  return { ...state, currentModel: model, dirtyBlockIds, undoStack: [], redoStack: [], saveStatus: dirtyBlockIds.size ? "unsaved" : "saved" };
+}
+
 export function setSelection(state: DocumentEditorState, selection: BlockSelection | null): DocumentEditorState {
   return { ...state, selection };
 }
-

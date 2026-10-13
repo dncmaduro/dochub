@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CompositionEvent, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { ApiClient, ApiError, type DocumentBlock, type DocumentModel, type DocumentTableCell, type DocumentTextRun } from "./api";
 import { DocumentToolbar } from "./DocumentToolbar";
-import { createEditorState, executeEditorCommand, redo, replaceBaseline, setSelection, undo, type BlockSelection, type DocumentEditorState } from "./document-editor/editor-state";
+import { acceptSavedModel, createEditorState, executeEditorCommand, redo, replaceBaseline, restoreRecoveredModel, setSelection, undo, type BlockSelection, type DocumentEditorState } from "./document-editor/editor-state";
 import type { DocumentCommand } from "./document-editor/commands";
 import { blockText, type EditableDocumentBlock } from "./document-editor/run-utils";
 import type { RegisterWorkspaceActions, WorkspaceMode } from "./workspace";
+import { useRecoveryDraft } from "./useEditorPersistence";
 
 const api = new ApiClient();
 
@@ -88,10 +89,11 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
   const [composing, setComposing] = useState<Record<string, string | undefined>>({});
   const [saveError, setSaveError] = useState("");
   const composingIds = useRef(new Set<string>());
+  const saveGeneration = useRef(0);
 
   useEffect(() => onDirtyChange(state.dirtyBlockIds.size > 0), [onDirtyChange, state.dirtyBlockIds]);
 
-  const command = useCallback((next: DocumentCommand) => setState((current) => executeEditorCommand(current, next)), []);
+  const command = useCallback((next: DocumentCommand) => { saveGeneration.current += 1; setState((current) => executeEditorCommand(current, next)); }, []);
   const selected = useMemo(() => state.selection ? { start: Math.min(state.selection.anchorOffset, state.selection.focusOffset), end: Math.max(state.selection.anchorOffset, state.selection.focusOffset) } : null, [state.selection]);
   const selectedBlock = state.selection ? modelBlock(state.currentModel, state.selection.blockId) : null;
 
@@ -120,50 +122,70 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
   }, [commitText, state.currentModel]);
 
   const save = useCallback(async () => {
-    if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0) return;
+    if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0 || state.saveStatus === "saving" || state.saveStatus === "conflict") return;
+    const generation = saveGeneration.current;
     setSaveError("");
     setState((current) => ({ ...current, saveStatus: "saving" }));
     try {
       const changed = [...state.dirtyBlockIds].map((id) => modelBlock(state.currentModel, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
       await api.saveDocument(nodeId, { expectedRevision: state.currentModel.storageRevision, blocks: changed });
       const fresh = await api.getDocumentModel(modelUrl);
-      setState((current) => replaceBaseline({ ...current, saveStatus: "saved" }, fresh));
-      onDirtyChange(false);
+      setState((current) => acceptSavedModel(current, fresh));
+      if (saveGeneration.current === generation) onDirtyChange(false);
     } catch (error) {
-      const message = error instanceof ApiError && error.status === 409 ? "This file changed after you opened it." : error instanceof Error ? error.message : "The document could not be saved.";
-      setState((current) => ({ ...current, saveStatus: "failed" }));
+      const conflict = error instanceof ApiError && error.status === 409;
+      const message = conflict ? "This file changed after you opened it." : error instanceof Error ? error.message : "The document could not be saved.";
+      setState((current) => ({ ...current, saveStatus: conflict ? "conflict" : "failed" }));
       setSaveError(message);
     }
-  }, [modelUrl, nodeId, onDirtyChange, state.currentModel, state.dirtyBlockIds]);
+  }, [modelUrl, nodeId, onDirtyChange, state.currentModel, state.dirtyBlockIds, state.saveStatus]);
+
+  const saveAsCopy = useCallback(async (name: string) => {
+    if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0) return;
+    const blocks = [...state.dirtyBlockIds].map((id) => modelBlock(state.currentModel, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
+    await api.saveAsCopy(nodeId, { name, expectedRevision: state.baselineModel.storageRevision ?? state.currentModel.storageRevision, blocks });
+  }, [nodeId, state.baselineModel.storageRevision, state.currentModel, state.dirtyBlockIds]);
+
+  const recoveryDraft = useRecoveryDraft({
+    fileId: nodeId,
+    engine: "DOCUMENT",
+    baseRevision: state.currentModel.storageRevision ?? "",
+    isDirty: state.dirtyBlockIds.size > 0,
+    buildDraftPayload: useCallback(() => ({ model: state.currentModel }), [state.currentModel]),
+    applyRecoveredDraft: useCallback((payload: { model: DocumentModel }) => { setState((current) => restoreRecoveredModel(current, payload.model)); onModeChange("edit"); }, [onModeChange]),
+  });
 
   const reload = useCallback(async () => {
     if (state.dirtyBlockIds.size && !window.confirm("Reload and discard unsaved changes?")) return;
     try {
       const fresh = await api.getDocumentModel(modelUrl);
+      recoveryDraft.clearCurrentDraft();
       setState((current) => replaceBaseline(current, fresh));
       setSaveError("");
       onDirtyChange(false);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "The document could not be reloaded.");
     }
-  }, [modelUrl, onDirtyChange, state.dirtyBlockIds.size]);
+  }, [modelUrl, onDirtyChange, recoveryDraft, state.dirtyBlockIds.size]);
 
   const discardAndView = useCallback(() => {
     if (state.dirtyBlockIds.size && !window.confirm("Discard unsaved changes?")) return;
+    recoveryDraft.clearCurrentDraft();
     setState((current) => ({ ...replaceBaseline(current, current.baselineModel), mode: "view" }));
     onDirtyChange(false);
     onModeChange("view");
-  }, [onDirtyChange, onModeChange, state.dirtyBlockIds.size]);
+  }, [onDirtyChange, onModeChange, recoveryDraft, state.dirtyBlockIds.size]);
 
   useEffect(() => {
     onRegisterActions({
       save: () => { void save(); },
+      saveAsCopy,
       view: discardAndView,
       canEdit: Boolean(initialModel.editable),
-      canSave: state.dirtyBlockIds.size > 0 && state.saveStatus !== "saving",
+      canSave: state.dirtyBlockIds.size > 0 && state.saveStatus !== "saving" && state.saveStatus !== "conflict",
       saving: state.saveStatus === "saving",
     });
-  }, [discardAndView, initialModel.editable, onRegisterActions, save, state.dirtyBlockIds.size, state.saveStatus]);
+  }, [discardAndView, initialModel.editable, onRegisterActions, save, saveAsCopy, state.dirtyBlockIds.size, state.saveStatus]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -184,5 +206,5 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
 
   const toolbar = useMemo(() => <DocumentToolbar state={state} mode={mode} onUndo={() => setState(undo)} onRedo={() => setState(redo)} onFormat={(format) => { if (selected && state.selection) command({ type: "toggle-format", blockId: state.selection.blockId, start: selected.start, end: selected.end, format }); }} onAlignment={(alignment) => { if (state.selection) command({ type: "set-alignment", blockId: state.selection.blockId, alignment }); }} onStyle={(style) => { if (state.selection && selectedBlock?.type !== "list-item") command({ type: "set-style", blockId: state.selection.blockId, style }); }} onFontSize={(fontSize) => { if (selected && state.selection) command({ type: "set-font-size", blockId: state.selection.blockId, start: selected.start, end: selected.end, fontSize }); }} />, [command, mode, selected, selectedBlock, state]);
 
-  return <div className="document-editor">{toolbar}{saveError && <div className="document-editor-error" role="alert">{saveError}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}{mode === "edit" ? <article className="document-surface document-edit-surface"><EditorBlocks blocks={state.currentModel.blocks} state={state} onInput={commitText} onSelect={(selection) => setState((current) => setSelection(current, selection))} onComposition={composition} composing={composing} /></article> : view(state.currentModel)}</div>;
+  return <div className="document-editor">{toolbar}{recoveryDraft.recovery && <div className="document-editor-error" role="alert"><span>{recoveryDraft.recoveryIsOutdated ? "An older recovery draft is based on a previous file revision. Review it before saving; Save as copy is available." : "Unsaved changes from a previous session were found."}</span><button type="button" className="button" onClick={recoveryDraft.restore}>Restore</button><button type="button" className="button" onClick={recoveryDraft.discardRecovery}>Discard</button></div>}{saveError && <div className="document-editor-error" role="alert">{saveError}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}{mode === "edit" ? <article className="document-surface document-edit-surface"><EditorBlocks blocks={state.currentModel.blocks} state={state} onInput={commitText} onSelect={(selection) => setState((current) => setSelection(current, selection))} onComposition={composition} composing={composing} /></article> : view(state.currentModel)}</div>;
 }

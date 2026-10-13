@@ -27,6 +27,7 @@ export interface DocumentBlockPatch {
 export interface DocumentPatchRequest {
   expectedRevision: string;
   blocks: DocumentBlockPatch[];
+  operationId?: string;
 }
 
 export const DOCUMENT_EDIT_LIMITS = {
@@ -115,8 +116,9 @@ export function parseDocumentPatchRequest(value: unknown): DocumentPatchRequest 
   if (serialized.length > DOCUMENT_EDIT_LIMITS.maxPayloadBytes) throw new DocumentEditValidationError("Document save request is too large");
   const expectedRevision = stringValue(value.expectedRevision, "expected revision", 256);
   if (!expectedRevision) throw new DocumentEditValidationError("Expected revision is required");
+  const operationId = value.operationId === undefined ? undefined : stringValue(value.operationId, "operation ID", 200);
   if (!Array.isArray(value.blocks) || value.blocks.length > DOCUMENT_EDIT_LIMITS.maxChangedBlocks) throw new DocumentEditValidationError("Invalid changed block count");
   const blocks = value.blocks.map(block);
   if (new Set(blocks.map((item) => item.blockId)).size !== blocks.length) throw new DocumentEditValidationError("Duplicate block ID");
-  return { expectedRevision, blocks };
+  return { expectedRevision, blocks, ...(operationId ? { operationId } : {}) };
 }

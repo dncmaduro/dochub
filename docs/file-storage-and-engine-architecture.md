@@ -834,10 +834,104 @@ compatibility paths, while DOC/XLS/PPT remain read-only LibreOffice fallbacks.
 No image, PDF, audio, video, legacy binary Office editing, or search-worker
 migration was introduced.
 
-Checkpoint 8 is **Save Semantics + Versioning + Recovery + Conflict
-Hardening**. It may unify save-state plumbing, autosave/recovery drafts, Save
-As Copy, version/history behavior, crash/navigation recovery, and cross-engine
-conflict handling. Checkpoint 8 is not started here.
+## Checkpoint 8: save semantics, recovery, and history
+
+Checkpoint 8 is implemented for the current native DOCX, XLSX/CSV, PPTX, and
+text engines. The editor's explicit Save is the only operation that changes
+the authoritative provider object. There is no provider autosave and no
+periodic silent overwrite.
+
+### Authoritative save protocol
+
+Each native editor sends its opaque `expectedRevision` and an operation ID.
+`FileSaveCoordinator` re-authorizes the file, reads the provider marker, and
+stops with a structured conflict if the marker changed. The engine then
+prepares bytes from the editor payload without mutating storage. The
+coordinator preserves the old provider version, performs exactly one guarded
+`StorageProvider.replace()`, preserves the resulting version, and finalizes
+the product history row, audit record, outbox event, and idempotency record in
+a serializable database transaction. A provider conflict is never retried as
+an unconditional write. If finalization fails after the provider accepted the
+bytes, the operation remains pending and the API returns a safe
+"history finalization pending" response; it does not claim that the save is
+fully complete.
+
+`FileSaveOperation` is the write-ahead record for this boundary. Reusing the
+same operation ID is idempotent after completion and is rejected while the
+same operation is still being finalized. The browser creates an operation ID
+for each explicit save request; a caller that retries a request outside the
+browser can reuse the original ID.
+
+### Provider-neutral product history
+
+`FileRevision` is the product-owned history index. Its monotonic per-file
+`sequence`, provider name, opaque provider version ID, storage revision,
+source, actor, timestamp, byte size, and optional checksum are separate from
+legacy local `FileVersion`. The current item is identified by the latest
+sequence and the provider's current storage revision; historical bytes remain
+in the provider. The API and UI expose the same list/download/restore shape
+for Drive-backed history while retaining the legacy path for existing local
+files.
+
+For Google Drive, Docs Hub stores the Drive file `version` as the optimistic
+storage marker and `headRevisionId` as the opaque historical revision handle.
+Those values are intentionally not conflated: Google documents `version` as a
+monotonically increasing server version, while `headRevisionId` identifies
+the head revision for binary files. See Google's [file resource reference](https://developers.google.com/drive/api/v3/reference/files)
+and [Manage revisions](https://developers.google.com/drive/api/v3/manage-revisions).
+
+History retention is provider-aware. `FILE_VERSION_HISTORY_LIMIT` defaults to
+50 and is bounded below the Drive keep-forever limit. Older product rows are
+released from the provider before their index rows are removed; a failed
+cleanup is logged and remains retryable. Permanent trash purge removes the
+product history and save-operation rows after storage deletion and before the
+file row, so restrictive foreign keys do not turn purge into a partial
+database operation.
+
+Restore is also an explicit guarded write. It requires the current revision
+shown by the client, opens the selected provider version, preserves the
+current version, replaces the current object once, preserves the new head,
+and appends a `RESTORE` history row. Historical download reads the provider
+version directly and never changes the current object.
+
+### Local crash/navigation recovery
+
+Recovery drafts are best-effort browser-local data in IndexedDB. They are
+scoped by authenticated user, file, engine, base revision, and browser tab
+session; they are not uploaded to the server and are removed on explicit
+discard, successful save, or sign-out. Draft payloads are JSON-bounded to
+512 KiB, retained for seven days, and capped at 20 drafts per user. Drafts
+flush after a debounce and on visibility changes. The editor warns before
+unload while dirty, and the workspace close action confirms before discarding.
+IndexedDB is treated as sensitive local device storage; Docs Hub does not
+claim that the browser encrypts it.
+
+If the server revision changed, the draft is labeled as based on an older
+revision. Restoring it keeps the source file protected by the normal 409
+conflict guard; the user can review it and use Save as copy instead of
+overwriting a newer source.
+
+### Save as copy
+
+Save as copy is a separate physical-object creation. It requires edit access
+to the source and create access to the destination folder, derives the copy
+from the editor's current dirty state, checks the destination name, uploads a
+new provider object, and creates a new logical `Node`, `File`, `DriveFile`,
+and initial `FileRevision`. It does not mutate the source, create a source
+restore row, or silently rebase dirty edits over a newer source. If the source
+advanced after the editor opened it, the coordinator reads the preserved
+historical base revision and still creates the copy from that explicit editor
+state.
+
+### Deliberate boundaries
+
+There is no cross-field merge UI, no automatic conflict overwrite, no server
+autosave, and no claim that a browser-local draft is a backup. Provider
+history remains subject to provider availability and provider retention rules;
+when a historical version is unavailable, the API reports an unavailable
+history/download result rather than substituting current bytes. Legacy local
+FileVersion behavior remains intact for files that have not moved to the
+provider-backed path.
 
 ## ADR: Google Drive is an opaque storage backend
 

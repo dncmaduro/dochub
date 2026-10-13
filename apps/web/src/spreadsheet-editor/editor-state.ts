@@ -12,7 +12,7 @@ export interface SpreadsheetEditorState {
   pendingEdits: Record<string, SpreadsheetCellValue>;
   undoStack: SpreadsheetCellCommand[];
   redoStack: SpreadsheetCellCommand[];
-  saveStatus: "saved" | "unsaved" | "saving" | "failed";
+  saveStatus: "saved" | "unsaved" | "saving" | "failed" | "conflict";
 }
 export function editKey(sheetId: string, address: string): string { return `${sheetId}\u0000${address.toUpperCase()}`; }
 export function createSpreadsheetEditorState(workbook: SpreadsheetWorkbookModel, sheet: SpreadsheetSheetModel): SpreadsheetEditorState {

@@ -1055,6 +1055,36 @@ export class DriveService {
     );
   }
 
+  async getStorageRevision(driveFileId: string, revisionId: string) {
+    this.assertEnabled();
+    const connection = await this.requireReadableConnected('system', { requireStorageFolder: false });
+    if (!this.provider.getRevision) throw new ServiceUnavailableException('Google Drive revision history is unavailable.');
+    return this.withAccessToken(connection, (accessToken) => this.provider.getRevision!(accessToken, driveFileId, revisionId));
+  }
+
+  async updateStorageRevision(driveFileId: string, revisionId: string, keepForever: boolean) {
+    this.assertEnabled();
+    const connection = await this.requireWritableConnected('system');
+    const accessToken = await this.accessToken(connection);
+    if (!this.provider.updateRevision) throw new ServiceUnavailableException('Google Drive revision history is unavailable.');
+    return this.provider.updateRevision(accessToken, driveFileId, revisionId, keepForever);
+  }
+
+  async openStorageRevision(driveFileId: string, revisionId: string, rangeHeader?: string) {
+    this.assertEnabled();
+    const connection = await this.requireReadableConnected('system', { requireStorageFolder: false });
+    if (!this.provider.downloadRevision) throw new ServiceUnavailableException('Google Drive revision history is unavailable.');
+    return this.withAccessToken(connection, (accessToken) => this.provider.downloadRevision!(accessToken, driveFileId, revisionId, rangeHeader));
+  }
+
+  async deleteStorageRevision(driveFileId: string, revisionId: string): Promise<void> {
+    this.assertEnabled();
+    const connection = await this.requireWritableConnected('system');
+    const accessToken = await this.accessToken(connection);
+    if (!this.provider.deleteRevision) throw new ServiceUnavailableException('Google Drive revision history is unavailable.');
+    await this.provider.deleteRevision(accessToken, driveFileId, revisionId);
+  }
+
   async deleteStorageObject(driveFileId: string): Promise<void> {
     this.assertEnabled();
     const connection = await this.requireWritableConnected('system');

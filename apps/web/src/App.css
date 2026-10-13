@@ -2062,6 +2062,18 @@ summary:focus-visible {
   flex: none;
   gap: 8px;
 }
+.preview-copy-panel {
+  display: grid;
+  flex: none;
+  gap: 6px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: #fff;
+}
+.preview-copy-panel label { color: var(--muted); font-size: 12px; }
+.preview-copy-panel input { min-height: 32px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 4px; }
+.preview-copy-panel .dialog-actions { justify-content: flex-end; padding: 4px 0 0; }
+.preview-error { flex: none; padding: 8px 16px; border-bottom: 1px solid #fecaca; background: #fef2f2; color: #991b1b; font-size: 12px; }
 .preview-content {
   display: flex;
   width: 100%;

@@ -382,6 +382,16 @@ export interface FileVersion {
   actor: Actor;
   isCurrent: boolean;
 }
+export interface FileRevisionHistoryItem {
+  id: string;
+  sequence: number;
+  source: "INITIAL" | "MANUAL_SAVE" | "RESTORE" | "SAVE_AS_COPY_INITIAL" | "SYSTEM";
+  createdAt: string;
+  actorDisplayName: string | null;
+  sizeBytes: string | null;
+  isCurrent: boolean;
+}
+export type VersionHistoryItem = FileVersion | FileRevisionHistoryItem;
 
 interface NodePage {
   items: Node[];
@@ -393,6 +403,7 @@ interface UploadResponse {
 export type SystemRole = "ADMIN" | "DOCUMENT_MANAGER" | "VIEWER";
 export type UserStatus = "INVITED" | "PENDING_APPROVAL" | "ACTIVE" | "SUSPENDED";
 export interface CurrentUser {
+  id: string;
   displayName: string;
   email: string;
   systemRole: SystemRole;
@@ -714,28 +725,32 @@ export class ApiClient {
     if (!response.ok) throw await this.error(response);
     return (await response.json()) as TextFileModel;
   }
-  async saveDocument(nodeId: string, input: { expectedRevision: string; blocks: unknown[] }) {
+  async saveDocument(nodeId: string, input: { expectedRevision: string; blocks: unknown[]; operationId?: string }) {
+    const payload = { ...input, operationId: input.operationId ?? crypto.randomUUID() };
     return this.request<{ storageRevision: string; model: DocumentModel }>(`/nodes/${nodeId}/document`, {
       method: "PATCH",
-      body: JSON.stringify(input),
+      body: JSON.stringify(payload),
     });
   }
-  async saveSpreadsheet(nodeId: string, input: { expectedRevision: string; edits: Array<{ sheetId: string; cell: string; value: SpreadsheetCellValue }> }) {
+  async saveSpreadsheet(nodeId: string, input: { expectedRevision: string; edits: Array<{ sheetId: string; cell: string; value: SpreadsheetCellValue }>; operationId?: string }) {
+    const payload = { ...input, operationId: input.operationId ?? crypto.randomUUID() };
     return this.request<{ storageRevision: string; model: SpreadsheetWorkbookModel }>(`/nodes/${nodeId}/spreadsheet`, {
       method: "PATCH",
-      body: JSON.stringify(input),
+      body: JSON.stringify(payload),
     });
   }
-  async savePresentation(nodeId: string, input: { expectedRevision: string; slides: Array<{ slideId: string; elements: Array<{ elementId: string; textState?: { paragraphs: Array<{ alignment?: PresentationAlignment; bullet?: { kind: "bullet" | "number"; value?: string | null; level?: number } | null; runs: Array<{ text: string; bold?: boolean; italic?: boolean; underline?: boolean; fontFamily?: string | null; fontSize?: number | null; color?: string | null }> }> }; geometry?: { x?: number; y?: number; width?: number; height?: number } }> }> }) {
+  async savePresentation(nodeId: string, input: { expectedRevision: string; slides: Array<{ slideId: string; elements: Array<{ elementId: string; textState?: { paragraphs: Array<{ alignment?: PresentationAlignment; bullet?: { kind: "bullet" | "number"; value?: string | null; level?: number } | null; runs: Array<{ text: string; bold?: boolean; italic?: boolean; underline?: boolean; fontFamily?: string | null; fontSize?: number | null; color?: string | null }> }> }; geometry?: { x?: number; y?: number; width?: number; height?: number } }> }>; operationId?: string }) {
+    const payload = { ...input, operationId: input.operationId ?? crypto.randomUUID() };
     return this.request<{ storageRevision: string; model: PresentationModel }>(`/nodes/${nodeId}/presentation`, {
       method: "PATCH",
-      body: JSON.stringify(input),
+      body: JSON.stringify(payload),
     });
   }
-  async saveText(nodeId: string, input: { expectedRevision: string; content: string }) {
+  async saveText(nodeId: string, input: { expectedRevision: string; content: string; operationId?: string }) {
+    const payload = { ...input, operationId: input.operationId ?? crypto.randomUUID() };
     return this.request<{ storageRevision: string; model: TextFileModel }>(`/nodes/${nodeId}/text`, {
       method: "PATCH",
-      body: JSON.stringify(input),
+      body: JSON.stringify(payload),
     });
   }
   async downloadPreview(contentUrl: string, name: string) {
@@ -827,14 +842,14 @@ export class ApiClient {
     await this.request<void>(`/trash/${operationId}`, { method: "DELETE" });
   }
   async listVersions(nodeId: string) {
-    return this.request<{ nodeId: string; items: FileVersion[] }>(
+    return this.request<{ nodeId: string; currentRevision?: string; items: VersionHistoryItem[] }>(
       `/nodes/${nodeId}/versions`,
     );
   }
-  async restoreVersion(nodeId: string, versionId: string) {
-    return this.request<UploadResponse>(
+  async restoreVersion(nodeId: string, versionId: string, expectedRevision?: string) {
+    return this.request<UploadResponse | { storageRevision: string }>(
       `/nodes/${nodeId}/versions/${versionId}/restore`,
-      { method: "POST" },
+      { method: "POST", body: JSON.stringify(expectedRevision ? { expectedRevision } : {}) },
     );
   }
   async findPrincipals(query: string) {
@@ -862,11 +877,15 @@ export class ApiClient {
     return this.downloadPath(`/nodes/${nodeId}/download`, name);
   }
 
-  async downloadVersion(node: Node, version: FileVersion) {
+  async downloadVersion(node: Node, version: FileVersion | FileRevisionHistoryItem) {
     return this.downloadPath(
       `/nodes/${node.id}/versions/${version.id}/download`,
-      version.originalFilename,
+      "originalFilename" in version ? version.originalFilename : node.name,
     );
+  }
+
+  async saveAsCopy(nodeId: string, input: { name: string; parentId?: string | null; expectedRevision: string; blocks?: unknown[]; edits?: Array<{ sheetId: string; cell: string; value: SpreadsheetCellValue }>; slides?: unknown[]; content?: string }) {
+    return this.request<{ nodeId: string; name: string }>(`/nodes/${nodeId}/save-as-copy`, { method: "POST", body: JSON.stringify(input) });
   }
 
   private async downloadPath(path: string, name: string) {

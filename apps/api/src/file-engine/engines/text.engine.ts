@@ -9,13 +9,16 @@ import {
   type FileEngineCapabilities,
   type FileEngineModelContext,
   type FileEngineSaveContext,
+  type PreparedFileSave,
   type FilePreviewResult,
 } from '../file-engine.types.js';
+import { readSourceBytes } from '../file-engine.types.js';
 import { BaseFileEngine } from './base.engine.js';
 import { TEXT_LIMITS } from '../text/text-limits.js';
 import { parseTextPatchRequest, TextEditValidationError } from '../text/text-edit.types.js';
 import {
   buildTextModel,
+  decodeUtf8,
   encodeUtf8,
   readTextSource,
   structuredPreview,
@@ -103,22 +106,25 @@ export class TextEngine extends BaseFileEngine {
     return (await readTextSource(context.storage, file.storageRef)).content;
   }
 
-  async save(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<{ storageRevision: string; model: TextFileModel }> {
+  async prepareSave(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<PreparedFileSave> {
     if (!isTextFile(file)) throw new FileFormatUnsupportedError('Native text editing supports TXT, Markdown, JSON, and XML only.');
     if (!file.storageRef) throw new FileFormatUnsupportedError('A storage reference is required for native text editing.');
     const parsed = parseTextPatchRequest(model);
     if (parsed.expectedRevision !== context.expectedRevision) throw new StorageConflictError('Storage object revision has changed');
-    const current = await context.storage.stat(file.storageRef);
+    const source = context.source ?? { stat: () => context.storage.stat(file.storageRef!), openRead: () => context.storage.openRead(file.storageRef!) };
+    const current = await source.stat();
     if (current.revision !== parsed.expectedRevision) throw new StorageConflictError('Storage object revision has changed');
-    const source = await readTextSource(context.storage, file.storageRef);
+    const decodedSource = decodeUtf8(await readSourceBytes(source));
     const format = textFormat(file);
     validateBeforeSave(format, parsed.content);
-    const output = encodeUtf8(source, parsed.content);
-    const stored = await context.storage.replace(
-      file.storageRef,
-      { stream: Readable.from([output]), mimeType: current.mimeType || file.mimeType || 'text/plain' },
-      { expectedRevision: parsed.expectedRevision },
-    );
+    const output = encodeUtf8(decodedSource, parsed.content);
+    return { stream: Readable.from([output]), mimeType: current.mimeType || file.mimeType || 'text/plain', sizeBytes: BigInt(output.byteLength) };
+  }
+
+  async save(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<{ storageRevision: string; model: TextFileModel }> {
+    if (!file.storageRef) throw new FileFormatUnsupportedError('A storage reference is required for native text editing.');
+    const prepared = await this.prepareSave(file, model, context);
+    const stored = await context.storage.replace(file.storageRef, { stream: prepared.stream, mimeType: prepared.mimeType }, { expectedRevision: context.expectedRevision });
     if (!stored.metadata.revision) throw new Error('Storage provider did not return a new revision');
     const savedModel = await this.openModel(file, { ...context, storageRevision: stored.metadata.revision });
     return { storageRevision: stored.metadata.revision, model: savedModel };

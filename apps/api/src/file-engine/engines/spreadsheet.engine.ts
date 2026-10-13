@@ -18,7 +18,9 @@ import type {
   FileEngineSaveContext,
   FilePreviewContent,
   FilePreviewResult,
+  PreparedFileSave,
 } from '../file-engine.types.js';
+import { readSourceBytes } from '../file-engine.types.js';
 
 export const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const CSV_MIME_TYPES = new Set(['text/csv', 'application/csv']);
@@ -88,25 +90,33 @@ export class SpreadsheetEngine extends BaseFileEngine {
     return new XlsxParser(reader).sheet(sheetId);
   }
 
-  async save(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<{ storageRevision: string; model: WorkbookModel }> {
+  async prepareSave(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<PreparedFileSave> {
     if (!isXlsxFile(file) && !isCsvFile(file)) throw new FileFormatUnsupportedError('Native spreadsheet editing supports XLSX and CSV only.');
     if (!file.storageRef) throw new FileFormatUnsupportedError('A storage reference is required for native spreadsheet editing.');
     const request = parseSpreadsheetPatchRequest(model);
     if (request.expectedRevision !== context.expectedRevision) throw new StorageConflictError('Storage object revision has changed');
-    const current = await context.storage.stat(file.storageRef);
+    const source = context.source ?? { stat: () => context.storage.stat(file.storageRef!), openRead: () => context.storage.openRead(file.storageRef!) };
+    const current = await source.stat();
     if (current.revision !== request.expectedRevision) throw new StorageConflictError('Storage object revision has changed');
-    const source = await XlsxPackageReader.readStorageBytes(context.storage, file.storageRef);
+    const sourceBytes = await readSourceBytes(source);
     let output: Buffer;
     let mimeType: string;
     if (isCsvFile(file)) {
-      const csv = parseCsv(source);
+      const csv = parseCsv(sourceBytes);
       output = serializeCsv(csv.rows, csv.dialect, request.edits);
       mimeType = 'text/csv';
     } else {
-      output = XlsxPatcher.apply(source, request).bytes;
+      output = XlsxPatcher.apply(sourceBytes, request).bytes;
       mimeType = XLSX_MIME_TYPE;
     }
-    const stored = await context.storage.replace(file.storageRef, { stream: Readable.from([output]), mimeType }, { expectedRevision: request.expectedRevision });
+    return { stream: Readable.from([output]), mimeType, sizeBytes: BigInt(output.byteLength) };
+  }
+
+  async save(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<{ storageRevision: string; model: WorkbookModel }> {
+    if (!file.storageRef) throw new FileFormatUnsupportedError('A storage reference is required for native spreadsheet editing.');
+    const request = parseSpreadsheetPatchRequest(model);
+    const prepared = await this.prepareSave(file, model, context);
+    const stored = await context.storage.replace(file.storageRef, { stream: prepared.stream, mimeType: prepared.mimeType }, { expectedRevision: context.expectedRevision });
     if (!stored.metadata.revision) throw new Error('Storage provider did not return a new revision');
     const savedModel = await this.openModel(file, { ...context, storageRevision: stored.metadata.revision });
     if (savedModel.formulasPresent && request.edits.length) savedModel.calculatedValuesStale = true;

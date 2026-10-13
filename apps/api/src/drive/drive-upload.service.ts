@@ -17,6 +17,7 @@ import {
   DriveUploadOperationStatus,
   DriveFileType,
   FileBackingType,
+  FileRevisionProvider,
   NodeType,
   Prisma,
   UserStatus,
@@ -37,6 +38,8 @@ import { STORAGE_PROVIDER } from '../storage/storage-provider.js';
 import type {
   StorageProvider,
   StoredObject,
+  StorageVersionMetadata,
+  VersionedStorageProvider,
 } from '../storage/storage-provider.js';
 import { StorageError } from '../storage/storage.errors.js';
 import { DriveService } from './drive.service.js';
@@ -72,6 +75,7 @@ interface UploadRequest {
 @Injectable()
 export class DriveUploadService {
   private readonly logger = new Logger(DriveUploadService.name);
+  private readonly versions?: VersionedStorageProvider;
 
   constructor(
     private readonly database: DatabaseService,
@@ -79,7 +83,9 @@ export class DriveUploadService {
     private readonly validation: FileValidationService,
     @Inject(STORAGE_CONFIG) private readonly storageConfig: StorageConfig,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
-  ) {}
+  ) {
+    if ('getCurrentVersion' in storage && typeof storage.getCurrentVersion === 'function') this.versions = storage as StorageProvider & VersionedStorageProvider;
+  }
 
   async receive(
     userId: string,
@@ -449,6 +455,16 @@ export class DriveUploadService {
       name,
       sizeBytes,
     );
+    let initialVersion: StorageVersionMetadata | undefined;
+    if (this.versions) {
+      try {
+        initialVersion = await this.versions.getCurrentVersion(storedObject.ref);
+        await this.versions.preserveVersion(storedObject.ref, initialVersion.ref);
+      } catch {
+        this.logger.warn('Initial provider version could not be preserved; upload will remain available without managed history.');
+        initialVersion = undefined;
+      }
+    }
     const result = await this.database.prisma.$transaction(
       async (transaction) => {
         const actor = await transaction.user.findUnique({
@@ -498,8 +514,13 @@ export class DriveUploadService {
             nodeId: node.id,
             backingType: FileBackingType.GOOGLE_DRIVE,
             driveFileId: storedDriveFile.id,
+            ...(initialVersion ? { revisionSequence: 1 } : {}),
           },
         });
+        if (initialVersion) {
+          const file = await transaction.file.findUniqueOrThrow({ where: { nodeId: node.id }, select: { id: true } });
+          await transaction.fileRevision.create({ data: { fileId: file.id, sequence: 1, provider: FileRevisionProvider.GOOGLE_DRIVE, providerVersionId: initialVersion.ref.versionId, storageRevision: initialVersion.storageRevision, sizeBytes: initialVersion.sizeBytes ?? sizeBytes, checksum: initialVersion.checksum ?? sha256, source: 'INITIAL', createdById: operation.userId } });
+        }
         await transaction.driveUploadOperation.update({
           where: { idempotencyKey: operation.idempotencyKey },
           data: {

@@ -13,7 +13,7 @@ export function PresentationToolbar({ state, mode, onUndo, onRedo, onBold, onIta
       <button type="button" className="presentation-tool-button" onClick={onUnderline} aria-label="Underline"><u>U</u></button>
       <input className="presentation-tool-size" type="number" min="6" max="96" step="1" aria-label="Font size" onChange={(event) => { const size = Number(event.target.value); if (Number.isFinite(size)) onFontSize(size); }} placeholder="Size" />
       <select className="presentation-tool-select" aria-label="Paragraph alignment" defaultValue="left" onChange={(event) => onAlign(event.target.value as "left" | "center" | "right" | "justified")}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option><option value="justified">Justify</option></select>
-      <span className="presentation-toolbar-status">{state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "error" ? "Save failed" : state.saveStatus === "dirty" ? "Unsaved changes" : "Saved"}</span>
+      <span className="presentation-toolbar-status">{state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "conflict" ? "Conflict" : state.saveStatus === "error" ? "Save failed" : state.saveStatus === "dirty" ? "Unsaved changes" : "Saved"}</span>
     </> : <>
       <span className="presentation-toolbar-status">View</span>
     </>}

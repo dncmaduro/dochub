@@ -14,7 +14,9 @@ import type {
   FileEngineSaveContext,
   FilePreviewContent,
   FilePreviewResult,
+  PreparedFileSave,
 } from '../file-engine.types.js';
+import { readSourceBytes } from '../file-engine.types.js';
 
 export const PPTX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 export const PPT_MIME_TYPE = 'application/vnd.ms-powerpoint';
@@ -78,16 +80,22 @@ export class PresentationEngine extends BaseFileEngine {
     return { stream: Readable.from([Buffer.from(entry.bytes)]), mimeType: asset.mimeType, sizeBytes: BigInt(entry.bytes.byteLength), range: null };
   }
 
-  async save(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<{ storageRevision: string; model: PresentationModel }> {
+  async prepareSave(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<PreparedFileSave> {
     if (!isPptxFile(file)) throw new FileFormatUnsupportedError('Native presentation editing supports PPTX only.');
     if (!file.storageRef) throw new FileFormatUnsupportedError('A storage reference is required for native PPTX editing.');
     const request = parsePresentationPatchRequest(model);
     PptxPatcher.assertWithinLimits(request);
-    const current = await context.storage.stat(file.storageRef);
+    const source = context.source ?? { stat: () => context.storage.stat(file.storageRef!), openRead: () => context.storage.openRead(file.storageRef!) };
+    const current = await source.stat();
     if (current.revision !== request.expectedRevision) throw new StorageConflictError('Storage object revision has changed');
-    const source = await PptxPackageReader.readStorageBytes(context.storage, file.storageRef);
-    const patched = PptxPatcher.apply(source, request);
-    const stored = await context.storage.replace(file.storageRef, { stream: Readable.from([patched.bytes]), mimeType: PPTX_MIME_TYPE }, { expectedRevision: request.expectedRevision });
+    const patched = PptxPatcher.apply(await readSourceBytes(source), request);
+    return { stream: Readable.from([patched.bytes]), mimeType: PPTX_MIME_TYPE, sizeBytes: BigInt(patched.bytes.byteLength) };
+  }
+
+  async save(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<{ storageRevision: string; model: PresentationModel }> {
+    if (!file.storageRef) throw new FileFormatUnsupportedError('A storage reference is required for native PPTX editing.');
+    const prepared = await this.prepareSave(file, model, context);
+    const stored = await context.storage.replace(file.storageRef, { stream: prepared.stream, mimeType: prepared.mimeType }, { expectedRevision: context.expectedRevision });
     if (!stored.metadata.revision) throw new Error('Storage provider did not return a new revision');
     const savedReader = await PptxPackageReader.fromStorage(context.storage, file.storageRef);
     const savedModel = new PptxParser(savedReader).parseManifest(stored.metadata.revision, true).model;

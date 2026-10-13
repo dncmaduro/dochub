@@ -88,6 +88,8 @@ export interface FileEngine {
   openAsset?(file: FileDescriptor, assetId: string, context: FileEngineModelContext): Promise<FilePreviewContent>;
   /** Implementations serialize through StorageProvider.replace(). */
   save?(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<unknown>;
+  /** Prepare bytes without mutating storage; the coordinator owns persistence. */
+  prepareSave?(file: FileDescriptor, model: unknown, context: FileEngineSaveContext): Promise<PreparedFileSave>;
   extractText?(file: FileDescriptor, context: FileEngineModelContext): Promise<string>;
   generateThumbnail?(file: FileDescriptor, context: FileEngineModelContext): Promise<FilePreviewContent>;
 }
@@ -102,6 +104,19 @@ export interface FileEngineModelContext {
 
 export interface FileEngineSaveContext extends FileEngineModelContext {
   expectedRevision: string;
+  /** Optional immutable source used by Save As Copy after a conflict. */
+  source?: FileEngineSource;
+}
+
+export interface FileEngineSource {
+  stat(): Promise<import('../storage/storage-provider.js').StoredObjectMetadata>;
+  openRead(): Promise<StorageReadResult>;
+}
+
+export interface PreparedFileSave {
+  stream: Readable;
+  mimeType: string;
+  sizeBytes?: bigint;
 }
 
 export function normalizeMimeType(value: string | null | undefined): string {
@@ -132,4 +147,15 @@ export function storageContent(content: StorageReadResult): FilePreviewContent {
     range: content.range,
     cleanup: content.cleanup,
   };
+}
+
+export async function readSourceBytes(source: FileEngineSource): Promise<Buffer> {
+  const result = await source.openRead();
+  const chunks: Buffer[] = [];
+  try {
+    for await (const chunk of result.stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  } finally {
+    await result.cleanup?.().catch(() => undefined);
+  }
 }

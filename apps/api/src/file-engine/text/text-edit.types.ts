@@ -3,6 +3,7 @@ import { TEXT_LIMITS } from './text-limits.js';
 export interface TextPatchRequest {
   expectedRevision: string;
   content: string;
+  operationId?: string;
 }
 
 export class TextEditValidationError extends Error {
@@ -32,6 +33,7 @@ export function parseTextPatchRequest(input: unknown): TextPatchRequest {
   if (input.content.length > TEXT_LIMITS.maxDecodedCharacters || Buffer.byteLength(input.content, 'utf8') > TEXT_LIMITS.maxEditableBytes) {
     throw new TextEditValidationError('Edited text is too large.');
   }
-  return { expectedRevision: input.expectedRevision, content: input.content };
+  const operationId = input.operationId === undefined ? undefined : input.operationId;
+  if (operationId !== undefined && (typeof operationId !== 'string' || operationId.length > 200)) throw new TextEditValidationError('Invalid operation ID.');
+  return { expectedRevision: input.expectedRevision, content: input.content, ...(operationId ? { operationId } : {}) };
 }
-

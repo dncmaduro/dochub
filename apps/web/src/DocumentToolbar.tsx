@@ -39,6 +39,6 @@ export function DocumentToolbar({
       <option value="">Size</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="14">14</option><option value="16">16</option><option value="18">18</option><option value="24">24</option>
     </select>
     {(["left", "center", "right", "justified"] as DocumentAlignment[]).map((alignment) => commandButton(`Align ${alignment}`, () => onAlignment(alignment), !state.selection))}
-    <span className="document-toolbar-status" role="status">{state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "unsaved" ? "Unsaved changes" : state.saveStatus === "failed" ? "Save failed" : "Saved"}</span>
+    <span className="document-toolbar-status" role="status">{state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "unsaved" ? "Unsaved changes" : state.saveStatus === "conflict" ? "Conflict" : state.saveStatus === "failed" ? "Save failed" : "Saved"}</span>
   </div>;
 }

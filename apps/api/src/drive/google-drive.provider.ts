@@ -46,6 +46,7 @@ export interface DriveApiFile {
   ownedByMe?: boolean;
   size?: string;
   version?: string;
+  headRevisionId?: string;
   md5Checksum?: string;
   capabilities?: {
     canAddChildren?: boolean;
@@ -75,6 +76,15 @@ export interface DriveContent {
   sizeBytes: bigint | null;
   range: { start: number; end: number; total: number } | null;
   cleanup?: () => Promise<void>;
+}
+
+export interface DriveRevision {
+  id: string;
+  mimeType?: string;
+  size?: string;
+  md5Checksum?: string;
+  modifiedTime?: string;
+  keepForever?: boolean;
 }
 
 export interface DriveListOptions {
@@ -111,6 +121,10 @@ export interface DriveProvider {
     nameQuery?: string,
   ): Promise<DriveFolderPage>;
   getFile(accessToken: string, driveFileId: string): Promise<DriveApiFile>;
+  getRevision?(accessToken: string, driveFileId: string, revisionId: string): Promise<DriveRevision>;
+  updateRevision?(accessToken: string, driveFileId: string, revisionId: string, keepForever: boolean): Promise<DriveRevision>;
+  downloadRevision?(accessToken: string, driveFileId: string, revisionId: string, rangeHeader?: string): Promise<DriveContent>;
+  deleteRevision?(accessToken: string, driveFileId: string, revisionId: string): Promise<void>;
   downloadFile(
     accessToken: string,
     driveFileId: string,
@@ -172,6 +186,7 @@ const FILE_FIELDS = [
   'ownedByMe',
   'size',
   'version',
+  'headRevisionId',
   'md5Checksum',
   'capabilities(canAddChildren)',
 ].join(',');
@@ -318,6 +333,42 @@ export class GoogleDriveApiProvider implements DriveProvider {
       `/files/${encodeURIComponent(driveFileId)}`,
       accessToken,
       { fields: FILE_FIELDS },
+    );
+  }
+
+  getRevision(accessToken: string, driveFileId: string, revisionId: string): Promise<DriveRevision> {
+    return this.driveRequest<DriveRevision>(
+      `/files/${encodeURIComponent(driveFileId)}/revisions/${encodeURIComponent(revisionId)}`,
+      accessToken,
+      { fields: 'id,mimeType,size,md5Checksum,modifiedTime,keepForever' },
+    );
+  }
+
+  updateRevision(accessToken: string, driveFileId: string, revisionId: string, keepForever: boolean): Promise<DriveRevision> {
+    return this.driveMutation<DriveRevision>(
+      `/files/${encodeURIComponent(driveFileId)}/revisions/${encodeURIComponent(revisionId)}`,
+      accessToken,
+      'PATCH',
+      { fields: 'id,mimeType,size,md5Checksum,modifiedTime,keepForever' },
+      { keepForever },
+    );
+  }
+
+  downloadRevision(accessToken: string, driveFileId: string, revisionId: string, rangeHeader?: string): Promise<DriveContent> {
+    return this.driveContentRequest(
+      `/files/${encodeURIComponent(driveFileId)}/revisions/${encodeURIComponent(revisionId)}`,
+      accessToken,
+      { alt: 'media' },
+      rangeHeader,
+    );
+  }
+
+  deleteRevision(accessToken: string, driveFileId: string, revisionId: string): Promise<void> {
+    return this.driveMutation<undefined>(
+      `/files/${encodeURIComponent(driveFileId)}/revisions/${encodeURIComponent(revisionId)}`,
+      accessToken,
+      'DELETE',
+      {},
     );
   }
 
@@ -748,7 +799,7 @@ export class GoogleDriveApiProvider implements DriveProvider {
   private async driveMutation<T>(
     path: string,
     accessToken: string,
-    method: 'POST' | 'DELETE',
+    method: 'POST' | 'PATCH' | 'DELETE',
     parameters: Record<string, string>,
     body?: unknown,
   ): Promise<T> {

@@ -21,6 +21,24 @@ export interface StoredObjectMetadata {
   modifiedAt?: Date;
 }
 
+/** Opaque optimistic-concurrency marker returned by a storage provider. */
+export type StorageRevision = string;
+
+/** Opaque provider handle for an immutable historical version. */
+export interface StorageVersionRef {
+  provider: StorageProviderName;
+  versionId: string;
+}
+
+export interface StorageVersionMetadata {
+  ref: StorageVersionRef;
+  storageRevision: StorageRevision;
+  mimeType: string;
+  sizeBytes: bigint | null;
+  checksum?: string;
+  modifiedAt?: Date;
+}
+
 export interface StoredObject {
   ref: StorageObjectRef;
   metadata: StoredObjectMetadata;
@@ -75,4 +93,19 @@ export interface StorageProvider {
   ): Promise<StoredObject>;
   delete(ref: StorageObjectRef): Promise<void>;
   stat(ref: StorageObjectRef): Promise<StoredObjectMetadata>;
+}
+
+/** Optional historical-version capability; ordinary reads and writes do not depend on it. */
+export interface VersionedStorageProvider {
+  getCurrentVersion(ref: StorageObjectRef): Promise<StorageVersionMetadata>;
+  preserveVersion(ref: StorageObjectRef, versionRef: StorageVersionRef): Promise<StorageVersionMetadata>;
+  openVersion(ref: StorageObjectRef, versionRef: StorageVersionRef, options?: StorageReadOptions): Promise<StorageReadResult>;
+  releaseVersion?(ref: StorageObjectRef, versionRef: StorageVersionRef): Promise<void>;
+}
+
+export function asVersionedStorageProvider(provider: StorageProvider): VersionedStorageProvider {
+  if (!('getCurrentVersion' in provider) || typeof provider.getCurrentVersion !== 'function') {
+    throw new Error('Storage provider does not support historical versions');
+  }
+  return provider as StorageProvider & VersionedStorageProvider;
 }

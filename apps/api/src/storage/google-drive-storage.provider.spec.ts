@@ -31,11 +31,20 @@ function driveHarness() {
       version: '8',
     }),
     deleteStorageObject: vi.fn().mockResolvedValue(undefined),
+    updateStorageRevision: vi.fn().mockResolvedValue({ id: 'rev-7', mimeType: 'application/pdf', size: '5', md5Checksum: 'checksum-7' }),
+    openStorageRevision: vi.fn().mockResolvedValue({
+      stream: Readable.from([Buffer.from('historical')]),
+      mimeType: 'application/pdf',
+      sizeBytes: 10n,
+      range: null,
+    }),
+    deleteStorageRevision: vi.fn().mockResolvedValue(undefined),
     statStorageObject: vi.fn().mockResolvedValue({
       id: 'drive-object-1',
       mimeType: 'application/pdf',
       size: '5',
       version: '7',
+      headRevisionId: 'rev-7',
     }),
   };
   return { drive, provider: new GoogleDriveStorageProvider(drive as never) };
@@ -130,6 +139,23 @@ describe('GoogleDriveStorageProvider', () => {
 
     await provider.delete({ provider: 'GOOGLE_DRIVE', objectId: 'drive-object-1' });
     expect(drive.deleteStorageObject).toHaveBeenCalledWith('drive-object-1');
+  });
+
+  it('keeps the provider version marker separate from the historical revision handle', async () => {
+    const { provider, drive } = driveHarness();
+    const reference = { provider: 'GOOGLE_DRIVE' as const, objectId: 'drive-object-1' };
+    const current = await provider.getCurrentVersion(reference);
+    expect(current).toMatchObject({
+      storageRevision: '7',
+      ref: { provider: 'GOOGLE_DRIVE', versionId: 'rev-7' },
+    });
+
+    await provider.preserveVersion(reference, current.ref);
+    expect(drive.updateStorageRevision).toHaveBeenCalledWith('drive-object-1', 'rev-7', true);
+    const historical = await provider.openVersion(reference, current.ref);
+    expect(Buffer.concat(await readChunks(historical.stream))).toEqual(Buffer.from('historical'));
+    await provider.releaseVersion(reference, current.ref);
+    expect(drive.deleteStorageRevision).toHaveBeenCalledWith('drive-object-1', 'rev-7');
   });
 
   it('maps provider failures to safe storage errors', async () => {

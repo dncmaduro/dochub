@@ -8,7 +8,7 @@ import {
   ServiceUnavailableException,
   Optional,
 } from '@nestjs/common';
-import { FileBackingType, NodeType } from '@dochub/database';
+import { FileBackingType, FileRevisionProvider, NodeType } from '@dochub/database';
 import type { StorageService } from '@dochub/storage';
 import contentDisposition from 'content-disposition';
 import type { Response } from 'express';
@@ -19,12 +19,14 @@ import { CollectionsService } from '../collections/collections.service.js';
 import { STORAGE_SERVICE } from '../storage/storage.module.js';
 import {
   STORAGE_PROVIDER,
+  asVersionedStorageProvider,
   type StorageProvider,
 } from '../storage/storage-provider.js';
 import { parseSingleByteRange, type ByteRange } from './byte-range.js';
 
 export interface BinaryRead {
   stream: import('node:stream').Readable;
+  cleanup?: () => Promise<void>;
   version: { originalFilename: string; mimeType: string; sizeBytes: bigint };
   totalSize: bigint;
   range: ByteRange | null;
@@ -134,6 +136,16 @@ export class FileReadService {
         throw new ServiceUnavailableException('File is unavailable');
       }
       try {
+        if (versionId) {
+          const historical = await this.database.prisma.fileRevision.findFirst({ where: { id: versionId, fileId: node.file.id }, select: { providerVersionId: true, provider: true, sizeBytes: true, storageRevision: true } });
+          if (!historical || historical.provider !== FileRevisionProvider.GOOGLE_DRIVE) throw new NotFoundException('Version not found');
+          const versioned = asVersionedStorageProvider(this.storageProvider);
+          const totalSize = historical.sizeBytes;
+          if (totalSize === null) throw new ServiceUnavailableException('File is unavailable');
+          const range = parseSingleByteRange(rangeHeader, totalSize);
+          const content = await versioned.openVersion(reference, { provider: 'GOOGLE_DRIVE', versionId: historical.providerVersionId }, range ? { range } : undefined);
+          return { stream: content.stream, cleanup: content.cleanup, version: { originalFilename: node.name, mimeType: content.metadata.mimeType || driveFile.mimeType, sizeBytes: totalSize }, totalSize, range };
+        }
         const physical = await this.storageProvider.stat(reference);
         if (physical.sizeBytes === null) {
           throw new ServiceUnavailableException('File is unavailable');
@@ -145,6 +157,7 @@ export class FileReadService {
         );
         return {
           stream: content.stream,
+          cleanup: content.cleanup,
           version: {
             originalFilename: node.name,
             mimeType: physical.mimeType || driveFile.mimeType,
@@ -155,6 +168,7 @@ export class FileReadService {
         };
       } catch (error) {
         if (error instanceof ServiceUnavailableException) throw error;
+        if (error instanceof NotFoundException) throw error;
         this.logger.error('Drive storage object is unavailable');
         throw new ServiceUnavailableException('File is unavailable');
       }
@@ -229,8 +243,15 @@ export class FileReadService {
         'Content-Range',
         `bytes ${binary.range.start}-${binary.range.end}/${binary.totalSize}`,
       );
-    const close = () => binary.stream.destroy();
-    response.once('close', close);
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      binary.stream.destroy();
+      void binary.cleanup?.().catch(() => undefined);
+    };
+    response.once('finish', cleanup);
+    response.once('close', cleanup);
     binary.stream.once('error', () => {
       if (!response.headersSent) response.status(503).end();
       else response.destroy();
