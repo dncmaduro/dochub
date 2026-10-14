@@ -1258,6 +1258,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.search-snippet {
+  max-width: 48rem;
+  margin: 3px 0 0 27px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .search-more {
   display: flex;
   justify-content: center;

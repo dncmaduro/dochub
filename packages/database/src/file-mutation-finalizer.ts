@@ -141,8 +141,9 @@ export async function finalizeFileMutationOperation(
         aggregateId: operation.fileId,
         payload: {
           fileId: operation.fileId,
+          nodeId: operation.file.nodeId,
           storageRevision: operation.resultRevision,
-          source: operation.source,
+          reason: operation.source,
           operationId,
         },
       },

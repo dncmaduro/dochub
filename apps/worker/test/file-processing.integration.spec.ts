@@ -150,6 +150,9 @@ describe('file processing with PostgreSQL, LocalFileStorage, and Tika', () => {
       tikaUrl: new URL(process.env.TIKA_URL ?? 'http://localhost:9998'),
       tikaRequestTimeoutSeconds: 30,
       tikaMaxTextBytes: 1024 * 1024,
+      extractionMaxBytes: 1024 * 1024,
+      extractionMaxChars: 1024 * 1024,
+      outboxBatchSize: 50,
     });
   }
 

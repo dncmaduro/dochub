@@ -380,6 +380,8 @@ model File {
   driveMigrations  DriveFileMigration[]
   revisions        FileRevision[]       @relation("FileRevisions")
   saveOperations   FileSaveOperation[]  @relation("FileSaveOperations")
+  processingTasks  FileProcessingTask[] @relation("FileProcessingTasks")
+  textExtractions  FileTextExtraction[] @relation("FileTextExtractionFile")
 
   // Required by Prisma for the composite current-version ownership relation.
   @@unique([id, currentVersionId])
@@ -434,7 +436,9 @@ model FileSaveOperation {
   failureReason     String?
   finalizationAttempts Int                  @default(0)
   lastFinalizationError String?
-  updatedAt         DateTime                @updatedAt
+  // Use an absolute instant so reconciliation remains correct across DB
+  // session timezones and worker processes.
+  updatedAt         DateTime                @updatedAt @db.Timestamptz(3)
   file              File                    @relation("FileSaveOperations", fields: [fileId], references: [id], onDelete: Restrict)
   createdBy         User?                   @relation("FileSaveOperationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
@@ -549,7 +553,11 @@ model OutboxEvent {
 
 model FileProcessingTask {
   id             String                   @id @default(uuid()) @db.Uuid
-  fileVersionId  String                   @db.Uuid
+  // Legacy local-version tasks retain this link during the provider-backed
+  // rollout. New work is identified by fileId + targetRevision instead.
+  fileVersionId  String?                  @db.Uuid
+  fileId         String?                  @db.Uuid
+  targetRevision String?
   type           FileProcessingTaskType
   status         FileProcessingTaskStatus @default(PENDING)
   attemptCount   Int                      @default(0)
@@ -560,24 +568,49 @@ model FileProcessingTask {
   leaseToken     String?                  @db.Uuid
   completedAt    DateTime?
   createdAt      DateTime                 @default(now())
-  fileVersion    FileVersion              @relation("FileVersionProcessingTasks", fields: [fileVersionId], references: [id], onDelete: Cascade)
+  fileVersion    FileVersion?             @relation("FileVersionProcessingTasks", fields: [fileVersionId], references: [id], onDelete: Cascade)
+  file           File?                    @relation("FileProcessingTasks", fields: [fileId], references: [id], onDelete: Cascade)
 
   @@unique([fileVersionId, type])
+  @@unique([fileId, targetRevision, type])
   @@index([status, createdAt])
   @@index([status, availableAt])
+  @@index([fileId, targetRevision])
 }
 
 model SearchDocument {
   id            String                   @id @default(uuid()) @db.Uuid
   fileId        String                   @unique @db.Uuid
-  fileVersionId String                   @db.Uuid
+  // Legacy rows point at FileVersion. Provider-backed processing writes the
+  // opaque storage revision that was authoritative when it was indexed.
+  fileVersionId String?                  @db.Uuid
+  indexedRevision String?
   contentText   String
   searchVector  Unsupported("tsvector")?
   indexedAt     DateTime                 @default(now())
   file          File                     @relation("SearchDocumentFile", fields: [fileId], references: [id], onDelete: Cascade)
-  fileVersion   FileVersion              @relation("SearchDocumentIndexedVersion", fields: [fileVersionId], references: [id], onDelete: Cascade)
+  fileVersion   FileVersion?             @relation("SearchDocumentIndexedVersion", fields: [fileVersionId], references: [id], onDelete: Cascade)
 
   @@index([fileVersionId])
+  @@index([indexedRevision])
+}
+
+// A bounded, provider-neutral extraction artifact. It deliberately stores no
+// provider object or revision id: targetRevision is Docs Hub's opaque storage
+// revision, and SearchDocument remains the current-file search projection.
+model FileTextExtraction {
+  id             String   @id @default(uuid()) @db.Uuid
+  fileId         String   @db.Uuid
+  targetRevision String
+  contentText    String
+  truncated      Boolean  @default(false)
+  errorCode      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  file           File     @relation("FileTextExtractionFile", fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, targetRevision])
+  @@index([fileId, updatedAt])
 }
 
 model EditorSession {

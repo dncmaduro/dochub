@@ -3589,7 +3589,7 @@ function SearchResultsTable({
         <thead><tr><th scope="col">{t("common.name")}</th><th scope="col">{t("search.location")}</th><th scope="col">{t("common.type")}</th><th scope="col">{t("common.modified")}</th></tr></thead>
         <tbody>{items.map((item) => (
           <tr key={item.id}>
-            <td><button type="button" className="file-name" onClick={() => void onOpen(item)}><Icon name={item.type === "FOLDER" ? "folder" : "file"} size={19} /><span>{item.name}</span></button></td>
+            <td><button type="button" className="file-name" onClick={() => void onOpen(item)}><Icon name={item.type === "FOLDER" ? "folder" : "file"} size={19} /><span>{item.name}</span></button>{item.matchKind === "CONTENT" && item.snippet && <p className="search-snippet">{item.snippet}</p>}</td>
             <td className="search-location" title={searchLocationLabel(locations[item.id])}>{searchLocationLabel(locations[item.id])}</td>
             <td className="search-type">{item.type === "FOLDER" ? t("search.folder") : t("search.file")}</td>
             <td className="modified">{formatDate(item.updatedAt)}</td>

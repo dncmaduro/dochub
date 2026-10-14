@@ -239,7 +239,7 @@ export class FileSaveCoordinator {
       const file = await tx.file.create({ data: { nodeId: node.id, backingType: FileBackingType.GOOGLE_DRIVE, driveFileId: driveFile.id, revisionSequence: 1 } });
       await tx.fileRevision.create({ data: this.revisionData(file.id, 1, version, FileRevisionSource.SAVE_AS_COPY_INITIAL, request.userId) });
       await tx.auditLog.create({ data: { actorType: 'USER', actorId: request.userId, action: 'FILE_SAVE_AS_COPY', resourceType: 'NODE', resourceId: node.id, result: 'SUCCESS', metadata: { sourceFileId: source.fileId, sourceNodeId: source.node.id, fileId: file.id } } });
-      await tx.outboxEvent.create({ data: { eventType: 'FILE_CONTENT_CHANGED', aggregateType: 'FILE', aggregateId: file.id, payload: { fileId: file.id, storageRevision: version.storageRevision, source: 'SAVE_AS_COPY_INITIAL' } } });
+      await tx.outboxEvent.create({ data: { eventType: 'FILE_CONTENT_CHANGED', aggregateType: 'FILE', aggregateId: file.id, payload: { fileId: file.id, nodeId: node.id, storageRevision: version.storageRevision, reason: 'SAVE_AS_COPY_INITIAL' } } });
       return { nodeId: node.id, name: node.name };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     return result;

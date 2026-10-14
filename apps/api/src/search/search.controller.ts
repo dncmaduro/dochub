@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Header, Query, UseGuards } from '@nestjs/common';
 import { AccessTokenGuard } from '../auth/access-token.guard.js';
 import { CurrentAuth } from '../auth/current-auth.decorator.js';
 import type { AuthPrincipal } from '../auth/auth.types.js';
@@ -8,7 +8,9 @@ import { SearchService } from './search.service.js';
 @UseGuards(AccessTokenGuard)
 export class SearchController {
   constructor(private readonly search: SearchService) {}
-  @Get() find(
+  @Get()
+  @Header('Cache-Control', 'private, no-store')
+  find(
     @CurrentAuth() auth: AuthPrincipal,
     @Query() query: SearchQueryDto,
   ) {

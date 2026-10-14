@@ -7,6 +7,9 @@ export interface FileProcessingConfig {
   tikaUrl: URL;
   tikaRequestTimeoutSeconds: number;
   tikaMaxTextBytes: number;
+  extractionMaxBytes: number;
+  extractionMaxChars: number;
+  outboxBatchSize: number;
 }
 
 export function loadFileProcessingConfig(
@@ -53,5 +56,16 @@ export function loadFileProcessingConfig(
       16 * 1024 * 1024,
       32 * 1024 * 1024,
     ),
+    extractionMaxBytes: integer(
+      'FILE_EXTRACTION_MAX_BYTES',
+      25 * 1024 * 1024,
+      200 * 1024 * 1024,
+    ),
+    extractionMaxChars: integer(
+      'FILE_EXTRACTION_MAX_CHARS',
+      2_000_000,
+      10_000_000,
+    ),
+    outboxBatchSize: integer('FILE_PROCESSING_OUTBOX_BATCH_SIZE', 50, 500),
   };
 }

@@ -365,23 +365,39 @@ Docs Hub authorization while moving backend access behind the provider.
 
 ## Search, indexing, thumbnails, and workers
 
-Search must eventually use File Engine extraction, not Drive metadata/search:
+Checkpoint 9 now uses Docs Hub's revision-aware worker pipeline for search, not
+Drive metadata/search:
 
 ```text
-DOCX -> paragraphs/text
-XLSX -> sheet/cell text
-PPTX -> slide text
-PDF  -> extracted text
+FILE_CONTENT_CHANGED
+  -> current FileRevision
+  -> provider-neutral bytes
+  -> bounded native/Tika extraction
+  -> SearchDocument(fileId, indexedRevision)
 ```
 
-The current worker indexes local `FileVersion` bytes through the local storage
-service and Apache Tika. Drive-backed files currently have name/metadata
-search but are not content-indexed by the worker. This is transitional; do not
-implement File Engine extraction in Checkpoint 0.
+DOCX, XLSX, PPTX, TXT, Markdown, JSON, XML, and CSV use bounded native
+extractors. PDF and legacy Office formats use Tika as a fallback. Images,
+audio, video, and unknown binaries remain filename-searchable without a fake
+content result. `SearchDocument` is only published when its indexed revision
+still equals the current `FileRevision`; stale results are discarded. Search
+filters Docs Hub permissions and trash state at query time, and returns bounded
+plain-text snippets without provider IDs.
 
-The same future engine boundary should own thumbnail generation. Current
-worker extraction/indexing and any future thumbnail work must consume a
-provider-neutral readable object and file metadata, not Drive API types.
+`FILE_PROCESSING_TASK` claims are leased and idempotent by
+`fileId + targetRevision + taskType`; `TEXT_EXTRACTION` precedes
+`SEARCH_INDEX`. The explicit `backfill:file-processing` command covers
+provider revisions and pre-CP9 local current versions in bounded resumable
+batches. Normal worker startup never scans the legacy corpus.
+
+Thumbnail generation remains intentionally deferred in this deployment: there
+is no safe bounded renderer/derived-artifact store wired into the worker yet,
+so the UI uses type icons and no provider `thumbnailLink` is exposed. The
+architecture reserves a separate revision-keyed thumbnail task and authorized
+endpoint for a later implementation. See
+[`checkpoint-9-processing.md`](checkpoint-9-processing.md) for task states,
+limits, retry/stale handling, search ranking, and the supported/deferred
+format matrix.
 
 ## Save, conflict, and version direction
 

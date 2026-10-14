@@ -14,6 +14,7 @@
     "start:dev": "node --env-file-if-exists=../../.env ./node_modules/@nestjs/cli/bin/nest.js start --watch",
     "start:debug": "node --env-file-if-exists=../../.env ./node_modules/@nestjs/cli/bin/nest.js start --debug --watch",
     "start:prod": "node --env-file-if-exists=../../.env dist/main",
+    "backfill:file-processing": "FILE_PROCESSING_MODE=backfill node --env-file-if-exists=../../.env dist/file-processing/backfill-cli.js",
     "lint": "oxlint --type-aware src/ test/",
     "test": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run && pnpm test:integration",
     "test:integration": "node --env-file-if-exists=../../.env ./node_modules/vitest/vitest.mjs run --config ./vitest.config.integration.ts",
@@ -28,6 +29,7 @@
     "@dochub/trash": "workspace:*",
     "@nestjs/common": "^12.0.1",
     "@nestjs/core": "^12.0.1",
+    "fflate": "^0.8.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },

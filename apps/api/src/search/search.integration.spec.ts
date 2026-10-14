@@ -443,6 +443,19 @@ withDb('SearchService integration', () => {
     ).not.toContain(current.id);
   });
 
+  it('does not expose a legacy projection after a file enters provider-revision mode', async () => {
+    const migrated = await contentFile('migrated.pdf', 'legacy migration phrase');
+    await prisma.file.update({
+      where: { id: migrated.fileId },
+      data: { revisionSequence: 1 },
+    });
+    expect(
+      (await search.search(actorId, { q: 'legacy migration phrase' })).items.map(
+        (item) => item.id,
+      ),
+    ).not.toContain(migrated.id);
+  });
+
   it('paginates mixed content candidates without duplicates', async () => {
     const files = await Promise.all([
       contentFile(`alpha-content-${suffix}.pdf`, 'ngân sách dự án alpha'),

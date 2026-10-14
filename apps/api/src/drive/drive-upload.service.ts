@@ -510,7 +510,7 @@ export class DriveUploadService {
           },
           select: { id: true, parentId: true, name: true },
         });
-        await transaction.file.create({
+        const file = await transaction.file.create({
           data: {
             nodeId: node.id,
             backingType: FileBackingType.GOOGLE_DRIVE,
@@ -519,8 +519,19 @@ export class DriveUploadService {
           },
         });
         if (initialVersion) {
-          const file = await transaction.file.findUniqueOrThrow({ where: { nodeId: node.id }, select: { id: true } });
           await transaction.fileRevision.create({ data: { fileId: file.id, sequence: 1, provider: FileRevisionProvider.GOOGLE_DRIVE, providerVersionId: initialVersion.ref.versionId, storageRevision: initialVersion.storageRevision, sizeBytes: initialVersion.sizeBytes ?? sizeBytes, checksum: initialVersion.checksum ?? sha256, source: 'INITIAL', createdById: operation.userId } });
+          await transaction.outboxEvent.create({
+            data: {
+              eventType: 'FILE_CONTENT_CHANGED',
+              aggregateType: 'FILE',
+              aggregateId: file.id,
+              payload: {
+                fileId: file.id,
+                nodeId: node.id,
+                reason: 'UPLOAD',
+              },
+            },
+          });
         }
         await transaction.driveUploadOperation.update({
           where: { idempotencyKey: operation.idempotencyKey },

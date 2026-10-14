@@ -12,12 +12,16 @@ import type { SearchQueryDto } from './search.dto.js';
 
 interface SearchRow {
   id: string;
+  fileId: string | null;
+  parentId: string | null;
   type: NodeType;
   name: string;
   updatedAt: Date;
   normalizedName: string;
   tier: number;
   score: number;
+  matchKind: 'NAME' | 'CONTENT';
+  snippet: string | null;
 }
 const BATCH_SIZE = 100;
 function normalizeSearch(value: string): string {
@@ -45,9 +49,13 @@ export class SearchService {
     const cursor = dto.cursor ? decodeSearchCursor(dto.cursor) : undefined;
     const items: Array<{
       id: string;
+      fileId: string | null;
+      parentId: string | null;
       type: NodeType;
       name: string;
       updatedAt: string;
+      matchKind: 'NAME' | 'CONTENT';
+      snippet: string | null;
     }> = [];
     let scanCursor = cursor;
     let lastVisible: SearchRow | undefined;
@@ -81,9 +89,13 @@ export class SearchService {
         }
         items.push({
           id: row.id,
+          fileId: row.fileId,
+          parentId: row.parentId,
           type: row.type,
           name: row.name,
           updatedAt: row.updatedAt.toISOString(),
+          matchKind: row.matchKind,
+          snippet: row.snippet,
         });
         lastVisible = row;
       }
@@ -110,22 +122,33 @@ export class SearchService {
     const pattern = `%${escapeLike(query)}%`;
     return this.database.prisma.$queryRaw<SearchRow[]>`
       WITH name_candidates AS (
-        SELECT "id", "type", "name", "updatedAt", "normalizedName",
+        SELECT "id", (SELECT f."id" FROM "File" f WHERE f."nodeId" = "Node"."id") AS "fileId", "parentId", "type", "name", "updatedAt", "normalizedName",
           CASE WHEN public.search_unaccent(lower("name")) = ${query} THEN 0
                WHEN public.search_unaccent(lower("name")) LIKE ${`${escapeLike(query)}%`} ESCAPE '\\' THEN 1
                WHEN public.search_unaccent(lower("name")) LIKE ${pattern} ESCAPE '\\' THEN 2 ELSE 3 END AS tier,
+          'NAME'::text AS "matchKind", NULL::text AS snippet,
           round(similarity(public.search_unaccent(lower("name")), ${query})::numeric, 6)::double precision AS score
         FROM "Node" WHERE "trashOperationId" IS NULL
           AND (${type ?? null}::"NodeType" IS NULL OR "type" = ${type ?? null}::"NodeType")
           AND (public.search_unaccent(lower("name")) LIKE ${pattern} ESCAPE '\\' OR similarity(public.search_unaccent(lower("name")), ${query}) >= 0.25)
       ), content_candidates AS (
-        SELECT n."id", n."type", n."name", n."updatedAt", n."normalizedName",
+        SELECT n."id", f."id" AS "fileId", n."parentId", n."type", n."name", n."updatedAt", n."normalizedName",
           4 AS tier,
+          'CONTENT'::text AS "matchKind",
+          ts_headline('simple', sd."contentText", plainto_tsquery('simple', public.search_unaccent(${query})), 'StartSel=, StopSel=, MaxWords=24, MinWords=8, MaxFragments=1') AS snippet,
           round(ts_rank_cd(sd."searchVector", plainto_tsquery('simple', public.search_unaccent(${query})))::numeric, 6)::double precision AS score
         FROM "Node" n
         INNER JOIN "File" f ON f."nodeId" = n."id"
         INNER JOIN "SearchDocument" sd
-          ON sd."fileId" = f."id" AND sd."fileVersionId" = f."currentVersionId"
+          ON sd."fileId" = f."id"
+          AND (
+            (f."revisionSequence" = 0 AND sd."fileVersionId" = f."currentVersionId")
+            OR sd."indexedRevision" = (
+              SELECT revision."storageRevision"
+              FROM "FileRevision" revision
+              WHERE revision."fileId" = f."id" AND revision."sequence" = f."revisionSequence"
+            )
+          )
         WHERE n."trashOperationId" IS NULL
           AND n."type" = 'FILE'::"NodeType"
           AND (${type ?? null}::"NodeType" IS NULL OR n."type" = ${type ?? null}::"NodeType")

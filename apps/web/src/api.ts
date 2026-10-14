@@ -284,9 +284,13 @@ export interface BreadcrumbPage {
 }
 export interface SearchItem {
   id: string;
+  fileId: string | null;
+  parentId: string | null;
   type: "FILE" | "FOLDER";
   name: string;
   updatedAt: string;
+  matchKind: "NAME" | "CONTENT";
+  snippet: string | null;
 }
 export interface SearchPage {
   items: SearchItem[];

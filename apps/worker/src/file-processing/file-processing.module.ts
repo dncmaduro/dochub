@@ -1,25 +1,22 @@
 import { Module } from '@nestjs/common';
-import { LocalFileStorage } from '@dochub/storage';
 import { DatabaseModule } from '../database/database.module.js';
 import { DatabaseService } from '../database/database.service.js';
 import { TikaClient } from '../tika/tika.client.js';
 import { loadFileProcessingConfig } from './file-processing.config.js';
-import { FileProcessingService } from './file-processing.service.js';
+import { GoogleDriveRevisionContentReader } from './revision-content-reader.js';
+import { RevisionFileProcessingService } from './revision-file-processing.service.js';
 
 @Module({
   imports: [DatabaseModule],
   providers: [
     {
-      provide: FileProcessingService,
+      provide: RevisionFileProcessingService,
       inject: [DatabaseService],
       useFactory: (database: DatabaseService) => {
         const config = loadFileProcessingConfig();
-        if (process.env.STORAGE_DRIVER !== 'local')
-          throw new Error('STORAGE_DRIVER must be local');
-        const storage = new LocalFileStorage(process.env.STORAGE_ROOT ?? '');
-        return new FileProcessingService(
+        return new RevisionFileProcessingService(
           database.prisma,
-          storage,
+          new GoogleDriveRevisionContentReader(database.prisma),
           new TikaClient(
             config.tikaUrl,
             config.tikaRequestTimeoutSeconds * 1000,
@@ -30,5 +27,6 @@ import { FileProcessingService } from './file-processing.service.js';
       },
     },
   ],
+  exports: [RevisionFileProcessingService],
 })
 export class FileProcessingModule {}

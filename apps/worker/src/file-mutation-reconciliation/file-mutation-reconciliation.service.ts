@@ -60,15 +60,27 @@ export class FileMutationReconciliationService implements OnApplicationBootstrap
   }
 
   private async processBatch(): Promise<number> {
-    const candidates = await this.database.fileSaveOperation.findMany({
-      where: {
-        updatedAt: mutationReconciliationEligibility(new Date(), this.config.staleSeconds).updatedAt,
-        status: { in: [FileSaveOperationStatus.PENDING, FileSaveOperationStatus.PROVIDER_WRITTEN] },
-      },
-      select: { operationId: true, fileId: true, operationType: true, status: true, createdAt: true, finalizationAttempts: true },
-      orderBy: { updatedAt: 'asc' },
-      take: this.config.batchSize,
-    });
+    // FileSaveOperation.updatedAt is a legacy TIMESTAMP column without a
+    // timezone. Keep both sides of the stale comparison in PostgreSQL so the
+    // session timezone cannot skew a JS Date cutoff.
+    const candidates = await this.database.$queryRaw<Array<{
+      operationId: string;
+      fileId: string;
+      operationType: string;
+      status: FileSaveOperationStatus;
+      createdAt: Date;
+      finalizationAttempts: number;
+    }>>`
+      SELECT "operationId", "fileId", "operationType", "status", "createdAt", "finalizationAttempts"
+      FROM "FileSaveOperation"
+      WHERE "updatedAt" <= CURRENT_TIMESTAMP - (${this.config.staleSeconds} * INTERVAL '1 second')
+        AND "status" IN (
+          ${FileSaveOperationStatus.PENDING}::"FileSaveOperationStatus",
+          ${FileSaveOperationStatus.PROVIDER_WRITTEN}::"FileSaveOperationStatus"
+        )
+      ORDER BY "updatedAt" ASC
+      LIMIT ${this.config.batchSize}
+    `;
     for (const candidate of candidates) {
       if (candidate.status === FileSaveOperationStatus.PENDING) {
         this.logger.warn({ event: 'file-mutation-pending-review', operationId: candidate.operationId, fileId: candidate.fileId, operationType: candidate.operationType, state: candidate.status, ageSeconds: Math.floor((Date.now() - candidate.createdAt.getTime()) / 1000) });
