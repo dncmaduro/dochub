@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ApiClient, type PresentationParagraph, type PresentationSlideModel, type PresentationTextElement } from "./api";
+import { ApiClient, ApiError, type PresentationParagraph, type PresentationSlideModel, type PresentationTextElement } from "./api";
 import { PresentationToolbar } from "./PresentationToolbar";
 import { SlideCanvas } from "./SlideCanvas";
 import { SlideThumbnailRail } from "./SlideThumbnailRail";
@@ -63,6 +63,7 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
   const [thumbnailErrors, setThumbnailErrors] = useState<Record<string, string>>({});
   const pendingSlides = useRef(new Set<string>());
   const saveGeneration = useRef(0);
+  const saveOperationId = useRef<string | null>(null);
   const stageScrollRef = useRef<HTMLDivElement>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const activeSlide = state?.slides[state.activeSlideId];
@@ -114,29 +115,6 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
     return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
   }, []);
 
-  const save = useCallback(async () => {
-    if (!state || state.saveStatus === "saving" || state.saveStatus === "conflict") return;
-    const generation = saveGeneration.current;
-    const slides = changedPatches(state.slides, state.originalSlides);
-    if (!slides.length) { setState((current) => current ? { ...current, saveStatus: "saved" } : current); return; }
-    const savedSlides = state.slides;
-    setState((current) => current ? { ...current, saveStatus: "saving" } : current);
-    try {
-      const result = await api.savePresentation(nodeId, { expectedRevision: state.model.storageRevision ?? "", slides });
-      setState((current) => current ? { ...current, model: result.model, originalSlides: saveGeneration.current === generation ? current.slides : savedSlides, history: saveGeneration.current === generation ? [] : current.history, future: saveGeneration.current === generation ? [] : current.future, saveStatus: saveGeneration.current === generation ? "saved" : "dirty" } : current);
-      setError("");
-    } catch (caught) {
-      const conflict = caught instanceof Error && "status" in caught && (caught as { status?: number }).status === 409;
-      setState((current) => current ? { ...current, saveStatus: conflict ? "conflict" : "error" } : current);
-      setError(conflict ? "This file changed after you opened it." : caught instanceof Error ? caught.message : "The presentation could not be saved.");
-    }
-  }, [nodeId, state]);
-  const saveAsCopy = useCallback(async (name: string) => {
-    if (!state || !state.model.storageRevision) return;
-    const slides = changedPatches(state.slides, state.originalSlides);
-    if (!slides.length) return;
-    await api.saveAsCopy(nodeId, { name, expectedRevision: state.model.storageRevision, slides });
-  }, [nodeId, state]);
   const recoveryDraft = useRecoveryDraft({
     fileId: nodeId,
     engine: "PRESENTATION",
@@ -146,6 +124,34 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
     applyRecoveredDraft: useCallback((payload: { slides: PresentationEditorState["slides"] }) => { setState((current) => current ? { ...current, slides: payload.slides, saveStatus: "dirty" } : current); onModeChange("edit"); }, [onModeChange]),
   });
 
+  const save = useCallback(async () => {
+    if (!state || state.saveStatus === "saving" || state.saveStatus === "conflict") return;
+    const generation = saveGeneration.current;
+    const slides = changedPatches(state.slides, state.originalSlides);
+    if (!slides.length) { setState((current) => current ? { ...current, saveStatus: "saved" } : current); return; }
+    const savedSlides = state.slides;
+    setState((current) => current ? { ...current, saveStatus: "saving" } : current);
+    try {
+      const operationId = saveOperationId.current ?? crypto.randomUUID();
+      saveOperationId.current = operationId;
+      const result = await api.savePresentation(nodeId, { expectedRevision: state.model.storageRevision ?? "", slides, operationId });
+      const allLocalChangesSaved = saveGeneration.current === generation;
+      if (allLocalChangesSaved) recoveryDraft.clearCurrentDraft();
+      setState((current) => current ? { ...current, model: result.model, originalSlides: allLocalChangesSaved ? current.slides : savedSlides, history: allLocalChangesSaved ? [] : current.history, future: allLocalChangesSaved ? [] : current.future, saveStatus: allLocalChangesSaved ? "saved" : "dirty" } : current);
+      setError("");
+      saveOperationId.current = null;
+    } catch (caught) {
+      const conflict = caught instanceof ApiError && (caught.code === "FILE_REVISION_CONFLICT" || (caught.status === 409 && !caught.code));
+      setState((current) => current ? { ...current, saveStatus: conflict ? "conflict" : "error" } : current);
+      setError(conflict ? "This file changed after you opened it." : caught instanceof Error ? caught.message : "The presentation could not be saved.");
+    }
+  }, [nodeId, recoveryDraft, state]);
+  const saveAsCopy = useCallback(async (name: string) => {
+    if (!state || !state.model.storageRevision) return;
+    const slides = changedPatches(state.slides, state.originalSlides);
+    if (!slides.length) return;
+    await api.saveAsCopy(nodeId, { name, expectedRevision: state.model.storageRevision, slides });
+  }, [nodeId, state]);
   const reload = useCallback(async () => {
     if (state && state.saveStatus !== "saved" && !window.confirm("Reload and discard unsaved changes?")) return;
     try {
@@ -199,7 +205,7 @@ export function PresentationEditor({ modelUrl, nodeId, initialModel, mode, onMod
   if (!state || !current) return <div className="presentation-loading" role="status">{loadingSlide ? "Loading slide…" : "Loading presentation…"}</div>;
   return <div className="presentation-editor" onBlur={commitDraft}>
     <PresentationToolbar state={state} mode={mode} onUndo={() => setState((value) => value ? undo(value) : value)} onRedo={() => setState((value) => value ? redo(value) : value)} onBold={() => format("bold")} onItalic={() => format("italic")} onUnderline={() => format("underline")} onAlign={align} onFontSize={fontSize} onZoom={(delta) => setState((value) => value ? { ...value, zoom: Math.min(1.5, Math.max(0.5, value.zoom + delta)) } : value)} />
-    {recoveryDraft.recovery && <div className="presentation-editor-error" role="alert"><span>{recoveryDraft.recoveryIsOutdated ? "An older recovery draft is based on a previous file revision. Review it before saving; Save as copy is available." : "Unsaved changes from a previous session were found."}</span><button type="button" className="button" onClick={recoveryDraft.restore}>Restore</button><button type="button" className="button" onClick={recoveryDraft.discardRecovery}>Discard</button></div>}
+    {recoveryDraft.recovery && <div className="presentation-editor-error" role="alert"><span>{recoveryDraft.recoveryIsOutdated ? "An older recovery draft cannot be safely restored onto this file revision. Discard it or keep working on the current file." : "Unsaved changes from a previous session were found."}</span>{recoveryDraft.canRestoreRecovery && <button type="button" className="button" onClick={recoveryDraft.restore}>Restore</button>}<button type="button" className="button" onClick={recoveryDraft.discardRecovery}>Discard</button></div>}
     {error && <div className="presentation-editor-error" role="alert">{error}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}
     <div className="presentation-workspace"><SlideThumbnailRail descriptors={state.model.slides} slides={state.slides} modelUrl={modelUrl} activeSlideId={state.activeSlideId} thumbnailErrors={thumbnailErrors} onLoad={loadThumbnail} onSelect={chooseSlide} /><main className="presentation-stage"><div ref={stageScrollRef} className="presentation-stage-scroll"><div className="presentation-canvas-scale" style={canvasStyle}><SlideCanvas modelUrl={modelUrl} slide={current} scale={scale} mode={mode} selectedElementId={state.selectedElementId} onSelect={(id) => { if (id && selectedText?.id !== id) setDraftElementId(null); setState((value) => value ? selectElement(value, id) : value); }} onMove={(id, x, y) => setState((value) => value ? moveElement(value, id, x, y) : value)} onResize={(id, width, height) => setState((value) => value ? resizeElement(value, id, width, height) : value)} /></div></div>{selectedText && mode === "edit" && <div className="presentation-text-editor"><label htmlFor="presentation-text-input">Text</label><textarea id="presentation-text-input" value={draftElementId === selectedText.id ? draft : textToString(selectedText)} onChange={(event) => { setDraftElementId(selectedText.id); setDraft(event.target.value); }} onCompositionStart={() => setComposing(true)} onCompositionEnd={(event) => { setComposing(false); setDraftElementId(selectedText.id); setDraft(event.currentTarget.value); }} onBlur={commitDraft} rows={3} /></div>}</main></div>
   </div>;

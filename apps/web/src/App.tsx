@@ -3731,6 +3731,7 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
   const [currentRevision, setCurrentRevision] = useState<string | undefined>();
   const [error, setError] = useState("");
   const [pending, setPending] = useState<string | null>(null);
+  const restoreOperationIds = useRef(new Map<string, string>());
   const dialog = useDialogFocus();
   const load = useCallback(async () => {
     setError("");
@@ -3761,7 +3762,10 @@ function VersionDialog({ node, onClose, onNotice }: { node: Node; onClose: () =>
     setPending(version.id);
     setError("");
     try {
-      await api.restoreVersion(node.id, version.id, currentRevision);
+      const operationId = restoreOperationIds.current.get(version.id) ?? crypto.randomUUID();
+      restoreOperationIds.current.set(version.id, operationId);
+      await api.restoreVersion(node.id, version.id, currentRevision, operationId);
+      restoreOperationIds.current.delete(version.id);
       await load();
       onNotice({ tone: "success", message: t("versions.restored") });
     } catch (requestError) {

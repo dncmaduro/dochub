@@ -7,7 +7,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { FileBackingType, FileRevisionProvider, FileRevisionSource, FileSaveOperationStatus, NodeType, Prisma } from '@dochub/database';
+import { FileBackingType, FileRevisionProvider, FileRevisionSource, FileSaveOperationStatus, FileSaveOperationType, finalizeFileMutationOperation, NodeType, Prisma } from '@dochub/database';
 import { randomUUID } from 'node:crypto';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
@@ -62,60 +62,117 @@ export class FileSaveCoordinator {
     const target = await this.resolveEditable(request.userId, request.nodeId, request.engine);
     const expectedRevision = this.expectedRevision(request.payload);
     const operationId = this.operationId(request.operationId ?? this.payloadOperationId(request.payload));
-    const existing = await this.database.prisma.fileSaveOperation.findUnique({ where: { operationId } });
-    if (existing) {
-      if (existing.fileId !== target.fileId || existing.expectedRevision !== expectedRevision) {
-        throw new ConflictException('The save operation ID is already in use.');
-      }
-      if (existing.status === FileSaveOperationStatus.COMPLETED && existing.resultRevision) {
-        return { storageRevision: existing.resultRevision, model: await this.openModel(target, request.engine, existing.resultRevision) };
-      }
-      throw new ConflictException({ code: 'SAVE_IN_PROGRESS', message: 'This save is already being finalized.' });
-    }
+    const replay = await this.replayOperation(operationId, target, request.engine, expectedRevision);
+    if (replay) return replay;
+    await this.assertNoUnresolvedMutation(target.fileId, operationId);
 
     const current = await this.storage.stat(target.ref);
-    this.logger.debug(`save revision trace expected=${expectedRevision} precheck=${current.revision ?? 'missing'}`);
+    this.logger.debug({ event: 'file-save', stage: 'precheck', fileId: target.fileId, engine: request.engine.id, operationId, expectedRevision, precheckRevision: current.revision ?? null });
     if (current.revision !== expectedRevision) {
+      // A duplicate request can race the first response. Prefer its durable
+      // operation result over misclassifying the caller as a remote conflict.
+      const completed = await this.replayOperation(operationId, target, request.engine, expectedRevision);
+      if (completed) return completed;
       await this.recordConflict(request.userId, target, request.engine.id, expectedRevision, current.revision);
       throw this.revisionConflict(current.revision, current.modifiedAt);
     }
     const prepared = await this.prepare(target, request.engine, request.payload, expectedRevision);
-    await this.database.prisma.fileSaveOperation.create({
-      data: {
-        operationId,
-        fileId: target.fileId,
-        expectedRevision,
-        source: FileRevisionSource.MANUAL_SAVE,
-        createdById: request.userId,
-      },
-    });
 
     let oldVersion: StorageVersionMetadata;
     try {
       oldVersion = await this.versions.getCurrentVersion(target.ref);
-      this.logger.debug(`save revision trace oldCurrent=${oldVersion.storageRevision} oldProviderRevision=${oldVersion.ref.versionId}`);
+      this.logger.debug({ event: 'file-save', stage: 'preserve-before-replace', fileId: target.fileId, engine: request.engine.id, operationId, expectedRevision, providerRevision: oldVersion.ref.versionId });
       await this.versions.preserveVersion(target.ref, oldVersion.ref);
+      const duplicate = await this.beginOperation(operationId, target, request.engine, expectedRevision, request.userId, oldVersion);
+      if (duplicate) return duplicate;
       const stored = await this.storage.replace(target.ref, { stream: prepared.stream, mimeType: prepared.mimeType }, { expectedRevision });
       if (!stored.metadata.revision) throw new ServiceUnavailableException('Storage did not return a new revision.');
-      this.logger.debug(`save revision trace replaced=${stored.metadata.revision}`);
+      this.logger.debug({ event: 'file-save', stage: 'provider-replaced', fileId: target.fileId, engine: request.engine.id, operationId, expectedRevision, replaceRevision: stored.metadata.revision });
       const replacedVersion = await this.versions.getCurrentVersion(target.ref);
-      this.logger.debug(`save revision trace preserveNew=${replacedVersion.storageRevision} newProviderRevision=${replacedVersion.ref.versionId}`);
+      this.logger.debug({ event: 'file-save', stage: 'preserve-after-replace', fileId: target.fileId, engine: request.engine.id, operationId, expectedRevision, replaceRevision: stored.metadata.revision, providerRevision: replacedVersion.ref.versionId });
       await this.versions.preserveVersion(target.ref, replacedVersion.ref);
       const finalVersion = await this.versions.getCurrentVersion(target.ref);
-      this.logger.debug(`save revision trace postPreserve=${finalVersion.storageRevision}`);
-      await this.finalizeSave({ request, target, operationId, oldVersion, newVersion: finalVersion });
+      this.logger.debug({ event: 'file-save', stage: 'final-provider-stat', fileId: target.fileId, engine: request.engine.id, operationId, expectedRevision, replaceRevision: stored.metadata.revision, finalRevision: finalVersion.storageRevision, providerRevision: finalVersion.ref.versionId });
+      await this.markProviderWritten(operationId, finalVersion);
+      await finalizeFileMutationOperation(this.database.prisma, operationId);
       await this.prune(target.fileId, target.ref);
-      this.logger.debug(`save revision trace returned=${finalVersion.storageRevision}`);
+      this.logger.debug({ event: 'file-save', stage: 'completed', fileId: target.fileId, engine: request.engine.id, operationId, expectedRevision, finalRevision: finalVersion.storageRevision });
       return { storageRevision: finalVersion.storageRevision, model: await this.openModel(target, request.engine, finalVersion.storageRevision) };
     } catch (error) {
       if (error instanceof StorageConflictError) {
         const latest = await this.storage.stat(target.ref).catch(() => undefined);
+        await this.database.prisma.fileSaveOperation.update({ where: { operationId }, data: { status: FileSaveOperationStatus.FAILED, failureReason: 'REVISION_CONFLICT' } }).catch(() => undefined);
         await this.recordConflict(request.userId, target, request.engine.id, expectedRevision, latest?.revision);
         throw this.revisionConflict(latest?.revision, latest?.modifiedAt);
       }
       if (error instanceof ConflictException || error instanceof ForbiddenException || error instanceof NotFoundException) throw error;
-      this.logger.error('Authoritative save needs history finalization/reconciliation.');
+      this.logger.error({ event: 'file-mutation', operationId, fileId: target.fileId, operationType: FileSaveOperationType.SAVE, state: 'PENDING_OR_PROVIDER_WRITTEN', error: error instanceof Error ? error.name : 'UNKNOWN' });
       throw new ServiceUnavailableException('The file may have been saved, but history finalization is pending. Refresh before retrying.');
+    }
+  }
+
+  private async replayOperation(operationId: string, target: ResolvedEditableFile, engine: FileEngine, expectedRevision: string): Promise<{ storageRevision: string; model: unknown } | null> {
+    const existing = await this.database.prisma.fileSaveOperation.findUnique({ where: { operationId } });
+    if (!existing) return null;
+    if (existing.fileId !== target.fileId || existing.expectedRevision !== expectedRevision || existing.operationType !== FileSaveOperationType.SAVE) {
+      throw new ConflictException('The save operation ID is already in use.');
+    }
+    if (existing.status === FileSaveOperationStatus.PROVIDER_WRITTEN) {
+      await finalizeFileMutationOperation(this.database.prisma, operationId);
+      const finalized = await this.database.prisma.fileSaveOperation.findUniqueOrThrow({ where: { operationId } });
+      return { storageRevision: finalized.resultRevision!, model: await this.openModel(target, engine, finalized.resultRevision!) };
+    }
+    if (existing.status === FileSaveOperationStatus.COMPLETED && existing.resultRevision) {
+      return { storageRevision: existing.resultRevision, model: await this.openModel(target, engine, existing.resultRevision) };
+    }
+    throw new ConflictException({ code: existing.status === FileSaveOperationStatus.FAILED ? 'FILE_MUTATION_FAILED' : 'FILE_MUTATION_IN_PROGRESS', message: existing.status === FileSaveOperationStatus.FAILED ? 'The previous save did not start and needs a new operation.' : 'This save is already being finalized.' });
+  }
+
+  private async beginOperation(operationId: string, target: ResolvedEditableFile, engine: FileEngine, expectedRevision: string, userId: string, previous: StorageVersionMetadata): Promise<{ storageRevision: string; model: unknown } | null> {
+    try {
+      await this.database.prisma.fileSaveOperation.create({
+        data: {
+          operationId,
+          fileId: target.fileId,
+          expectedRevision,
+          operationType: FileSaveOperationType.SAVE,
+          source: FileRevisionSource.MANUAL_SAVE,
+          previousStorageRevision: previous.storageRevision,
+          previousProviderVersionId: previous.ref.versionId,
+          previousSizeBytes: previous.sizeBytes,
+          previousChecksum: previous.checksum ?? null,
+          createdById: userId,
+        },
+      });
+      return null;
+    } catch (error) {
+      const replay = await this.replayOperation(operationId, target, engine, expectedRevision);
+      if (replay) return replay;
+      throw error;
+    }
+  }
+
+  private async markProviderWritten(operationId: string, version: StorageVersionMetadata) {
+    await this.database.prisma.fileSaveOperation.update({
+      where: { operationId },
+      data: {
+        status: FileSaveOperationStatus.PROVIDER_WRITTEN,
+        resultRevision: version.storageRevision,
+        providerVersionId: version.ref.versionId,
+        resultSizeBytes: version.sizeBytes,
+        resultChecksum: version.checksum ?? null,
+        providerWrittenAt: new Date(),
+      },
+    });
+  }
+
+  private async assertNoUnresolvedMutation(fileId: string, operationId: string) {
+    const blocking = await this.database.prisma.fileSaveOperation.findFirst({
+      where: { fileId, operationId: { not: operationId }, status: { in: [FileSaveOperationStatus.PENDING, FileSaveOperationStatus.PROVIDER_WRITTEN] } },
+      select: { operationId: true, status: true },
+    });
+    if (blocking) {
+      throw new ConflictException({ code: 'FILE_MUTATION_PENDING', message: 'A previous file mutation is still being finalized.' });
     }
   }
 
@@ -137,7 +194,11 @@ export class FileSaveCoordinator {
       const result = await this.registerCopy(request, target, stored.ref, finalVersion, request.name);
       return result;
     } catch (error) {
-      await this.storage.delete(stored.ref).catch(() => undefined);
+      try {
+        await this.storage.delete(stored.ref);
+      } catch (cleanupError) {
+        this.logger.error({ event: 'file-save-as-copy-compensation-failed', sourceFileId: target.fileId, provider: stored.ref.provider, objectId: stored.ref.objectId, error: cleanupError instanceof Error ? cleanupError.name : 'UNKNOWN' });
+      }
       throw error;
     }
   }
@@ -165,24 +226,6 @@ export class FileSaveCoordinator {
   private async openModel(target: ResolvedEditableFile, engine: FileEngine, revision: string) {
     if (!engine.openModel) return null;
     return engine.openModel(target.descriptor, { storage: this.storage, storageRevision: revision });
-  }
-
-  private async finalizeSave(input: { request: FileSaveRequest; target: ResolvedEditableFile; operationId: string; oldVersion: StorageVersionMetadata; newVersion: StorageVersionMetadata }) {
-    await this.database.prisma.$transaction(async (tx) => {
-      const file = await tx.file.update({ where: { id: input.target.fileId }, data: { revisionSequence: { increment: 1 } }, select: { revisionSequence: true } });
-      const existingHistory = await tx.fileRevision.count({ where: { fileId: input.target.fileId } });
-      if (existingHistory === 0) {
-        await tx.fileRevision.create({ data: this.revisionData(input.target.fileId, file.revisionSequence, input.oldVersion, FileRevisionSource.INITIAL, input.request.userId) });
-        await tx.file.update({ where: { id: input.target.fileId }, data: { revisionSequence: { increment: 1 } } });
-      }
-      const next = await tx.file.findUniqueOrThrow({ where: { id: input.target.fileId }, select: { revisionSequence: true } });
-      await tx.fileRevision.create({ data: this.revisionData(input.target.fileId, next.revisionSequence, input.newVersion, FileRevisionSource.MANUAL_SAVE, input.request.userId) });
-      await tx.fileSaveOperation.update({ where: { operationId: input.operationId }, data: { status: FileSaveOperationStatus.COMPLETED, resultRevision: input.newVersion.storageRevision, providerVersionId: input.newVersion.ref.versionId, completedAt: new Date() } });
-      await tx.driveFile.update({ where: { id: input.target.driveFileRecordId }, data: { sizeBytes: input.newVersion.sizeBytes, driveVersion: input.newVersion.storageRevision, syncedAt: new Date() } });
-      await tx.node.update({ where: { id: input.target.node.id }, data: { updatedById: input.request.userId } });
-      await tx.auditLog.create({ data: { actorType: 'USER', actorId: input.request.userId, action: 'FILE_SAVE', resourceType: 'NODE', resourceId: input.target.node.id, result: 'SUCCESS', metadata: { fileId: input.target.fileId, sourceVersionSequence: existingHistory, resultRevision: input.newVersion.storageRevision } } });
-      await tx.outboxEvent.create({ data: { eventType: 'FILE_CONTENT_CHANGED', aggregateType: 'FILE', aggregateId: input.target.fileId, payload: { fileId: input.target.fileId, storageRevision: input.newVersion.storageRevision, source: 'MANUAL_SAVE' } } });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   private async registerCopy(request: SaveAsCopyRequest, source: ResolvedEditableFile, ref: StorageObjectRef, version: StorageVersionMetadata, name: string) {

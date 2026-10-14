@@ -6,6 +6,6 @@ const root = dirname(fileURLToPath(import.meta.url));
 export default {
   root,
   test: {
-    include: ["test/**/*.test.ts"],
+    include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
   },
 };

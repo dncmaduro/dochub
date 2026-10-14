@@ -22,6 +22,22 @@ export function executeCellCommand(state: SpreadsheetEditorState, command: Sprea
   const pendingEdits = { ...state.pendingEdits, [command.key]: command.after };
   return { ...state, pendingEdits, undoStack: [...state.undoStack, command], redoStack: [], saveStatus: "unsaved" };
 }
+
+/**
+ * Keep only edits made after a save snapshot. A later edit to the same cell is
+ * retained when its value differs from the one the server just accepted.
+ */
+export function discardSavedEdits(
+  pendingEdits: Record<string, SpreadsheetCellValue>,
+  savedEdits: Record<string, SpreadsheetCellValue>,
+): Record<string, SpreadsheetCellValue> {
+  const next = { ...pendingEdits };
+  for (const [key, savedValue] of Object.entries(savedEdits)) {
+    if (Object.prototype.hasOwnProperty.call(next, key) && Object.is(next[key], savedValue)) delete next[key];
+  }
+  return next;
+}
+
 function applyHistory(state: SpreadsheetEditorState, command: SpreadsheetCellCommand, undoing: boolean): SpreadsheetEditorState {
   const value = undoing ? command.before : command.after;
   const pendingEdits = { ...state.pendingEdits };

@@ -16,6 +16,7 @@ export function useRecoveryDraft<TDraft>(options: {
   const [recovery, setRecovery] = useState<RecoveryDraft<TDraft> | null>(null);
   const [recoveryCandidates, setRecoveryCandidates] = useState<RecoveryDraft<TDraft>[]>([]);
   const draftKey = useRef("");
+  const recoveredDraftKey = useRef<string | null>(null);
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -51,16 +52,26 @@ export function useRecoveryDraft<TDraft>(options: {
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [isDirty]);
 
+  const recoveryIsOutdated = Boolean(recovery && recovery.baseRevision !== baseRevision);
+  const canRestoreRecovery = Boolean(recovery && !recoveryIsOutdated);
+
   const restore = useCallback(() => {
-    if (!recovery) return;
-    void removeRecoveryDraft(recovery.key);
+    // A recovery payload is only meaningful against the exact authoritative
+    // revision it was created from.  Never silently apply an old snapshot over
+    // the file the user just opened.
+    if (!recovery || recovery.baseRevision !== baseRevision) return;
+    recoveredDraftKey.current = recovery.key;
     applyRecoveredDraft(recovery.payload);
     setRecovery(null);
-  }, [applyRecoveredDraft, recovery]);
+  }, [applyRecoveredDraft, baseRevision, recovery]);
   const discardRecovery = useCallback(() => { if (recovery) void removeRecoveryDraft(recovery.key); setRecovery(null); }, [recovery]);
-  const clearCurrentDraft = useCallback(() => { if (draftKey.current) void removeRecoveryDraft(draftKey.current); }, []);
+  const clearCurrentDraft = useCallback(() => {
+    const keys = new Set([draftKey.current, recoveredDraftKey.current].filter((key): key is string => Boolean(key)));
+    recoveredDraftKey.current = null;
+    for (const key of keys) void removeRecoveryDraft(key);
+  }, []);
 
-  return { recovery, recoveryCandidates, recoveryIsOutdated: Boolean(recovery && recovery.baseRevision !== baseRevision), restore, discardRecovery, clearCurrentDraft, draftKey };
+  return { recovery, recoveryCandidates, recoveryIsOutdated, canRestoreRecovery, restore, discardRecovery, clearCurrentDraft, draftKey };
 }
 
 export function useEditorPersistence<TDraft, TResult extends { storageRevision?: string }>(options: {
@@ -69,7 +80,7 @@ export function useEditorPersistence<TDraft, TResult extends { storageRevision?:
   baseRevision: string;
   isDirty: boolean;
   buildDraftPayload: () => TDraft;
-  save: (payload: TDraft) => Promise<TResult>;
+  save: (payload: TDraft, operationId: string) => Promise<TResult>;
   applyRecoveredDraft: (payload: TDraft) => void;
   onSaved?: (result: TResult, allLocalChangesSaved: boolean) => void;
 }) {
@@ -77,30 +88,37 @@ export function useEditorPersistence<TDraft, TResult extends { storageRevision?:
   const [status, setStatus] = useState<EditorPersistenceStatus>(isDirty ? "dirty" : "clean");
   const [error, setError] = useState("");
   const recoveryState = useRecoveryDraft(options);
-  const { recovery, recoveryCandidates, recoveryIsOutdated, restore: restoreRecovery, discardRecovery, clearCurrentDraft } = recoveryState;
+  const { recovery, recoveryCandidates, recoveryIsOutdated, canRestoreRecovery, restore: restoreRecovery, discardRecovery, clearCurrentDraft } = recoveryState;
   const generation = useRef(0);
   const inFlight = useRef<Promise<TResult> | null>(null);
+  const operationId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!isDirty) return;
-    generation.current += 1;
-  }, [isDirty]);
+    // The payload callback changes only when the editor's semantic draft
+    // changes. Counting it lets a save response distinguish the captured
+    // snapshot from edits made while its request was in flight.
+    if (isDirty) generation.current += 1;
+  }, [buildDraftPayload, isDirty]);
 
   const requestSave = useCallback(() => {
-    const visibleStatus = isDirty && (status === "clean" || status === "save-failed") ? "dirty" : status;
+    const visibleStatus = isDirty && status === "clean" ? "dirty" : status;
     if (!isDirty || visibleStatus === "saving" || visibleStatus === "conflict") return inFlight.current;
     const saveGeneration = generation.current;
     setStatus("saving");
     setError("");
-    const request = save(buildDraftPayload());
+    const currentOperationId = operationId.current ?? crypto.randomUUID();
+    operationId.current = currentOperationId;
+    const request = save(buildDraftPayload(), currentOperationId);
     inFlight.current = request;
     void request.then((result) => {
       const allLocalChangesSaved = generation.current === saveGeneration;
       if (allLocalChangesSaved) clearCurrentDraft();
       setStatus(allLocalChangesSaved ? "clean" : "dirty");
+      operationId.current = null;
       onSaved?.(result, allLocalChangesSaved);
     }).catch((caught: unknown) => {
-      setStatus(caught instanceof ApiError && caught.status === 409 ? "conflict" : "save-failed");
+      const conflict = caught instanceof ApiError && (caught.code === "FILE_REVISION_CONFLICT" || (caught.status === 409 && !caught.code));
+      setStatus(conflict ? "conflict" : "save-failed");
       setError(caught instanceof Error ? caught.message : "The file could not be saved.");
     }).finally(() => { if (inFlight.current === request) inFlight.current = null; });
     return request;
@@ -108,7 +126,7 @@ export function useEditorPersistence<TDraft, TResult extends { storageRevision?:
 
   const restore = useCallback(() => { setStatus("recovering"); restoreRecovery(); setStatus("dirty"); }, [restoreRecovery]);
   const reset = useCallback(() => { generation.current += 1; setStatus("clean"); setError(""); clearCurrentDraft(); }, [clearCurrentDraft]);
-  const visibleStatus = isDirty && (status === "clean" || status === "save-failed") ? "dirty" : status;
+  const visibleStatus = isDirty && status === "clean" ? "dirty" : status;
 
-  return { status: visibleStatus, error, recovery, recoveryCandidates, recoveryIsOutdated, requestSave, restore, discardRecovery, reset };
+  return { status: visibleStatus, error, recovery, recoveryCandidates, recoveryIsOutdated, canRestoreRecovery, requestSave, restore, discardRecovery, reset };
 }

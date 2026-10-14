@@ -1,12 +1,13 @@
 import { ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { FileBackingType, FileRevisionProvider, FileRevisionSource, NodeType } from '@dochub/database';
+import { FileBackingType, FileRevisionSource, FileSaveOperationStatus, FileSaveOperationType, finalizeFileMutationOperation, NodeType } from '@dochub/database';
+import { randomUUID } from 'node:crypto';
 import { DocumentAuthorizationService } from '../authorization/document-authorization.service.js';
 import { DocumentCapability } from '../authorization/document-capability.js';
 import { DatabaseService } from '../database/database.service.js';
 import { STORAGE_PROVIDER, type StorageObjectRef, type StorageProvider, type VersionedStorageProvider } from '../storage/storage-provider.js';
 import { asVersionedStorageProvider } from '../storage/storage-provider.js';
 import { STORAGE_CONFIG, type StorageConfig } from '../storage/storage.config.js';
-import { StorageObjectNotFoundError } from '../storage/storage.errors.js';
+import { StorageConflictError, StorageObjectNotFoundError } from '../storage/storage.errors.js';
 import { FilesService, type FileVersionListResponse } from './files.service.js';
 
 export interface FileRevisionListResponse {
@@ -46,12 +47,16 @@ export class FileHistoryService {
     return { nodeId, currentRevision: current.storageRevision, items: rows.map((row) => ({ id: row.id, sequence: row.sequence, source: row.source, createdAt: row.createdAt, actorDisplayName: row.createdBy?.displayName ?? null, sizeBytes: row.sizeBytes?.toString() ?? null, isCurrent: row.storageRevision === current.storageRevision })) };
   }
 
-  async restoreVersion(userId: string, nodeId: string, versionId: string, expectedRevision?: string): Promise<unknown> {
+  async restoreVersion(userId: string, nodeId: string, versionId: string, expectedRevision?: string, requestedOperationId?: string): Promise<unknown> {
     const file = await this.driveFile(userId, nodeId, DocumentCapability.RESTORE_VERSION);
     if (!file) return this.legacy.restoreVersion(userId, nodeId, versionId);
     if (!expectedRevision) throw new ConflictException({ code: 'FILE_REVISION_CONFLICT', message: 'The current file revision is required before restore.' });
+    const operationId = this.operationId(requestedOperationId);
     const selected = await this.database.prisma.fileRevision.findFirst({ where: { id: versionId, fileId: file.fileId } });
     if (!selected) throw new NotFoundException('Version not found');
+    const replay = await this.replayRestore(operationId, file.fileId, versionId, expectedRevision);
+    if (replay) return replay;
+    await this.assertNoUnresolvedMutation(file.fileId, operationId);
     const ref: StorageObjectRef = { provider: 'GOOGLE_DRIVE', objectId: file.objectId };
     const current = await this.versions.getCurrentVersion(ref);
     if (current.storageRevision !== expectedRevision) throw new ConflictException({ code: 'FILE_REVISION_CONFLICT', message: 'This file changed after you opened version history.', currentRevision: current.storageRevision });
@@ -66,22 +71,74 @@ export class FileHistoryService {
     try {
       if (historical.metadata.sizeBytes === null) throw new ServiceUnavailableException('The historical version is unavailable.');
       await this.versions.preserveVersion(ref, current.ref);
+      const duplicate = await this.beginRestore(operationId, file.fileId, versionId, expectedRevision, userId);
+      if (duplicate) return duplicate;
       await this.storageReplace(ref, historical, current.storageRevision, historical.metadata.mimeType);
+    } catch (error) {
+      if (error instanceof StorageConflictError) {
+        await this.database.prisma.fileSaveOperation.update({ where: { operationId }, data: { status: FileSaveOperationStatus.FAILED, failureReason: 'REVISION_CONFLICT' } }).catch(() => undefined);
+        const latest = await this.versions.getCurrentVersion(ref).catch(() => undefined);
+        throw new ConflictException({ code: 'FILE_REVISION_CONFLICT', message: 'This file changed after you opened version history.', currentRevision: latest?.storageRevision });
+      }
+      throw error;
     } finally {
       await historical.cleanup?.().catch(() => undefined);
     }
-    const replacedVersion = await this.versions.getCurrentVersion(ref);
-    await this.versions.preserveVersion(ref, replacedVersion.ref);
-    const next = await this.versions.getCurrentVersion(ref);
-    await this.database.prisma.$transaction(async (tx) => {
-      const fileRow = await tx.file.update({ where: { id: file.fileId }, data: { revisionSequence: { increment: 1 } }, select: { revisionSequence: true, driveFileId: true } });
-      if (fileRow.driveFileId) await tx.driveFile.update({ where: { id: fileRow.driveFileId }, data: { sizeBytes: next.sizeBytes, driveVersion: next.storageRevision, syncedAt: new Date() } });
-      await tx.fileRevision.create({ data: { fileId: file.fileId, sequence: fileRow.revisionSequence, provider: FileRevisionProvider.GOOGLE_DRIVE, providerVersionId: next.ref.versionId, storageRevision: next.storageRevision, sizeBytes: next.sizeBytes, checksum: next.checksum ?? null, source: FileRevisionSource.RESTORE, createdById: userId } });
-      await tx.auditLog.create({ data: { actorType: 'USER', actorId: userId, action: 'FILE_RESTORE', resourceType: 'NODE', resourceId: nodeId, result: 'SUCCESS', metadata: { fileId: file.fileId, sourceVersionId: versionId, resultRevision: next.storageRevision } } });
-      await tx.outboxEvent.create({ data: { eventType: 'FILE_CONTENT_CHANGED', aggregateType: 'FILE', aggregateId: file.fileId, payload: { fileId: file.fileId, storageRevision: next.storageRevision, source: 'RESTORE' } } });
-    });
-    await this.prune(file.fileId, ref);
-    return { storageRevision: next.storageRevision };
+    try {
+      const replacedVersion = await this.versions.getCurrentVersion(ref);
+      await this.versions.preserveVersion(ref, replacedVersion.ref);
+      const next = await this.versions.getCurrentVersion(ref);
+      await this.database.prisma.fileSaveOperation.update({
+        where: { operationId },
+        data: {
+          status: FileSaveOperationStatus.PROVIDER_WRITTEN,
+          resultRevision: next.storageRevision,
+          providerVersionId: next.ref.versionId,
+          resultSizeBytes: next.sizeBytes,
+          resultChecksum: next.checksum ?? null,
+          providerWrittenAt: new Date(),
+        },
+      });
+      await finalizeFileMutationOperation(this.database.prisma, operationId);
+      await this.prune(file.fileId, ref);
+      return { storageRevision: next.storageRevision, operationId };
+    } catch (error) {
+      this.logger.error({ event: 'file-mutation', operationId, fileId: file.fileId, operationType: FileSaveOperationType.RESTORE, state: 'PENDING_OR_PROVIDER_WRITTEN', error: error instanceof Error ? error.name : 'UNKNOWN' });
+      throw new ServiceUnavailableException('The file may have been restored, but history finalization is pending. Refresh before retrying.');
+    }
+  }
+
+  private async replayRestore(operationId: string, fileId: string, sourceRevisionId: string, expectedRevision: string): Promise<{ storageRevision: string; operationId: string } | null> {
+    const operation = await this.database.prisma.fileSaveOperation.findUnique({ where: { operationId } });
+    if (!operation) return null;
+    if (operation.fileId !== fileId || operation.operationType !== FileSaveOperationType.RESTORE || operation.sourceRevisionId !== sourceRevisionId || operation.expectedRevision !== expectedRevision) {
+      throw new ConflictException('The restore operation ID is already in use.');
+    }
+    if (operation.status === FileSaveOperationStatus.PROVIDER_WRITTEN) {
+      await finalizeFileMutationOperation(this.database.prisma, operationId);
+      const finalized = await this.database.prisma.fileSaveOperation.findUniqueOrThrow({ where: { operationId } });
+      return { storageRevision: finalized.resultRevision!, operationId };
+    }
+    if (operation.status === FileSaveOperationStatus.COMPLETED && operation.resultRevision) return { storageRevision: operation.resultRevision, operationId };
+    throw new ConflictException({ code: operation.status === FileSaveOperationStatus.FAILED ? 'FILE_MUTATION_FAILED' : 'FILE_MUTATION_IN_PROGRESS', message: operation.status === FileSaveOperationStatus.FAILED ? 'The previous restore did not start and needs a new operation.' : 'This restore is already being finalized.' });
+  }
+
+  private async beginRestore(operationId: string, fileId: string, sourceRevisionId: string, expectedRevision: string, userId: string): Promise<{ storageRevision: string; operationId: string } | null> {
+    try {
+      await this.database.prisma.fileSaveOperation.create({ data: { operationId, fileId, expectedRevision, operationType: FileSaveOperationType.RESTORE, source: FileRevisionSource.RESTORE, sourceRevisionId, createdById: userId } });
+      return null;
+    } catch {
+      return this.replayRestore(operationId, fileId, sourceRevisionId, expectedRevision);
+    }
+  }
+
+  private async assertNoUnresolvedMutation(fileId: string, operationId: string) {
+    const blocking = await this.database.prisma.fileSaveOperation.findFirst({ where: { fileId, operationId: { not: operationId }, status: { in: [FileSaveOperationStatus.PENDING, FileSaveOperationStatus.PROVIDER_WRITTEN] } }, select: { operationId: true } });
+    if (blocking) throw new ConflictException({ code: 'FILE_MUTATION_PENDING', message: 'A previous file mutation is still being finalized.' });
+  }
+
+  private operationId(value?: string) {
+    return value && /^[A-Za-z0-9._:-]{1,200}$/u.test(value) ? value : randomUUID();
   }
 
   private async prune(fileId: string, ref: StorageObjectRef) {

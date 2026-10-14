@@ -846,10 +846,10 @@ export class ApiClient {
       `/nodes/${nodeId}/versions`,
     );
   }
-  async restoreVersion(nodeId: string, versionId: string, expectedRevision?: string) {
-    return this.request<UploadResponse | { storageRevision: string }>(
+  async restoreVersion(nodeId: string, versionId: string, expectedRevision?: string, operationId?: string) {
+    return this.request<UploadResponse | { storageRevision: string; operationId?: string }>(
       `/nodes/${nodeId}/versions/${versionId}/restore`,
-      { method: "POST", body: JSON.stringify(expectedRevision ? { expectedRevision } : {}) },
+      { method: "POST", body: JSON.stringify({ ...(expectedRevision ? { expectedRevision } : {}), ...(operationId ? { operationId } : {}) }) },
     );
   }
   async findPrincipals(query: string) {

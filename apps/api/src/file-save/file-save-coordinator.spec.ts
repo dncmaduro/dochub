@@ -10,21 +10,34 @@ function harness(revisions: string[] = ['R1', 'R2', 'R3'], replaceRevisions: str
     prepareSave: vi.fn().mockResolvedValue({ stream: Readable.from([Buffer.from('saved')]), mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
     openModel: vi.fn().mockImplementation(async (_file: unknown, context: { storageRevision?: string }) => ({ storageRevision: context.storageRevision })),
   };
+  const operations = new Map<string, Record<string, unknown>>();
+  let sequence = 1;
   const transaction = {
     file: {
-      update: vi.fn().mockResolvedValue({ revisionSequence: 2 }),
-      findUniqueOrThrow: vi.fn().mockResolvedValue({ revisionSequence: 2 }),
+      update: vi.fn().mockImplementation(async () => ({ revisionSequence: ++sequence })),
     },
-    fileRevision: { count: vi.fn().mockResolvedValue(1), create: vi.fn() },
-    fileSaveOperation: { update: vi.fn() },
+    fileRevision: { count: vi.fn().mockResolvedValue(1), findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockImplementation(async (input: { data: Record<string, unknown> }) => ({ id: 'revision', sequence: input.data.sequence })) },
+    fileSaveOperation: {
+      findUniqueOrThrow: vi.fn().mockImplementation(async ({ where }: { where: { operationId: string } }) => ({ ...operations.get(where.operationId), file: { id: 'file', nodeId: 'node', driveFileId: 'drive-record' } })),
+      update: vi.fn().mockImplementation(async ({ where, data }: { where: { operationId: string }, data: Record<string, unknown> }) => {
+        const prior = operations.get(where.operationId) ?? {};
+        operations.set(where.operationId, { ...prior, ...data });
+      }),
+    },
     driveFile: { update: vi.fn() },
     node: { update: vi.fn() },
-    auditLog: { create: vi.fn() },
-    outboxEvent: { create: vi.fn() },
+    auditLog: { upsert: vi.fn() },
+    outboxEvent: { upsert: vi.fn() },
   };
   const database = {
     prisma: {
-      fileSaveOperation: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+      fileSaveOperation: {
+        findUnique: vi.fn().mockImplementation(async ({ where }: { where: { operationId: string } }) => operations.get(where.operationId) ?? null),
+        findUniqueOrThrow: vi.fn().mockImplementation(async ({ where }: { where: { operationId: string } }) => operations.get(where.operationId) ?? null),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => { operations.set(data.operationId as string, { ...data, status: 'PENDING' }); }),
+        update: vi.fn().mockImplementation(async ({ where, data }: { where: { operationId: string }, data: Record<string, unknown> }) => { const current = operations.get(where.operationId) ?? {}; Object.assign(current, data); operations.set(where.operationId, current); }),
+      },
       node: { findFirst: vi.fn().mockResolvedValue({ id: 'node', name: 'report.docx', parentId: null, file: { id: 'file', backingType: 'GOOGLE_DRIVE', driveFile: { id: 'drive-record', driveFileId: 'drive-file', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', sizeBytes: 5n, trashed: false, sourceStatus: 'CONNECTED' } } }) },
       fileRevision: { findMany: vi.fn().mockResolvedValue([]) },
       $transaction: vi.fn(async (callback: (tx: typeof transaction) => unknown) => callback(transaction)),
@@ -53,7 +66,7 @@ function harness(revisions: string[] = ['R1', 'R2', 'R3'], replaceRevisions: str
     { versionHistoryLimit: 50 } as never,
     {} as never,
   );
-  return { coordinator, engine, storage, database, reference };
+  return { coordinator, engine, storage, database, reference, operations };
 }
 
 function request(engine: unknown, operationId: string, expectedRevision: string) {
@@ -97,5 +110,36 @@ describe('FileSaveCoordinator revision lifecycle', () => {
     await expect(coordinator.save(request(engine, 'save-conflict', 'R1'))).rejects.toMatchObject({ status: 409 });
     expect(storage.replace).not.toHaveBeenCalled();
     expect(database.prisma.fileSaveOperation.create).not.toHaveBeenCalled();
+  });
+
+  it('does not leave an idempotency record behind when history preservation fails before a provider write', async () => {
+    const { coordinator, database, storage, engine } = harness(['R1', 'R2', 'R3']);
+    storage.getCurrentVersion.mockRejectedValueOnce(new Error('provider unavailable'));
+
+    await expect(coordinator.save(request(engine, 'save-retry', 'R1'))).rejects.toMatchObject({ status: 503 });
+    expect(database.prisma.fileSaveOperation.create).not.toHaveBeenCalled();
+    expect(storage.replace).not.toHaveBeenCalled();
+
+    await expect(coordinator.save(request(engine, 'save-retry', 'R1'))).resolves.toMatchObject({ storageRevision: 'R3' });
+    expect(storage.replace).toHaveBeenCalledOnce();
+  });
+
+  it('replays a completed operation instead of writing the provider again', async () => {
+    const { coordinator, database, storage, engine } = harness();
+    database.prisma.fileSaveOperation.findUnique.mockResolvedValue({ fileId: 'file', expectedRevision: 'R1', operationType: 'SAVE', status: 'COMPLETED', resultRevision: 'R3' });
+
+    await expect(coordinator.save(request(engine, 'save-replay', 'R1'))).resolves.toMatchObject({ storageRevision: 'R3' });
+    expect(storage.replace).not.toHaveBeenCalled();
+  });
+
+  it('does not replace the provider twice when history finalization fails', async () => {
+    const { coordinator, database, storage, engine } = harness(['R1', 'R2', 'R3']);
+    database.prisma.$transaction.mockRejectedValueOnce(new Error('database unavailable'));
+
+    await expect(coordinator.save(request(engine, 'save-finalization', 'R1'))).rejects.toMatchObject({ status: 503 });
+    expect(storage.replace).toHaveBeenCalledOnce();
+
+    await expect(coordinator.save(request(engine, 'save-finalization', 'R1'))).resolves.toMatchObject({ storageRevision: 'R3' });
+    expect(storage.replace).toHaveBeenCalledOnce();
   });
 });

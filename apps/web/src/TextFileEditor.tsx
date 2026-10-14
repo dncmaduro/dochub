@@ -151,7 +151,7 @@ export function TextFileEditor({ nodeId, initialModel, canEdit, mode: workspaceM
   }, []);
 
   const draftPayload = useCallback(() => ({ content: value }), [value]);
-  const saveDraft = useCallback((payload: { content: string }) => api.saveText(nodeId, { expectedRevision: baseRevision, content: payload.content }), [baseRevision, nodeId]);
+  const saveDraft = useCallback((payload: { content: string }, operationId: string) => api.saveText(nodeId, { expectedRevision: baseRevision, content: payload.content, operationId }), [baseRevision, nodeId]);
   const applyRecoveredDraft = useCallback((payload: { content: string }) => { changeValue(payload.content); onModeChange("edit"); }, [changeValue, onModeChange]);
   const onSaved = useCallback((saved: Awaited<ReturnType<ApiClient["saveText"]>>, allLocalChangesSaved: boolean) => {
     setBaseline(saved.model.content);
@@ -219,7 +219,7 @@ export function TextFileEditor({ nodeId, initialModel, canEdit, mode: workspaceM
       </>}
       <span className="text-file-status" role="status">{persistence.status === "saving" ? "Saving…" : persistence.status === "conflict" ? "Conflict" : persistence.status === "save-failed" ? "Save failed" : dirty ? "Unsaved changes" : "Saved"}</span>
     </div>
-    {persistence.recovery && <div className="text-file-error" role="alert"><span>{persistence.recoveryIsOutdated ? "An older recovery draft is based on a previous file revision. Review it before saving; Save as copy is available." : "Unsaved changes from a previous session were found."}</span><button type="button" className="text-file-tool" onClick={persistence.restore}>Restore</button><button type="button" className="text-file-tool" onClick={persistence.discardRecovery}>Discard</button></div>}
+    {persistence.recovery && <div className="text-file-error" role="alert"><span>{persistence.recoveryIsOutdated ? "An older recovery draft cannot be safely restored onto this file revision. Discard it or keep working on the current file." : "Unsaved changes from a previous session were found."}</span>{persistence.canRestoreRecovery && <button type="button" className="text-file-tool" onClick={persistence.restore}>Restore</button>}<button type="button" className="text-file-tool" onClick={persistence.discardRecovery}>Discard</button></div>}
     {(error || persistence.error) && <div className="text-file-error" role="alert"><span>{persistence.error || error}</span>{persistence.status === "conflict" && <button type="button" className="text-file-tool" onClick={reload}>Reload</button>}</div>}
     {preview.error && <div className="text-file-parse-error" role="alert">{preview.error} Source remains available for inspection and editing.</div>}
     <div className="text-file-body">

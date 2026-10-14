@@ -342,7 +342,17 @@ enum FileRevisionProvider {
 
 enum FileSaveOperationStatus {
   PENDING
+  PROVIDER_WRITTEN
   COMPLETED
+  FAILED
+}
+
+// Kept on FileSaveOperation for an additive rollout from the original
+// save-only write-ahead record. The record now covers every mutation that can
+// change the authoritative provider bytes.
+enum FileSaveOperationType {
+  SAVE
+  RESTORE
 }
 
 enum DocumentRole {
@@ -387,6 +397,7 @@ model FileRevision {
   sizeBytes         BigInt?
   checksum          String?
   source            FileRevisionSource
+  operationId       String?           @unique
   createdById       String?           @db.Uuid
   createdAt         DateTime          @default(now())
   file              File              @relation("FileRevisions", fields: [fileId], references: [id], onDelete: Restrict)
@@ -405,17 +416,30 @@ model FileSaveOperation {
   fileId            String                  @db.Uuid
   expectedRevision  String
   status            FileSaveOperationStatus @default(PENDING)
+  operationType     FileSaveOperationType   @default(SAVE)
   source            FileRevisionSource
+  sourceRevisionId  String?                 @db.Uuid
+  previousStorageRevision String?
+  previousProviderVersionId String?
+  previousSizeBytes BigInt?
+  previousChecksum  String?
   resultRevision    String?
   providerVersionId String?
+  resultSizeBytes   BigInt?
+  resultChecksum    String?
   createdById       String?                 @db.Uuid
   createdAt         DateTime                @default(now())
+  providerWrittenAt DateTime?
   completedAt       DateTime?
+  failureReason     String?
+  finalizationAttempts Int                  @default(0)
+  lastFinalizationError String?
+  updatedAt         DateTime                @updatedAt
   file              File                    @relation("FileSaveOperations", fields: [fileId], references: [id], onDelete: Restrict)
   createdBy         User?                   @relation("FileSaveOperationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
   @@index([fileId, createdAt])
-  @@index([status, createdAt])
+  @@index([status, updatedAt])
 }
 
 model FileVersion {
@@ -498,6 +522,7 @@ model AuditLog {
   ipAddress    String?
   userAgent    String?
   metadata     Json
+  mutationOperationId String?      @unique
   createdAt    DateTime       @default(now())
   actor        User?          @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: SetNull)
 
@@ -512,6 +537,7 @@ model OutboxEvent {
   aggregateType String
   aggregateId   String?      @db.Uuid
   payload       Json
+  mutationOperationId String?      @unique
   status        OutboxStatus @default(PENDING)
   attemptCount  Int          @default(0)
   lastError     String?

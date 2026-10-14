@@ -92,11 +92,21 @@ export function replaceBaseline(state: DocumentEditorState, model: DocumentModel
   return { ...state, baselineModel: model, currentModel: model, dirtyBlockIds: new Set(), undoStack: [], redoStack: [], saveStatus: "saved", selection: null };
 }
 
-export function acceptSavedModel(state: DocumentEditorState, model: DocumentModel, savedModel: DocumentModel = state.currentModel): DocumentEditorState {
+export function acceptSavedModel(
+  state: DocumentEditorState,
+  model: DocumentModel,
+  savedModel: DocumentModel = state.currentModel,
+  postSaveCommands: readonly DocumentCommand[] | null = null,
+): DocumentEditorState {
   const hasPostSaveEdits = JSON.stringify(state.currentModel.blocks) !== JSON.stringify(savedModel.blocks);
   if (!hasPostSaveEdits) return replaceBaseline(state, model);
-  const dirtyBlockIds = dirtyBlocks(model, state.currentModel);
-  const currentModel = { ...state.currentModel, storageRevision: model.storageRevision };
+  // Replay commands against the server's normalized model rather than keeping
+  // a stale pre-save tree. This preserves edits made while the save was in
+  // flight without resurrecting old run metadata from the previous revision.
+  const currentModel = postSaveCommands?.length
+    ? postSaveCommands.reduce((current, command) => executeCommand(current, command), model)
+    : { ...state.currentModel, storageRevision: model.storageRevision };
+  const dirtyBlockIds = dirtyBlocks(model, currentModel);
   return { ...state, baselineModel: model, currentModel, dirtyBlockIds, undoStack: [], redoStack: [], saveStatus: dirtyBlockIds.size ? "unsaved" : "saved", selection: null };
 }
 

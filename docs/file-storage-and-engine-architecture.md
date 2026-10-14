@@ -910,9 +910,50 @@ IndexedDB is treated as sensitive local device storage; Docs Hub does not
 claim that the browser encrypts it.
 
 If the server revision changed, the draft is labeled as based on an older
-revision. Restoring it keeps the source file protected by the normal 409
-conflict guard; the user can review it and use Save as copy instead of
-overwriting a newer source.
+revision. It cannot be restored over the newer source; the user can discard it
+or keep working from the current authoritative file.
+
+## Checkpoint 8.1: mutation reconciliation
+
+`FileSaveOperation` remains the additive write-ahead table, but is now a
+provider-mutation record for both `SAVE` and `RESTORE`. Its lifecycle is:
+
+```text
+PENDING -> PROVIDER_WRITTEN -> COMPLETED
+          \-> FAILED  (only a definitely pre-write failure)
+```
+
+`PENDING` means validation passed and the mutation was registered, but a
+provider write is not confirmed. `PROVIDER_WRITTEN` stores the final provider
+storage revision, provider historical-version handle, size/checksum, operation
+type, and immutable restore source revision. It is written after the final
+provider stat and before database history/audit/outbox finalization.
+`COMPLETED` means those database effects were committed. An ambiguous
+post-write failure is never marked `FAILED`.
+
+The database-only `finalizeFileMutationOperation` routine is idempotent. It
+uses the operation ID as the unique key for the result `FileRevision`, audit
+record, and `FILE_CONTENT_CHANGED` outbox event; rerunning it cannot allocate
+another sequence or create duplicate metadata. It has no storage-provider
+dependency and never writes provider bytes.
+
+The worker owns crash recovery. Every 60 seconds by default it scans stale
+`PROVIDER_WRITTEN` rows and retries database finalization only. It records
+structured operation/file/type/age/attempt/error logs for failures. A pending
+or provider-written mutation blocks a different Save or Restore for that file
+with `FILE_MUTATION_PENDING`; this preserves history order until reconciliation
+has reached `COMPLETED`. Retention runs only after finalization and its failure
+does not reverse a completed mutation.
+
+Restore accepts an operation ID alongside `expectedRevision`; the browser
+retains one ID per selected version while a retry is possible. Replaying a
+completed restore returns its stored result. Replaying a provider-written
+restore finalizes metadata without another replace. The selected immutable
+`FileRevision` ID is stored on the operation, never re-resolved as the latest
+version.
+
+The Google Drive stat-then-replace check remains non-atomic. CP8.1 resolves
+post-write finalization ambiguity, not the provider's compare-and-swap race.
 
 ### Save as copy
 

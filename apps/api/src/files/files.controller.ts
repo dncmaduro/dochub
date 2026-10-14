@@ -90,9 +90,9 @@ export class FilesController {
     @CurrentAuth() auth: AuthPrincipal,
     @Param('nodeId') nodeId: string,
     @Param('versionId') versionId: string,
-    @Body() body: { expectedRevision?: string },
+    @Body() body: { expectedRevision?: string; operationId?: string },
   ) {
-    return this.history.restoreVersion(auth.userId, nodeId, versionId, body?.expectedRevision);
+    return this.history.restoreVersion(auth.userId, nodeId, versionId, body?.expectedRevision, body?.operationId);
   }
 
   @Get('nodes/:nodeId/content')

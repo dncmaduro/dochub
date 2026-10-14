@@ -48,4 +48,25 @@ describe('DOCX editor revision rebase', () => {
     expect(saved.selection).toBeNull();
     expect(saved.saveStatus).toBe('unsaved');
   });
+
+  it('replays post-save semantic commands against the authoritative model', () => {
+    const saving: DocumentEditorState = {
+      ...createEditorState(model('R1', 'AB')),
+      currentModel: model('R1', 'AB'),
+      dirtyBlockIds: new Set(['paragraph-1']),
+      saveStatus: 'saving',
+    };
+
+    const saved = acceptSavedModel(
+      saving,
+      model('R2', 'A '),
+      model('R1', 'A'),
+      [{ type: 'replace-text', blockId: 'paragraph-1', start: 1, end: 1, text: 'B' }],
+    );
+
+    expect(saved.baselineModel.blocks[0]).toMatchObject({ content: [{ text: 'A ' }] });
+    expect(saved.currentModel.storageRevision).toBe('R2');
+    expect(saved.currentModel.blocks[0]).toMatchObject({ content: [{ text: 'AB ' }] });
+    expect(saved.saveStatus).toBe('unsaved');
+  });
 });

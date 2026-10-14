@@ -91,10 +91,15 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
   const composingIds = useRef(new Set<string>());
   const saveGeneration = useRef(0);
   const saveSnapshot = useRef<DocumentModel | null>(null);
+  const postSaveCommands = useRef<DocumentCommand[] | null>(null);
 
   useEffect(() => onDirtyChange(state.dirtyBlockIds.size > 0), [onDirtyChange, state.dirtyBlockIds]);
 
-  const command = useCallback((next: DocumentCommand) => { saveGeneration.current += 1; setState((current) => executeEditorCommand(current, next)); }, []);
+  const command = useCallback((next: DocumentCommand) => {
+    saveGeneration.current += 1;
+    if (postSaveCommands.current) postSaveCommands.current.push(next);
+    setState((current) => executeEditorCommand(current, next));
+  }, []);
   const selected = useMemo(() => state.selection ? { start: Math.min(state.selection.anchorOffset, state.selection.focusOffset), end: Math.max(state.selection.anchorOffset, state.selection.focusOffset) } : null, [state.selection]);
   const selectedBlock = state.selection ? modelBlock(state.currentModel, state.selection.blockId) : null;
 
@@ -122,40 +127,6 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
     }
   }, [commitText, state.currentModel]);
 
-  const save = useCallback(async () => {
-    if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0 || state.saveStatus === "saving" || state.saveStatus === "conflict") return;
-    const generation = saveGeneration.current;
-    const snapshot = state.currentModel;
-    saveSnapshot.current = snapshot;
-    setSaveError("");
-    setState((current) => ({ ...current, saveStatus: "saving" }));
-    try {
-      const changed = [...state.dirtyBlockIds].map((id) => modelBlock(snapshot, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
-      const saved = await api.saveDocument(nodeId, { expectedRevision: snapshot.storageRevision, blocks: changed });
-      const allLocalChangesSaved = saveGeneration.current === generation;
-      console.debug("[Docs Hub save revision]", { expectedRevision: snapshot.storageRevision, returnedRevision: saved.storageRevision, frontendBaseRevision: saved.model.storageRevision, changedBlockCount: changed.length, allLocalChangesSaved });
-      setState((current) => acceptSavedModel(current, saved.model, snapshot));
-      if (allLocalChangesSaved) {
-        composingIds.current.clear();
-        setComposing({});
-        onDirtyChange(false);
-      }
-    } catch (error) {
-      const conflict = error instanceof ApiError && error.status === 409;
-      const message = conflict ? "This file changed after you opened it." : error instanceof Error ? error.message : "The document could not be saved.";
-      setState((current) => ({ ...current, saveStatus: conflict ? "conflict" : "failed" }));
-      setSaveError(message);
-    } finally {
-      if (saveSnapshot.current === snapshot) saveSnapshot.current = null;
-    }
-  }, [nodeId, onDirtyChange, state.currentModel, state.dirtyBlockIds, state.saveStatus]);
-
-  const saveAsCopy = useCallback(async (name: string) => {
-    if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0) return;
-    const blocks = [...state.dirtyBlockIds].map((id) => modelBlock(state.currentModel, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
-    await api.saveAsCopy(nodeId, { name, expectedRevision: state.baselineModel.storageRevision ?? state.currentModel.storageRevision, blocks });
-  }, [nodeId, state.baselineModel.storageRevision, state.currentModel, state.dirtyBlockIds]);
-
   const recoveryDraft = useRecoveryDraft({
     fileId: nodeId,
     engine: "DOCUMENT",
@@ -164,6 +135,50 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
     buildDraftPayload: useCallback(() => ({ model: state.currentModel }), [state.currentModel]),
     applyRecoveredDraft: useCallback((payload: { model: DocumentModel }) => { setState((current) => restoreRecoveredModel(current, payload.model)); onModeChange("edit"); }, [onModeChange]),
   });
+  const saveOperationId = useRef<string | null>(null);
+
+  const save = useCallback(async () => {
+    if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0 || state.saveStatus === "saving" || state.saveStatus === "conflict") return;
+    const expectedRevision = state.currentModel.storageRevision;
+    const generation = saveGeneration.current;
+    const snapshot = state.currentModel;
+    saveSnapshot.current = snapshot;
+    postSaveCommands.current = [];
+    setSaveError("");
+    setState((current) => ({ ...current, saveStatus: "saving" }));
+    try {
+      const changed = [...state.dirtyBlockIds].map((id) => modelBlock(snapshot, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
+      const operationId = saveOperationId.current ?? crypto.randomUUID();
+      saveOperationId.current = operationId;
+      const saved = await api.saveDocument(nodeId, { expectedRevision, blocks: changed, operationId });
+      const allLocalChangesSaved = saveGeneration.current === generation;
+      const commands = postSaveCommands.current;
+      setState((current) => acceptSavedModel(current, saved.model, snapshot, commands));
+      if (allLocalChangesSaved) {
+        recoveryDraft.clearCurrentDraft();
+        composingIds.current.clear();
+        setComposing({});
+        onDirtyChange(false);
+      }
+      saveOperationId.current = null;
+    } catch (error) {
+      const conflict = error instanceof ApiError && (error.code === "FILE_REVISION_CONFLICT" || (error.status === 409 && !error.code));
+      const message = conflict ? "This file changed after you opened it." : error instanceof Error ? error.message : "The document could not be saved.";
+      setState((current) => ({ ...current, saveStatus: conflict ? "conflict" : "failed" }));
+      setSaveError(message);
+    } finally {
+      if (saveSnapshot.current === snapshot) {
+        saveSnapshot.current = null;
+        postSaveCommands.current = null;
+      }
+    }
+  }, [nodeId, onDirtyChange, recoveryDraft, state.currentModel, state.dirtyBlockIds, state.saveStatus]);
+
+  const saveAsCopy = useCallback(async (name: string) => {
+    if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0) return;
+    const blocks = [...state.dirtyBlockIds].map((id) => modelBlock(state.currentModel, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
+    await api.saveAsCopy(nodeId, { name, expectedRevision: state.baselineModel.storageRevision ?? state.currentModel.storageRevision, blocks });
+  }, [nodeId, state.baselineModel.storageRevision, state.currentModel, state.dirtyBlockIds]);
 
   const reload = useCallback(async () => {
     if (state.dirtyBlockIds.size && !window.confirm("Reload and discard unsaved changes?")) return;
@@ -203,7 +218,7 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
       const modifier = event.metaKey || event.ctrlKey;
       if (!modifier) return;
       if (event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
-      else if (event.key.toLowerCase() === "z") { event.preventDefault(); saveGeneration.current += 1; setState((current) => event.shiftKey ? redo(current) : undo(current)); }
+      else if (event.key.toLowerCase() === "z") { event.preventDefault(); saveGeneration.current += 1; if (saveSnapshot.current) postSaveCommands.current = null; setState((current) => event.shiftKey ? redo(current) : undo(current)); }
       else if (event.key.toLowerCase() === "b" || event.key.toLowerCase() === "i" || event.key.toLowerCase() === "u") {
         event.preventDefault();
         if (!selected || !state.selection) return;
@@ -214,7 +229,7 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
     return () => document.removeEventListener("keydown", keydown);
   }, [command, mode, save, selected, state.selection]);
 
-  const toolbar = useMemo(() => <DocumentToolbar state={state} mode={mode} onUndo={() => { saveGeneration.current += 1; setState(undo); }} onRedo={() => { saveGeneration.current += 1; setState(redo); }} onFormat={(format) => { if (selected && state.selection) command({ type: "toggle-format", blockId: state.selection.blockId, start: selected.start, end: selected.end, format }); }} onAlignment={(alignment) => { if (state.selection) command({ type: "set-alignment", blockId: state.selection.blockId, alignment }); }} onStyle={(style) => { if (state.selection && selectedBlock?.type !== "list-item") command({ type: "set-style", blockId: state.selection.blockId, style }); }} onFontSize={(fontSize) => { if (selected && state.selection) command({ type: "set-font-size", blockId: state.selection.blockId, start: selected.start, end: selected.end, fontSize }); }} />, [command, mode, selected, selectedBlock, state]);
+  const toolbar = useMemo(() => <DocumentToolbar state={state} mode={mode} onUndo={() => { saveGeneration.current += 1; if (saveSnapshot.current) postSaveCommands.current = null; setState(undo); }} onRedo={() => { saveGeneration.current += 1; if (saveSnapshot.current) postSaveCommands.current = null; setState(redo); }} onFormat={(format) => { if (selected && state.selection) command({ type: "toggle-format", blockId: state.selection.blockId, start: selected.start, end: selected.end, format }); }} onAlignment={(alignment) => { if (state.selection) command({ type: "set-alignment", blockId: state.selection.blockId, alignment }); }} onStyle={(style) => { if (state.selection && selectedBlock?.type !== "list-item") command({ type: "set-style", blockId: state.selection.blockId, style }); }} onFontSize={(fontSize) => { if (selected && state.selection) command({ type: "set-font-size", blockId: state.selection.blockId, start: selected.start, end: selected.end, fontSize }); }} />, [command, mode, selected, selectedBlock, state]);
 
-  return <div className="document-editor">{toolbar}{recoveryDraft.recovery && <div className="document-editor-error" role="alert"><span>{recoveryDraft.recoveryIsOutdated ? "An older recovery draft is based on a previous file revision. Review it before saving; Save as copy is available." : "Unsaved changes from a previous session were found."}</span><button type="button" className="button" onClick={recoveryDraft.restore}>Restore</button><button type="button" className="button" onClick={recoveryDraft.discardRecovery}>Discard</button></div>}{saveError && <div className="document-editor-error" role="alert">{saveError}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}{mode === "edit" ? <article className="document-surface document-edit-surface"><EditorBlocks blocks={state.currentModel.blocks} state={state} onInput={commitText} onSelect={(selection) => setState((current) => setSelection(current, selection))} onComposition={composition} composing={composing} /></article> : view(state.currentModel)}</div>;
+  return <div className="document-editor">{toolbar}{recoveryDraft.recovery && <div className="document-editor-error" role="alert"><span>{recoveryDraft.recoveryIsOutdated ? "An older recovery draft cannot be safely restored onto this file revision. Discard it or keep working on the current file." : "Unsaved changes from a previous session were found."}</span>{recoveryDraft.canRestoreRecovery && <button type="button" className="button" onClick={recoveryDraft.restore}>Restore</button>}<button type="button" className="button" onClick={recoveryDraft.discardRecovery}>Discard</button></div>}{saveError && <div className="document-editor-error" role="alert">{saveError}<button type="button" className="button" onClick={() => void reload()}>Reload</button></div>}{mode === "edit" ? <article className="document-surface document-edit-surface"><EditorBlocks blocks={state.currentModel.blocks} state={state} onInput={commitText} onSelect={(selection) => setState((current) => setSelection(current, selection))} onComposition={composition} composing={composing} /></article> : view(state.currentModel)}</div>;
 }
