@@ -90,6 +90,7 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
   const [saveError, setSaveError] = useState("");
   const composingIds = useRef(new Set<string>());
   const saveGeneration = useRef(0);
+  const saveSnapshot = useRef<DocumentModel | null>(null);
 
   useEffect(() => onDirtyChange(state.dirtyBlockIds.size > 0), [onDirtyChange, state.dirtyBlockIds]);
 
@@ -124,19 +125,28 @@ export function DocumentEditor({ nodeId, modelUrl, initialModel, mode, onModeCha
   const save = useCallback(async () => {
     if (!state.currentModel.storageRevision || state.dirtyBlockIds.size === 0 || state.saveStatus === "saving" || state.saveStatus === "conflict") return;
     const generation = saveGeneration.current;
+    const snapshot = state.currentModel;
+    saveSnapshot.current = snapshot;
     setSaveError("");
     setState((current) => ({ ...current, saveStatus: "saving" }));
     try {
-      const changed = [...state.dirtyBlockIds].map((id) => modelBlock(state.currentModel, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
-      const saved = await api.saveDocument(nodeId, { expectedRevision: state.currentModel.storageRevision, blocks: changed });
-      console.debug("[Docs Hub save revision]", { expectedRevision: state.currentModel.storageRevision, returnedRevision: saved.storageRevision, frontendBaseRevision: saved.model.storageRevision });
-      setState((current) => acceptSavedModel(current, saved.model));
-      if (saveGeneration.current === generation) onDirtyChange(false);
+      const changed = [...state.dirtyBlockIds].map((id) => modelBlock(snapshot, id)).filter((block): block is EditableDocumentBlock => Boolean(block)).map(patchBlock);
+      const saved = await api.saveDocument(nodeId, { expectedRevision: snapshot.storageRevision, blocks: changed });
+      const allLocalChangesSaved = saveGeneration.current === generation;
+      console.debug("[Docs Hub save revision]", { expectedRevision: snapshot.storageRevision, returnedRevision: saved.storageRevision, frontendBaseRevision: saved.model.storageRevision, changedBlockCount: changed.length, allLocalChangesSaved });
+      setState((current) => acceptSavedModel(current, saved.model, snapshot));
+      if (allLocalChangesSaved) {
+        composingIds.current.clear();
+        setComposing({});
+        onDirtyChange(false);
+      }
     } catch (error) {
       const conflict = error instanceof ApiError && error.status === 409;
       const message = conflict ? "This file changed after you opened it." : error instanceof Error ? error.message : "The document could not be saved.";
       setState((current) => ({ ...current, saveStatus: conflict ? "conflict" : "failed" }));
       setSaveError(message);
+    } finally {
+      if (saveSnapshot.current === snapshot) saveSnapshot.current = null;
     }
   }, [nodeId, onDirtyChange, state.currentModel, state.dirtyBlockIds, state.saveStatus]);
 

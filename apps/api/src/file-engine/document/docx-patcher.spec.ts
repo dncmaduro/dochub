@@ -2,9 +2,10 @@ import { zipSync } from "fflate";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { DocxPackageReader } from "./docx-package-reader.js";
-import { DocxPatcher } from "./docx-patcher.js";
+import { DocxPatcher, documentBlockText } from "./docx-patcher.js";
 import { parseDocumentPatchRequest } from "./document-edit.types.js";
 import { DocxParser } from "./docx-parser.js";
+import { findDocumentBlock } from "./docx-source-map.js";
 import { DocumentEngine } from "../engines/document.engine.js";
 
 const documentXml = `<?xml version="1.0"?>
@@ -44,11 +45,82 @@ function run(text: string, overrides: Partial<Record<"bold" | "italic" | "underl
   };
 }
 
-function request(blocks: unknown[]) {
-  return parseDocumentPatchRequest({ expectedRevision: "7", blocks });
+function request(blocks: unknown[], expectedRevision = "7") {
+  return parseDocumentPatchRequest({ expectedRevision, blocks });
+}
+
+function textPatch(model: ReturnType<typeof DocxParser.parse>["model"], blockId: string, text: string) {
+  const block = findDocumentBlock(model, blockId);
+  if (!block || (block.type !== "paragraph" && block.type !== "heading" && block.type !== "list-item")) throw new Error(`Missing editable test block ${blockId}`);
+  const content = block.content.filter((inline) => inline.kind === "text").map((run, index) => ({
+    ...run,
+    text: index === 0 ? text : "",
+    link: null,
+  }));
+  return {
+    blockId,
+    type: block.type,
+    style: block.type === "heading" && block.level >= 1 && block.level <= 3 ? `heading-${block.level}` : block.type === "paragraph" && block.styleId === null ? "normal" : "preserve",
+    alignment: block.alignment,
+    content,
+  };
+}
+
+function inMemoryDocxStorage(initialBytes: Buffer) {
+  let storedBytes = initialBytes;
+  let revision = "R1";
+  const metadata = () => ({ provider: "GOOGLE_DRIVE" as const, objectId: "drive", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", sizeBytes: BigInt(storedBytes.byteLength), revision });
+  return {
+    storage: {
+      stat: async () => metadata(),
+      openRead: async () => ({ stream: Readable.from([storedBytes]), metadata: metadata(), range: null }),
+      replace: async (_ref: unknown, input: { stream: Readable }) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of input.stream) chunks.push(Buffer.from(chunk));
+        storedBytes = Buffer.concat(chunks);
+        revision = revision === "R1" ? "R2" : "R3";
+        return { ref: { provider: "GOOGLE_DRIVE" as const, objectId: "drive" }, metadata: metadata() };
+      },
+    },
+    read: () => storedBytes,
+  };
+}
+
+async function saveTwice(firstBlockId: string, secondBlockId = firstBlockId) {
+  const storage = inMemoryDocxStorage(sourceBytes());
+  const engine = new DocumentEngine();
+  const file = { fileId: "file", nodeId: "node", name: "test.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", extension: ".docx", size: storage.read().byteLength, storageRef: { provider: "GOOGLE_DRIVE" as const, objectId: "drive" } };
+  const initial = DocxParser.parse(DocxPackageReader.fromBytes(storage.read())).model;
+  const first = await engine.save(file, request([textPatch(initial, firstBlockId, "B")], "R1"), { storage: storage.storage as never, expectedRevision: "R1" });
+  expect(findDocumentBlock(first.model, firstBlockId)).toMatchObject({ id: firstBlockId, editable: true });
+  const second = await engine.save(file, request([textPatch(first.model, secondBlockId, "C")], "R2"), { storage: storage.storage as never, expectedRevision: "R2" });
+  expect(findDocumentBlock(second.model, secondBlockId)).toMatchObject({ id: secondBlockId, editable: true });
+  return { first, second, stored: DocxParser.parse(DocxPackageReader.fromBytes(storage.read())).model };
 }
 
 describe("DocxPatcher", () => {
+  it("saves two ordinary paragraphs consecutively against the authoritative bytes", async () => {
+    const { second, stored } = await saveTwice("b-p1", "b-p2");
+
+    expect(documentBlockText(findDocumentBlock(second.model, "b-p2")!)).toBe("C");
+    expect(documentBlockText(findDocumentBlock(stored, "b-p1")!)).toBe("B");
+    expect(documentBlockText(findDocumentBlock(stored, "b-p2")!)).toBe("C");
+  });
+
+  it("saves the same ordinary paragraph twice consecutively", async () => {
+    const { second, stored } = await saveTwice("b-p1");
+
+    expect(second.storageRevision).toBe("R3");
+    expect(documentBlockText(findDocumentBlock(stored, "b-p1")!)).toBe("C");
+  });
+
+  it("saves a table-cell paragraph twice consecutively", async () => {
+    const { second, stored } = await saveTwice("b-t4-r1-c1-p1");
+
+    expect(second.storageRevision).toBe("R3");
+    expect(documentBlockText(findDocumentBlock(stored, "b-t4-r1-c1-p1")!)).toBe("C");
+  });
+
   it("round-trips text, formatting, alignment, list text, and table-cell text", () => {
     const patched = DocxPatcher.apply(sourceBytes(), request([
       { blockId: "b-p1", type: "paragraph", style: "normal", alignment: "left", content: [run("Hello edited "), run("world", { bold: true })] },

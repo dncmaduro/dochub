@@ -11,11 +11,23 @@ function model(storageRevision: string, text: string): DocumentModel {
 }
 
 describe('DOCX editor revision rebase', () => {
-  it('rebases a clean successful save to the server revision', () => {
-    const saved = acceptSavedModel(createEditorState(model('R1', 'A')), model('R2', 'A'));
+  it('replaces the clean editor with the authoritative saved model', () => {
+    const initial = model('R1', 'A');
+    const serverModel = model('R2', 'A');
+    const saved = acceptSavedModel({
+      ...createEditorState(initial),
+      undoStack: [initial],
+      redoStack: [serverModel],
+      selection: { blockId: 'paragraph-1', anchorOffset: 0, focusOffset: 1 },
+    }, serverModel, initial);
 
+    expect(saved.baselineModel).toBe(serverModel);
+    expect(saved.currentModel).toBe(serverModel);
     expect(saved.currentModel.storageRevision).toBe('R2');
     expect(saved.dirtyBlockIds.size).toBe(0);
+    expect(saved.undoStack).toEqual([]);
+    expect(saved.redoStack).toEqual([]);
+    expect(saved.selection).toBeNull();
     expect(saved.saveStatus).toBe('saved');
   });
 
@@ -26,11 +38,14 @@ describe('DOCX editor revision rebase', () => {
       dirtyBlockIds: new Set(['paragraph-1']),
       saveStatus: 'saving',
     };
-    const saved = acceptSavedModel(saving, model('R2', 'A'));
+    const saved = acceptSavedModel(saving, model('R2', 'A'), model('R1', 'A'));
 
     expect(saved.currentModel.storageRevision).toBe('R2');
     expect(saved.currentModel.blocks).toEqual(saving.currentModel.blocks);
     expect(saved.dirtyBlockIds).toEqual(new Set(['paragraph-1']));
+    expect(saved.undoStack).toEqual([]);
+    expect(saved.redoStack).toEqual([]);
+    expect(saved.selection).toBeNull();
     expect(saved.saveStatus).toBe('unsaved');
   });
 });

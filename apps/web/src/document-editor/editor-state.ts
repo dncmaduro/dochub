@@ -92,10 +92,12 @@ export function replaceBaseline(state: DocumentEditorState, model: DocumentModel
   return { ...state, baselineModel: model, currentModel: model, dirtyBlockIds: new Set(), undoStack: [], redoStack: [], saveStatus: "saved", selection: null };
 }
 
-export function acceptSavedModel(state: DocumentEditorState, model: DocumentModel): DocumentEditorState {
+export function acceptSavedModel(state: DocumentEditorState, model: DocumentModel, savedModel: DocumentModel = state.currentModel): DocumentEditorState {
+  const hasPostSaveEdits = JSON.stringify(state.currentModel.blocks) !== JSON.stringify(savedModel.blocks);
+  if (!hasPostSaveEdits) return replaceBaseline(state, model);
   const dirtyBlockIds = dirtyBlocks(model, state.currentModel);
   const currentModel = { ...state.currentModel, storageRevision: model.storageRevision };
-  return { ...state, baselineModel: model, currentModel, dirtyBlockIds, saveStatus: dirtyBlockIds.size ? "unsaved" : "saved" };
+  return { ...state, baselineModel: model, currentModel, dirtyBlockIds, undoStack: [], redoStack: [], saveStatus: dirtyBlockIds.size ? "unsaved" : "saved", selection: null };
 }
 
 export function restoreRecoveredModel(state: DocumentEditorState, model: DocumentModel): DocumentEditorState {

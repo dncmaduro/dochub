@@ -185,40 +185,66 @@ export interface PatchedDocx {
   model: DocumentModel;
 }
 
+export type DocxPatchStage = "package-read" | "xml-validation" | "source-map" | "server-model" | "block-resolution" | "block-validation" | "paragraph-serialization" | "output-reparse";
+
+export interface DocxPatchDiagnostic {
+  stage: DocxPatchStage;
+  currentModel?: DocumentModel;
+  blockId?: string;
+  error?: unknown;
+}
+
 export class DocxPatcher {
-  static apply(sourceBytes: Uint8Array, request: DocumentPatchRequest): PatchedDocx {
-    const reader = DocxPackageReader.fromBytes(sourceBytes);
-    const xml = reader.text("word/document.xml");
-    if (XMLValidator.validate(xml) !== true) throw new DocumentEditValidationError("The DOCX document part is malformed");
-    let sourceMap: ReadonlyMap<string, DocxParagraphSource>;
+  static apply(sourceBytes: Uint8Array, request: DocumentPatchRequest, onDiagnostic?: (diagnostic: DocxPatchDiagnostic) => void): PatchedDocx {
+    let stage: DocxPatchStage = "package-read";
+    let original: DocumentModel | undefined;
+    let activeBlockId: string | undefined;
     try {
-      sourceMap = createDocxSourceMap(xml);
-    } catch {
-      throw new DocumentEditValidationError("The DOCX document source mapping is invalid");
+      const reader = DocxPackageReader.fromBytes(sourceBytes);
+      const xml = reader.text("word/document.xml");
+      stage = "xml-validation";
+      if (XMLValidator.validate(xml) !== true) throw new DocumentEditValidationError("The DOCX document part is malformed");
+      stage = "source-map";
+      let sourceMap: ReadonlyMap<string, DocxParagraphSource>;
+      try {
+        sourceMap = createDocxSourceMap(xml);
+      } catch {
+        throw new DocumentEditValidationError("The DOCX document source mapping is invalid");
+      }
+      stage = "server-model";
+      original = DocxParser.parse(reader).model;
+      onDiagnostic?.({ stage, currentModel: original });
+      stage = "block-resolution";
+      const currentBlocks = blocksById(original, request.blocks.map((block) => block.blockId));
+      const replacements: Replacement[] = [];
+      for (const patch of request.blocks) {
+        activeBlockId = patch.blockId;
+        stage = "block-validation";
+        const source = sourceMap.get(patch.blockId);
+        const current = currentBlocks.get(patch.blockId);
+        if (!source || !current) throw new DocumentEditValidationError("The document block no longer exists");
+        validateBlockPatch(patch, current, source);
+        stage = "paragraph-serialization";
+        const pPr = patchParagraphProperties(xml, source, reader, patch, current);
+        replacements.push({
+          start: source.node.openEnd,
+          end: source.node.closeStart,
+          value: `${pPr}${serializeRuns(patch.content)}`,
+        });
+      }
+      stage = "output-reparse";
+      const documentXml = applyReplacements(xml, replacements);
+      const entries: Record<string, Uint8Array> = {};
+      for (const [path, value] of reader.allEntries()) entries[path] = value;
+      entries["word/document.xml"] = new TextEncoder().encode(documentXml);
+      const bytes = Buffer.from(zipSync(entries));
+      const savedReader = DocxPackageReader.fromBytes(bytes);
+      const model = DocxParser.parse(savedReader).model;
+      return { bytes, model };
+    } catch (error) {
+      onDiagnostic?.({ stage, currentModel: original, blockId: activeBlockId, error });
+      throw error;
     }
-    const original = DocxParser.parse(reader).model;
-    const currentBlocks = blocksById(original, request.blocks.map((block) => block.blockId));
-    const replacements: Replacement[] = [];
-    for (const patch of request.blocks) {
-      const source = sourceMap.get(patch.blockId);
-      const current = currentBlocks.get(patch.blockId);
-      if (!source || !current) throw new DocumentEditValidationError("The document block no longer exists");
-      validateBlockPatch(patch, current, source);
-      const pPr = patchParagraphProperties(xml, source, reader, patch, current);
-      replacements.push({
-        start: source.node.openEnd,
-        end: source.node.closeStart,
-        value: `${pPr}${serializeRuns(patch.content)}`,
-      });
-    }
-    const documentXml = applyReplacements(xml, replacements);
-    const entries: Record<string, Uint8Array> = {};
-    for (const [path, value] of reader.allEntries()) entries[path] = value;
-    entries["word/document.xml"] = new TextEncoder().encode(documentXml);
-    const bytes = Buffer.from(zipSync(entries));
-    const savedReader = DocxPackageReader.fromBytes(bytes);
-    const model = DocxParser.parse(savedReader).model;
-    return { bytes, model };
   }
 
   static assertWithinLimits(request: DocumentPatchRequest): void {

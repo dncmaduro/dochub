@@ -79,7 +79,7 @@ function classifyParagraph(node: SourceNode): { editable: boolean; reason?: stri
             if (!hasOnlyAttributes(property, allowed)) return { editable: false, reason: "unsupported-run-attribute" };
             if (property.name === "w:u") {
               const value = /(?:w:val|val)\s*=\s*(["'])(.*?)\1/iu.exec(property.attributes)?.[2];
-              if (value && value !== "single") return { editable: false, reason: "unsupported-underline-style" };
+              if (value && value !== "single" && value !== "none") return { editable: false, reason: "unsupported-underline-style" };
             }
           }
         }
@@ -213,7 +213,9 @@ function visitModelBlocks(blocks: DocumentBlock[], sourceMap: ReadonlyMap<string
       if (!source?.editable) block.readonlyReason = source?.readonlyReason ?? "source-mapping-unavailable";
       editable ||= Boolean(block.editable);
     } else if (block.type === "table") {
-      for (const row of block.rows) for (const cell of row.cells) editable ||= visitModelBlocks(cell.blocks, sourceMap);
+      for (const row of block.rows) for (const cell of row.cells) {
+        if (visitModelBlocks(cell.blocks, sourceMap)) editable = true;
+      }
     } else {
       block.editable = false;
     }
