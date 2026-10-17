@@ -94,6 +94,8 @@ describe("rendered upload controls", () => {
 
     expect(document.querySelectorAll(".upload-queue-item")).toHaveLength(3);
     expect(vi.mocked(ApiClient.prototype.upload)).toHaveBeenCalledTimes(3);
+    expect(document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("100");
+    expect(document.querySelector<HTMLElement>(".upload-queue-progress-bar")?.style.width).toBe("100%");
     expect(picker.value).toBe("");
   });
 });

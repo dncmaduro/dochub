@@ -6,10 +6,11 @@ export interface UploadQueueItem {
   file: File;
   destinationFolderId: string | null;
   status: UploadQueueStatus;
+  progress: number;
   error: string | null;
 }
 
-export type UploadQueueItemUpdate = Partial<Pick<UploadQueueItem, "status" | "error">>;
+export type UploadQueueItemUpdate = Partial<Pick<UploadQueueItem, "status" | "progress" | "error">>;
 
 export interface UploadQueueRunOptions {
   concurrency?: number;
@@ -32,6 +33,7 @@ export function createUploadQueueItems(
     file,
     destinationFolderId,
     status: "queued",
+    progress: 0,
     error: null,
   }));
 }
@@ -61,10 +63,10 @@ export async function runUploadQueue(
       const item = pending[nextIndex++];
       if (!item) return;
       started.add(item.id);
-      update(item.id, { status: "uploading", error: null });
+      update(item.id, { status: "uploading", progress: 0, error: null });
       try {
         await upload(item);
-        update(item.id, { status: "success", error: null });
+        update(item.id, { status: "success", progress: 100, error: null });
       } catch (error) {
         const authorizationError = isAuthorizationError(error);
         update(item.id, {

@@ -497,6 +497,8 @@ export class ApiError extends Error {
   }
 }
 
+type UploadProgressHandler = (progress: number) => void;
+
 export class ApiClient {
   private accessToken: string | null = null;
   private refreshPromise: Promise<RefreshResponse> | null = null;
@@ -874,15 +876,13 @@ export class ApiClient {
     );
   }
 
-  async upload(file: File, parentId: string | null, idempotencyKey: string) {
-    const form = new FormData();
-    form.append("parentId", parentId ?? "");
-    form.append("file", file);
-    return this.request<UploadResponse>("/drive/uploads", {
-      method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey },
-      body: form,
-    });
+  async upload(
+    file: File,
+    parentId: string | null,
+    idempotencyKey: string,
+    onProgress?: UploadProgressHandler,
+  ) {
+    return this.uploadWithProgress(file, parentId, idempotencyKey, onProgress);
   }
 
   async download(node: Node) {
@@ -914,6 +914,70 @@ export class ApiClient {
     link.click();
     link.remove();
     URL.revokeObjectURL(link.href);
+  }
+
+  private uploadWithProgress(
+    file: File,
+    parentId: string | null,
+    idempotencyKey: string,
+    onProgress?: UploadProgressHandler,
+    refreshed = false,
+  ): Promise<UploadResponse> {
+    return new Promise((resolve, reject) => {
+      const form = new FormData();
+      form.append("parentId", parentId ?? "");
+      form.append("file", file);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${apiOrigin}/drive/uploads`);
+      xhr.withCredentials = true;
+      if (this.accessToken) {
+        xhr.setRequestHeader("Authorization", `Bearer ${this.accessToken}`);
+      }
+      xhr.setRequestHeader("Idempotency-Key", idempotencyKey);
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          onProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+        }
+      });
+      xhr.onload = () => {
+        void (async () => {
+          if (xhr.status === 401 && !refreshed) {
+            await this.refresh();
+            resolve(this.uploadWithProgress(file, parentId, idempotencyKey, onProgress, true));
+            return;
+          }
+
+          let body: { message?: string | string[]; code?: string } | null = null;
+          try {
+            body = xhr.responseText ? JSON.parse(xhr.responseText) as { message?: string | string[]; code?: string } : null;
+          } catch {
+            /* Use the safe fallback below. */
+          }
+
+          const fallback = xhr.status === 401
+            ? "Your session has ended. Please sign in again."
+            : "The request could not be completed.";
+          if (xhr.status < 200 || xhr.status >= 300) {
+            const message = Array.isArray(body?.message)
+              ? body.message[0] ?? fallback
+              : body?.message ?? fallback;
+            reject(new ApiError(message, xhr.status, body?.code));
+            return;
+          }
+          if (xhr.status === 204 || !xhr.responseText) {
+            resolve(undefined as unknown as UploadResponse);
+            return;
+          }
+          resolve(JSON.parse(xhr.responseText) as UploadResponse);
+        })().catch(reject);
+      };
+      const requestError = () => reject(new ApiError("The request could not be completed.", 0));
+      xhr.onerror = requestError;
+      xhr.ontimeout = requestError;
+      xhr.onabort = requestError;
+      xhr.send(form);
+    });
   }
 
   private async request<T>(path: string, init: RequestInit = {}) {

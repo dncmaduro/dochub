@@ -239,6 +239,7 @@ const en = {
     uploadAuthorizationFailed: "Uploads stopped because authorization is required.",
     uploadQueueTitle: "Upload status",
     uploadQueueProgress: "{{completed}} of {{total}} complete · {{uploading}} uploading · {{queued}} queued",
+    uploadQueuePercent: "{{percent}}%",
     uploadQueueSummary: "{{uploaded}} uploaded · {{failed}} failed",
     uploadQueueQueued: "Queued",
     uploadQueueUploading: "Uploading",

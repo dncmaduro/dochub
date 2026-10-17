@@ -774,7 +774,18 @@ function App() {
     try {
       await runUploadQueue(
         items,
-        (item) => api.upload(item.file, item.destinationFolderId, item.idempotencyKey),
+        (item) => api.upload(
+          item.file,
+          item.destinationFolderId,
+          item.idempotencyKey,
+          (progress) => {
+            setUploadQueue((current) => current.map((entry) => (
+              entry.id === item.id && entry.progress !== progress
+                ? { ...entry, progress }
+                : entry
+            )));
+          },
+        ),
         (id, update) => {
           setUploadQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
         },
@@ -809,15 +820,15 @@ function App() {
     if (uploadingFromMenu) return;
     const failed = uploadQueue.filter((item) => item.status === "failed");
     if (!failed.length) return;
-    const retryItems = failed.map((item) => ({ ...item, idempotencyKey: crypto.randomUUID(), status: "queued" as const, error: null }));
-    setUploadQueue((current) => current.map((item) => retryItems.some((retry) => retry.id === item.id) ? { ...item, status: "queued", error: null } : item));
+    const retryItems = failed.map((item) => ({ ...item, idempotencyKey: crypto.randomUUID(), status: "queued" as const, progress: 0, error: null }));
+    setUploadQueue((current) => current.map((item) => retryItems.some((retry) => retry.id === item.id) ? { ...item, status: "queued", progress: 0, error: null } : item));
     void runUploadItems(retryItems);
   }
   function retryUploadItem(id: string) {
     if (uploadingFromMenu) return;
     const failed = uploadQueue.find((item) => item.id === id && item.status === "failed");
     if (!failed) return;
-    const retryItem = { ...failed, idempotencyKey: crypto.randomUUID(), status: "queued" as const, error: null };
+    const retryItem = { ...failed, idempotencyKey: crypto.randomUUID(), status: "queued" as const, progress: 0, error: null };
     setUploadQueue((current) => current.map((item) => item.id === id ? retryItem : item));
     void runUploadItems([retryItem]);
   }
@@ -963,6 +974,13 @@ function UploadQueuePanel({
   const failed = items.filter((item) => item.status === "failed").length;
   const uploading = items.filter((item) => item.status === "uploading").length;
   const queued = items.filter((item) => item.status === "queued").length;
+  const totalBytes = items.reduce((total, item) => total + item.file.size, 0);
+  const uploadedBytes = items.reduce((total, item) => total + (item.file.size * item.progress) / 100, 0);
+  const progress = totalBytes > 0
+    ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100))
+    : items.length > 0
+      ? Math.round(((uploaded + failed) / items.length) * 100)
+      : 0;
   const statusLabel = (item: UploadQueueItem) => {
     if (item.status === "queued") return t("files.uploadQueueQueued");
     if (item.status === "uploading") return t("files.uploadQueueUploading");
@@ -984,6 +1002,20 @@ function UploadQueuePanel({
           <Icon name="close" size={16} />
         </button>
       </header>
+      <div className="upload-queue-progress">
+        <div
+          className="upload-queue-progress-track"
+          role="progressbar"
+          aria-label={t("files.uploadQueueTitle")}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress}
+          aria-valuetext={t("files.uploadQueuePercent", { percent: progress })}
+        >
+          <span className="upload-queue-progress-bar" style={{ width: `${progress}%` }} />
+        </div>
+        <span className="upload-queue-progress-value">{t("files.uploadQueuePercent", { percent: progress })}</span>
+      </div>
       <ul className="upload-queue-list">
         {items.map((item) => (
           <li key={item.id} className={`upload-queue-item is-${item.status}`}>

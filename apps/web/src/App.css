@@ -1464,7 +1464,7 @@ body.is-resizing-sidebar * {
   display: grid;
   width: min(390px, calc(100vw - 32px));
   max-height: min(70vh, 560px);
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1489,6 +1489,32 @@ body.is-resizing-sidebar * {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
+}
+.upload-queue-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 10px;
+}
+.upload-queue-progress-track {
+  flex: 1 1 auto;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-subtle);
+}
+.upload-queue-progress-bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+.upload-queue-progress-value {
+  min-width: 34px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
 }
 .upload-queue-list {
   display: grid;
