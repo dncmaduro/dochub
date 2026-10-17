@@ -59,14 +59,17 @@ export class DocumentAccessService {
     if (!node) throw new NotFoundException('Document not found');
     await this.assertActiveChain(node.id);
 
-    const capabilities = generalAccessCapabilities(node.generalAccessRole);
-    if (auth) {
-      const acl = await this.authorization.resolveCapabilities(
-        auth.userId,
-        node.id,
-      );
-      for (const granted of acl.capabilities) capabilities.add(granted);
-    }
+    // Authenticated Docs Hub access is governed by the account-level policy.
+    // In particular, an OWNER/EDITOR ACL or an EDITOR share link must not
+    // upgrade a non-admin account into a writer. Public links retain their
+    // deliberately separate general-access policy.
+    const capabilities = auth
+      ? new Set(
+          (
+            await this.authorization.resolveCapabilities(auth.userId, node.id)
+          ).capabilities,
+        )
+      : generalAccessCapabilities(node.generalAccessRole);
 
     const allowed =
       capabilities.has(DocumentCapability.VIEW) && capabilities.has(capability);

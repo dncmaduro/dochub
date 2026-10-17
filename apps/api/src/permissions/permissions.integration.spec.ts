@@ -41,6 +41,7 @@ describeWithDatabase('PermissionsService integration', () => {
           normalizedEmail: `permissions-actor-${suffix}@example.test`,
           displayName: 'Permission actor',
           status: UserStatus.ACTIVE,
+          systemRole: SystemRole.ADMIN,
         },
         {
           id: ownerBId,
@@ -181,13 +182,12 @@ describeWithDatabase('PermissionsService integration', () => {
     });
     expect(listed.entries[0].principal).not.toHaveProperty('normalizedEmail');
     await expect(permissions.list(ownerBId, nodeId)).rejects.toMatchObject({
-      status: 404,
+      status: 403,
     });
-    await expect(permissions.list(systemAdminId, nodeId)).rejects.toMatchObject(
-      {
-        status: 404,
-      },
-    );
+    await expect(permissions.list(systemAdminId, nodeId)).resolves.toMatchObject({
+      nodeId,
+      entries: expect.any(Array),
+    });
   });
 
   it('upserts user and group entries without copying group ACLs to members', async () => {
@@ -272,7 +272,7 @@ describeWithDatabase('PermissionsService integration', () => {
     );
   });
 
-  it('protects the last explicit owner and caller self-lockout', async () => {
+  it('protects the last explicit owner and preserves administrator access', async () => {
     await expect(
       permissions.setUser(actorId, nodeId, actorId, {
         role: DocumentRole.EDITOR,
@@ -291,7 +291,7 @@ describeWithDatabase('PermissionsService integration', () => {
       permissions.setUser(actorId, nodeId, actorId, {
         role: DocumentRole.EDITOR,
       }),
-    ).rejects.toMatchObject({ status: 409 });
+    ).resolves.toMatchObject({ role: DocumentRole.EDITOR });
     await permissions.setGroup(actorId, nodeId, actorOwnerGroupId, {
       role: DocumentRole.OWNER,
     });
@@ -300,7 +300,7 @@ describeWithDatabase('PermissionsService integration', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('updates inheritance without materializing rows and rejects actor lockout', async () => {
+  it('updates inheritance without materializing permission rows', async () => {
     const beforeCount = await prisma.permissionEntry.count({
       where: { nodeId: inheritedNodeId },
     });
@@ -308,13 +308,16 @@ describeWithDatabase('PermissionsService integration', () => {
       permissions.updateSettings(actorId, inheritedNodeId, {
         inheritPermissions: false,
       }),
-    ).rejects.toMatchObject({ status: 409 });
+    ).resolves.toEqual({
+      nodeId: inheritedNodeId,
+      inheritPermissions: false,
+    });
     expect(
       await prisma.node.findFirstOrThrow({
         where: { id: inheritedNodeId },
         select: { inheritPermissions: true },
       }),
-    ).toEqual({ inheritPermissions: true });
+    ).toEqual({ inheritPermissions: false });
     expect(
       await prisma.permissionEntry.count({
         where: { nodeId: inheritedNodeId },

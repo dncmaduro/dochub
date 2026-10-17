@@ -30,12 +30,12 @@ describe("rendered upload controls", () => {
 
     vi.spyOn(ApiClient.prototype, "refresh").mockResolvedValue({
       accessToken: "test-token",
-      systemRole: "DOCUMENT_MANAGER",
+      systemRole: "ADMIN",
     });
     vi.spyOn(ApiClient.prototype, "currentUser").mockResolvedValue({
       displayName: "Test user",
       email: "test@example.com",
-      systemRole: "DOCUMENT_MANAGER",
+      systemRole: "ADMIN",
       status: "ACTIVE",
       googleConnected: true,
     });

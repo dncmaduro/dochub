@@ -14,12 +14,10 @@ describe('system role policy', () => {
     },
   );
 
-  it.each([SystemRole.ADMIN, SystemRole.DOCUMENT_MANAGER])(
-    'allows %s to manage documents',
-    (role) => {
-      expect(canManageDocuments(role)).toBe(true);
-    },
-  );
+  it('allows only administrators to manage documents', () => {
+    expect(canManageDocuments(SystemRole.ADMIN)).toBe(true);
+    expect(canManageDocuments(SystemRole.DOCUMENT_MANAGER)).toBe(false);
+  });
 
   it('keeps viewers read-only and reserves account administration for admins', () => {
     expect(canManageDocuments(SystemRole.VIEWER)).toBe(false);

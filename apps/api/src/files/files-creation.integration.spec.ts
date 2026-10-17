@@ -125,18 +125,21 @@ withDatabase('root creation access policy integration', () => {
     await prisma.$disconnect();
   });
 
-  it('lets an active member create every supported root item with viewer general access', async () => {
-    const folder = await nodes.createFolder(memberId, {
-      name: `Member root folder ${suffix}`,
+  it('lets only an active administrator create every supported root item', async () => {
+    await expect(
+      nodes.createFolder(memberId, { name: `Member root folder ${suffix}` }),
+    ).rejects.toMatchObject({ status: 403 });
+    const folder = await nodes.createFolder(adminId, {
+      name: `Administrator root folder ${suffix}`,
     });
     nodeIds.add(folder.id);
 
     const rootUpload = await temporaryUpload(
-      'member-root.pdf',
-      Buffer.from('%PDF-1.7\nmember root upload\n'),
+      'administrator-root.pdf',
+      Buffer.from('%PDF-1.7\nadministrator root upload\n'),
       null,
     );
-    const uploaded = await files.createInitial(memberId, rootUpload);
+    const uploaded = await files.createInitial(adminId, rootUpload);
     await rm(path.dirname(rootUpload.tempPath), {
       recursive: true,
       force: true,
@@ -157,7 +160,7 @@ withDatabase('root creation access policy integration', () => {
       OfficeFileKind.XLSX,
       OfficeFileKind.PPTX,
     ]) {
-      const created = await files.createOffice(memberId, kind, null);
+      const created = await files.createOffice(adminId, kind, null);
       nodeIds.add(created.node.id);
       fileIds.add(created.file.id);
       createdVersionIds.add(created.version.id);
@@ -193,7 +196,7 @@ withDatabase('root creation access policy integration', () => {
     ).toBe(true);
 
     const ownerEntries = await prisma.permissionEntry.findMany({
-      where: { nodeId: { in: [...nodeIds] }, userId: memberId },
+      where: { nodeId: { in: [...nodeIds] }, userId: adminId },
       select: { nodeId: true, role: true },
     });
     expect(ownerEntries).toHaveLength(5);
@@ -220,7 +223,7 @@ withDatabase('root creation access policy integration', () => {
       prisma.auditLog.findMany({
         where: {
           resourceId: { in: [...nodeIds] },
-          actorId: memberId,
+          actorId: adminId,
           action: { in: ['FOLDER_CREATED', 'FILE_UPLOADED', 'FILE_CREATED'] },
         },
       }),

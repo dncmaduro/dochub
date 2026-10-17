@@ -5,6 +5,7 @@ import {
   GeneralAccessRole,
   NodeType,
   prisma,
+  SystemRole,
   UserStatus,
 } from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
@@ -38,6 +39,7 @@ describeWithDatabase('DocumentAuthorizationService integration', () => {
           normalizedEmail: `authorization-actor-${suffix}@example.test`,
           displayName: 'Authorization actor',
           status: UserStatus.ACTIVE,
+          systemRole: SystemRole.ADMIN,
         },
         {
           id: memberId,
@@ -149,16 +151,19 @@ describeWithDatabase('DocumentAuthorizationService integration', () => {
     await prisma.$disconnect();
   });
 
-  it('applies a group ACL through inheritance and stops it at an inheritance boundary', async () => {
+  it('uses the account role regardless of group ACL or inheritance boundaries', async () => {
     await expect(
       service.hasCapability(
         memberId,
         inheritedFileId,
         DocumentCapability.DELETE,
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
     await expect(
       service.hasCapability(memberId, boundaryFileId, DocumentCapability.VIEW),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
+    await expect(
+      service.hasCapability(actorId, boundaryFileId, DocumentCapability.DELETE),
+    ).resolves.toBe(true);
   });
 });

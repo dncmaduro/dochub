@@ -55,7 +55,7 @@ describeWithDatabase('DocumentAccessService integration', () => {
     await prisma.$disconnect();
   });
 
-  it('resolves one stable Node UUID through mutable General Access and ACL policy', async () => {
+  it('keeps public links separate while authenticated access follows account policy', async () => {
     const id = nodeId;
     await expect(access.resolve(id, undefined, DocumentCapability.VIEW)).resolves.toMatchObject({ mode: 'PUBLIC' });
     await prisma.node.update({ where: { id }, data: { generalAccessRole: GeneralAccessRole.EDITOR } });
@@ -63,11 +63,11 @@ describeWithDatabase('DocumentAccessService integration', () => {
     await prisma.node.update({ where: { id }, data: { generalAccessRole: GeneralAccessRole.RESTRICTED } });
     await expect(access.resolve(id, undefined, DocumentCapability.VIEW)).rejects.toMatchObject({ status: 401 });
     await expect(access.resolve(id, { userId: ownerId, sessionId: randomUUID() }, DocumentCapability.VIEW)).resolves.toMatchObject({ node: { id } });
-    await expect(access.resolve(id, { userId: editorId, sessionId: randomUUID() }, DocumentCapability.EDIT)).resolves.toMatchObject({ node: { id } });
-    await expect(access.resolve(id, { userId: noAclId, sessionId: randomUUID() }, DocumentCapability.VIEW)).rejects.toMatchObject({ status: 403 });
+    await expect(access.resolve(id, { userId: editorId, sessionId: randomUUID() }, DocumentCapability.EDIT)).rejects.toMatchObject({ status: 403 });
+    await expect(access.resolve(id, { userId: noAclId, sessionId: randomUUID() }, DocumentCapability.VIEW)).resolves.toMatchObject({ node: { id } });
     await prisma.node.update({ where: { id }, data: { generalAccessRole: GeneralAccessRole.VIEWER } });
     const strongerAcl = await access.resolve(id, { userId: editorId, sessionId: randomUUID() }, DocumentCapability.VIEW);
     expect(strongerAcl.node.id).toBe(id);
-    expect(strongerAcl.capabilities.has(DocumentCapability.EDIT)).toBe(true);
+    expect(strongerAcl.capabilities.has(DocumentCapability.EDIT)).toBe(false);
   });
 });

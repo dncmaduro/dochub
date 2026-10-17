@@ -44,6 +44,7 @@ import type {
   FolderTreeResponse,
   NodePage,
   NodeResponse,
+  NodeTreeResponse,
 } from './node.types.js';
 
 const DEFAULT_PAGE_LIMIT = 50;
@@ -190,14 +191,10 @@ export class NodesService {
     parentId: string | null,
   ): Promise<FolderTreeResponse> {
     const parent = await this.folders.requireBrowse(actorUserId, parentId);
-    const groupIds = await this.authorization.findUserGroupIds(actorUserId);
-    if (groupIds === null) {
-      throw new NotFoundException('Node not found');
-    }
     const folders = await this.database.prisma.node.findMany({
       where: {
         type: NodeType.FOLDER,
-        ...this.folders.childVisibilityWhere(parent, actorUserId, groupIds),
+        ...this.folders.childVisibilityWhere(parent),
       },
       select: {
         id: true,
@@ -209,15 +206,42 @@ export class NodesService {
     return { items: folders };
   }
 
+  async listNodeTree(
+    actorUserId: string,
+    parentId: string | null,
+  ): Promise<NodeTreeResponse> {
+    const parent = await this.folders.requireBrowse(actorUserId, parentId);
+    const nodes = await this.database.prisma.node.findMany({
+      where: this.folders.childVisibilityWhere(parent),
+      select: {
+        id: true,
+        parentId: true,
+        name: true,
+        type: true,
+        normalizedName: true,
+      },
+      orderBy: [{ normalizedName: 'asc' }, { id: 'asc' }],
+    });
+    const items = nodes
+      .sort((left, right) => {
+        const typeOrder =
+          (left.type === NodeType.FOLDER ? 0 : 1) -
+          (right.type === NodeType.FOLDER ? 0 : 1);
+        if (typeOrder !== 0) return typeOrder;
+        if (left.normalizedName !== right.normalizedName) {
+          return left.normalizedName < right.normalizedName ? -1 : 1;
+        }
+        return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+      })
+      .map(({ normalizedName: _normalizedName, ...item }) => item);
+    return { items };
+  }
+
   private async listFolder(
     actorUserId: string,
     folder: Awaited<ReturnType<FolderAccessService['requireBrowse']>>,
     query: NodeListQueryDto,
   ): Promise<NodePage> {
-    const groupIds = await this.authorization.findUserGroupIds(actorUserId);
-    if (groupIds === null) {
-      throw new NotFoundException('Node not found');
-    }
     const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
     const sortBy = query.sortBy ?? DEFAULT_NODE_SORT_BY;
     const sortDirection =
@@ -231,9 +255,7 @@ export class NodesService {
       sortDirection,
     );
     const orderedIds = await this.findOrderedNodeIds(
-      actorUserId,
       folder,
-      groupIds,
       limit,
       sortBy,
       sortDirection,
@@ -271,15 +293,13 @@ export class NodesService {
   }
 
   private async findOrderedNodeIds(
-    actorUserId: string,
     folder: Awaited<ReturnType<FolderAccessService['requireBrowse']>>,
-    groupIds: readonly string[],
     limit: number,
     sortBy: NodeSortBy,
     sortDirection: NodeSortDirection,
     cursor: ReturnType<typeof decodeNodeCursor>,
   ): Promise<string[]> {
-    const visibility = this.childVisibilitySql(folder, actorUserId, groupIds);
+    const visibility = this.childVisibilitySql(folder);
     const cursorPredicate = this.cursorPredicateSql(
       cursor,
       sortBy,
@@ -321,41 +341,14 @@ export class NodesService {
 
   private childVisibilitySql(
     folder: Awaited<ReturnType<FolderAccessService['requireBrowse']>>,
-    actorUserId: string,
-    groupIds: readonly string[],
   ): Prisma.Sql {
-    const groupVisibility =
-      groupIds.length > 0
-        ? Prisma.sql`OR permission_entry."groupId" IN (${Prisma.join(
-            groupIds.map((groupId) => Prisma.sql`${groupId}::uuid`),
-          )})`
-        : Prisma.empty;
-    const directVisibility = Prisma.sql`
-      (
-        n."generalAccessRole" IN ('VIEWER', 'EDITOR')
-        OR EXISTS (
-          SELECT 1
-          FROM "PermissionEntry" AS permission_entry
-          WHERE permission_entry."nodeId" = n."id"
-            AND (
-              permission_entry."userId" = ${actorUserId}::uuid
-              ${groupVisibility}
-            )
-        )
-      )
-    `;
     const parentPredicate =
       folder.reference.kind === 'ROOT'
         ? Prisma.sql`n."parentId" IS NULL`
         : Prisma.sql`n."parentId" = ${folder.reference.nodeId}::uuid`;
-    const visibility =
-      folder.reference.kind === 'ROOT'
-        ? directVisibility
-        : Prisma.sql`(n."inheritPermissions" = TRUE OR ${directVisibility})`;
     return Prisma.sql`
       ${parentPredicate}
       AND n."trashOperationId" IS NULL
-      AND ${visibility}
     `;
   }
 
@@ -427,51 +420,14 @@ export class NodesService {
     ) {
       throw new NotFoundException('Node not found');
     }
-    const groupIds = await this.authorization.findUserGroupIds(actorUserId);
-    if (groupIds === null) {
-      throw new NotFoundException('Node not found');
-    }
-    const explicit = await this.authorization.resolveExplicitCapabilities(
-      actorUserId,
-      chain.map((node) => node.id),
-      groupIds,
-    );
     const rootToTarget = [...chain].reverse();
-    const capabilitiesByNode = new Map<
-      string,
-      ReadonlySet<DocumentCapability>
-    >();
-    for (const node of rootToTarget) {
-      const parentCapabilities = node.parentId
-        ? (capabilitiesByNode.get(node.parentId) ??
-          new Set<DocumentCapability>())
-        : new Set<DocumentCapability>();
-      const capabilities = new Set<DocumentCapability>(
-        node.parentId !== null && node.inheritPermissions
-          ? parentCapabilities
-          : [],
-      );
-      for (const capability of explicit.get(node.id) ?? []) {
-        capabilities.add(capability);
-      }
-      capabilitiesByNode.set(node.id, capabilities);
-    }
-    let suffixStart = rootToTarget.length - 1;
-    while (
-      suffixStart > 0 &&
-      capabilitiesByNode
-        .get(rootToTarget[suffixStart - 1].id)
-        ?.has(DocumentCapability.VIEW)
-    ) {
-      suffixStart -= 1;
-    }
     return {
-      items: rootToTarget.slice(suffixStart).map((node) => ({
+      items: rootToTarget.map((node) => ({
         id: node.id,
         name: node.name,
         type: node.type,
       })),
-      truncated: suffixStart > 0,
+      truncated: false,
     };
   }
 

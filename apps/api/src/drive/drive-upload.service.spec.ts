@@ -73,7 +73,7 @@ function harness(
   const user = {
     id: userId,
     status: UserStatus.ACTIVE,
-    systemRole: options.role ?? 'DOCUMENT_MANAGER',
+    systemRole: options.role ?? 'ADMIN',
   };
   let uploadedCount = 0;
 
@@ -175,7 +175,7 @@ function harness(
   };
   const drive = {
     assertDriveUploadManager: vi.fn(async () => {
-      if (user.systemRole === 'VIEWER') {
+      if (user.systemRole !== 'ADMIN') {
         throw new ForbiddenException('Document-management access is required');
       }
     }),
@@ -279,7 +279,7 @@ describe('DriveUploadService', () => {
   });
 
   it('places nested uploads in the Docs Hub parent while keeping the configured Drive target', async () => {
-    const state = harness({ role: 'DOCUMENT_MANAGER' });
+    const state = harness({ role: 'ADMIN' });
     const result = await upload(
       state,
       'nested-upload-1',
@@ -291,8 +291,8 @@ describe('DriveUploadService', () => {
     expect(state.uploadCalls[0]?.objectId).toMatch(/^drive-file-/);
   });
 
-  it('allows DOCUMENT_MANAGER to upload DOCX as its original binary MIME type', async () => {
-    const state = harness({ role: 'DOCUMENT_MANAGER' });
+  it('allows ADMIN to upload DOCX as its original binary MIME type', async () => {
+    const state = harness({ role: 'ADMIN' });
     const result = await upload(
       state,
       'manager-docx-upload',
@@ -315,7 +315,7 @@ describe('DriveUploadService', () => {
     ['data.csv', 'application/csv', Buffer.from('name,value\nAda,1\n')],
     ['archive.bin', '', Buffer.from([0, 1, 2, 3])],
   ])('stores %s through the active Drive upload ingress', async (filename, mimeType, bytes) => {
-    const state = harness({ role: 'DOCUMENT_MANAGER' });
+    const state = harness({ role: 'ADMIN' });
     const result = await upload(
       state,
       `generic-${filename}`,
@@ -335,8 +335,8 @@ describe('DriveUploadService', () => {
     });
   });
 
-  it('denies VIEWER without creating an operation or falling back to local storage', async () => {
-    const state = harness({ role: 'VIEWER' });
+  it.each(['DOCUMENT_MANAGER', 'VIEWER'] as const)('denies %s without creating an operation or falling back to local storage', async (role) => {
+    const state = harness({ role });
     await expect(upload(state, 'viewer-upload')).rejects.toBeInstanceOf(
       ForbiddenException,
     );

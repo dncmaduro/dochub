@@ -10,6 +10,7 @@ import {
   GeneralAccessRole,
   NodeType,
   prisma,
+  SystemRole,
   TrashOperationStatus,
   UserStatus,
 } from '@dochub/database';
@@ -102,6 +103,7 @@ withDatabase('FilesService version history integration', () => {
           normalizedEmail: `versions-editor-${suffix}@example.test`,
           displayName: 'Version editor',
           status: UserStatus.ACTIVE,
+          systemRole: SystemRole.ADMIN,
         },
         {
           id: outsiderId,
@@ -240,8 +242,8 @@ withDatabase('FilesService version history integration', () => {
         }),
       ]),
     );
-    await expect(files.listVersions(outsiderId, nodeId)).rejects.toMatchObject({
-      status: 404,
+    await expect(files.listVersions(outsiderId, nodeId)).resolves.toMatchObject({
+      nodeId,
     });
     await expect(
       files.restoreVersion(viewerId, nodeId, uploadId),

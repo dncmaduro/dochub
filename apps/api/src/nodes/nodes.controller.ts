@@ -37,6 +37,19 @@ export class NodesController {
     return this.nodes.listRoot(auth.userId, query);
   }
 
+  @Get('tree/root')
+  listTreeRoot(@CurrentAuth() auth: AuthPrincipal) {
+    return this.nodes.listNodeTree(auth.userId, null);
+  }
+
+  @Get('tree/:nodeId')
+  listTreeChildren(
+    @CurrentAuth() auth: AuthPrincipal,
+    @Param() params: NodeIdParamDto,
+  ) {
+    return this.nodes.listNodeTree(auth.userId, params.nodeId);
+  }
+
   @Get(':nodeId/children')
   listChildren(
     @CurrentAuth() auth: AuthPrincipal,

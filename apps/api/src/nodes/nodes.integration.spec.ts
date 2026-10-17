@@ -30,6 +30,7 @@ describeWithDatabase('NodesService integration', () => {
   const fileIds = new Set<string>();
   const fileVersionIds = new Set<string>();
   const trashOperationIds = new Set<string>();
+  const groupIds = new Set<string>();
   const database = { prisma } as unknown as DatabaseService;
   const authorization = new DocumentAuthorizationService(database);
   const nodes = new NodesService(database, authorization);
@@ -55,6 +56,7 @@ describeWithDatabase('NodesService integration', () => {
           normalizedEmail: `nodes-editor-${suffix}@example.test`,
           displayName: 'Nodes editor',
           status: UserStatus.ACTIVE,
+          systemRole: SystemRole.ADMIN,
         },
         {
           id: viewerId,
@@ -113,6 +115,8 @@ describeWithDatabase('NodesService integration', () => {
     await prisma.file.deleteMany({ where: { id: { in: [...fileIds] } } });
     await prisma.auditLog.deleteMany({ where: { resourceId: { in: ids } } });
     await prisma.permissionEntry.deleteMany({ where: { nodeId: { in: ids } } });
+    await prisma.groupMember.deleteMany({ where: { groupId: { in: [...groupIds] } } });
+    await prisma.group.deleteMany({ where: { id: { in: [...groupIds] } } });
     const hierarchy = await prisma.node.findMany({
       where: { id: { in: ids } },
       select: { id: true, parentId: true },
@@ -138,34 +142,24 @@ describeWithDatabase('NodesService integration', () => {
     await prisma.$disconnect();
   });
 
-  it('allows any active user to create a root folder with viewer general access, owner ACL, and audit atomically', async () => {
-    const memberCreated = await nodes.createFolder(memberId, {
-      name: `Member root ${suffix}`,
+  it('allows only active administrators to create a root folder with viewer general access, owner ACL, and audit atomically', async () => {
+    await expect(
+      nodes.createFolder(memberId, { name: `Member root ${suffix}` }),
+    ).rejects.toMatchObject({ status: 403 });
+
+    const created = await nodes.createFolder(adminId, {
+      name: `Created root ${suffix}`,
     });
-    nodeIds.add(memberCreated.id);
+    nodeIds.add(created.id);
     await expect(
       prisma.node.findUniqueOrThrow({
-        where: { id: memberCreated.id },
+        where: { id: created.id },
         select: { parentId: true, generalAccessRole: true },
       }),
     ).resolves.toEqual({
       parentId: null,
       generalAccessRole: GeneralAccessRole.VIEWER,
     });
-    await expect(
-      prisma.permissionEntry.findFirstOrThrow({
-        where: {
-          nodeId: memberCreated.id,
-          userId: memberId,
-          role: DocumentRole.OWNER,
-        },
-      }),
-    ).resolves.toBeTruthy();
-
-    const created = await nodes.createFolder(adminId, {
-      name: `Created root ${suffix}`,
-    });
-    nodeIds.add(created.id);
     expect(created.capabilities).toContain(
       DocumentCapability.MANAGE_PERMISSION,
     );
@@ -226,9 +220,10 @@ describeWithDatabase('NodesService integration', () => {
     ).rejects.toMatchObject({ status: 409 });
   });
 
-  it('enforces ACL-only root and child visibility with stable cursor pagination', async () => {
-    await expect(nodes.getNode(adminId, hiddenRootId)).rejects.toMatchObject({
-      status: 404,
+  it('shows every live root and child to active accounts with stable cursor pagination', async () => {
+    await expect(nodes.getNode(memberId, hiddenRootId)).resolves.toMatchObject({
+      id: hiddenRootId,
+      capabilities: expect.arrayContaining([DocumentCapability.VIEW]),
     });
     const rootPage = await nodes.listRoot(editorId, { limit: 1 });
     expect(rootPage.items).toHaveLength(1);
@@ -274,7 +269,7 @@ describeWithDatabase('NodesService integration', () => {
     });
     const children = await nodes.listChildren(editorId, rootId, { limit: 100 });
     expect(children.items.map((node) => node.id)).toContain(childId);
-    expect(children.items.map((node) => node.id)).not.toContain(hiddenChild.id);
+    expect(children.items.map((node) => node.id)).toContain(hiddenChild.id);
     expect(children.items.map((node) => node.id)).toContain(visibleChild.id);
     await expect(
       nodes.listRoot(editorId, { cursor: 'not-a-cursor' }),
@@ -535,8 +530,8 @@ describeWithDatabase('NodesService integration', () => {
     const rootIds = rootPage.items.map((node) => node.id);
     expect(rootIds).toContain(direct.id);
     expect(rootIds).toContain(general.id);
-    expect(rootIds).not.toContain(restricted.id);
-    expect(rootIds).not.toContain(nestedRestricted.id);
+    expect(rootIds).toContain(restricted.id);
+    expect(rootIds).toContain(nestedRestricted.id);
     expect(rootIds).toContain(nestedViewer.id);
 
     await expect(nodes.getNode(memberId, direct.id)).resolves.toMatchObject({
@@ -561,7 +556,159 @@ describeWithDatabase('NodesService integration', () => {
     ).toContain(restricted.id);
   });
 
-  it('returns only the accessible breadcrumb suffix', async () => {
+  it('lists direct visible folders and files for the sidebar tree in deterministic order', async () => {
+    const treeRoot = await nodes.createFolder(adminId, {
+      name: `tree-root-${suffix}`,
+    });
+    nodeIds.add(treeRoot.id);
+    const rootFile = await prisma.node.create({
+      data: {
+        parentId: null,
+        type: NodeType.FILE,
+        name: `tree-root-file-${suffix}`,
+        normalizedName: `tree-root-file-${suffix}`,
+        inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.VIEWER,
+        createdById: adminId,
+      },
+    });
+    nodeIds.add(rootFile.id);
+
+    const alphaFolder = await nodes.createFolder(adminId, {
+      name: 'alpha-folder',
+      parentId: treeRoot.id,
+    });
+    const zetaFolder = await nodes.createFolder(adminId, {
+      name: 'zeta-folder',
+      parentId: treeRoot.id,
+    });
+    nodeIds.add(alphaFolder.id);
+    nodeIds.add(zetaFolder.id);
+    const inheritedFile = await prisma.node.create({
+      data: {
+        parentId: treeRoot.id,
+        type: NodeType.FILE,
+        name: 'alpha-file',
+        normalizedName: 'alpha-file',
+        createdById: adminId,
+      },
+    });
+    const nestedFile = await prisma.node.create({
+      data: {
+        parentId: alphaFolder.id,
+        type: NodeType.FILE,
+        name: 'nested-file',
+        normalizedName: 'nested-file',
+        createdById: adminId,
+      },
+    });
+    const hiddenFolder = await prisma.node.create({
+      data: {
+        parentId: treeRoot.id,
+        type: NodeType.FOLDER,
+        name: 'hidden-folder',
+        normalizedName: 'hidden-folder',
+        inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
+        createdById: adminId,
+      },
+    });
+    const hiddenFile = await prisma.node.create({
+      data: {
+        parentId: treeRoot.id,
+        type: NodeType.FILE,
+        name: 'hidden-file',
+        normalizedName: 'hidden-file',
+        inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
+        createdById: adminId,
+      },
+    });
+    const trashedFile = await prisma.node.create({
+      data: {
+        parentId: treeRoot.id,
+        type: NodeType.FILE,
+        name: 'trashed-file',
+        normalizedName: 'trashed-file',
+        createdById: adminId,
+      },
+    });
+    for (const node of [inheritedFile, nestedFile, hiddenFolder, hiddenFile, trashedFile]) {
+      nodeIds.add(node.id);
+    }
+    const trashOperation = await prisma.trashOperation.create({
+      data: { expiresAt: new Date(Date.now() + 60_000) },
+    });
+    trashOperationIds.add(trashOperation.id);
+    await prisma.node.update({
+      where: { id: trashedFile.id },
+      data: { trashOperationId: trashOperation.id },
+    });
+
+    const group = await prisma.group.create({
+      data: {
+        name: `tree group ${suffix}`,
+        normalizedName: `tree-group-${suffix}`,
+        createdById: adminId,
+      },
+    });
+    groupIds.add(group.id);
+    await prisma.groupMember.create({
+      data: { groupId: group.id, userId: viewerId, addedById: adminId },
+    });
+    const groupFile = await prisma.node.create({
+      data: {
+        parentId: treeRoot.id,
+        type: NodeType.FILE,
+        name: 'group-file',
+        normalizedName: 'group-file',
+        inheritPermissions: false,
+        generalAccessRole: GeneralAccessRole.RESTRICTED,
+        createdById: adminId,
+      },
+    });
+    nodeIds.add(groupFile.id);
+    await prisma.permissionEntry.create({
+      data: { nodeId: groupFile.id, groupId: group.id, role: DocumentRole.VIEWER },
+    });
+
+    const rootTree = await nodes.listNodeTree(viewerId, null);
+    expect(rootTree.items.map((item) => item.id)).toEqual(
+      expect.arrayContaining([treeRoot.id, rootFile.id]),
+    );
+
+    const tree = await nodes.listNodeTree(viewerId, treeRoot.id);
+    expect(tree.items.map((item) => `${item.type}:${item.name}`)).toEqual([
+      'FOLDER:alpha-folder',
+      'FOLDER:hidden-folder',
+      'FOLDER:zeta-folder',
+      'FILE:alpha-file',
+      'FILE:group-file',
+      'FILE:hidden-file',
+    ]);
+    const treeIds = tree.items.map((item) => item.id);
+    expect(treeIds).toContain(hiddenFolder.id);
+    expect(treeIds).toContain(hiddenFile.id);
+    expect(treeIds).not.toContain(trashedFile.id);
+    expect(treeIds).not.toContain(nestedFile.id);
+    expect(tree.items[0]).toEqual({
+      id: alphaFolder.id,
+      parentId: treeRoot.id,
+      name: alphaFolder.name,
+      type: NodeType.FOLDER,
+    });
+
+    await expect(nodes.listNodeTree(viewerId, alphaFolder.id)).resolves.toEqual({
+      items: [{
+        id: nestedFile.id,
+        parentId: alphaFolder.id,
+        name: nestedFile.name,
+        type: NodeType.FILE,
+      }],
+    });
+  });
+
+  it('returns the full breadcrumb for an active account', async () => {
     const secret = await prisma.node.create({
       data: {
         parentId: rootId,
@@ -578,8 +725,11 @@ describeWithDatabase('NodesService integration', () => {
     });
     const breadcrumb = await nodes.breadcrumb(viewerId, secret.id);
     expect(breadcrumb).toEqual({
-      items: [{ id: secret.id, name: secret.name, type: NodeType.FILE }],
-      truncated: true,
+      items: [
+        { id: rootId, name: `Root ${suffix}`, type: NodeType.FOLDER },
+        { id: secret.id, name: secret.name, type: NodeType.FILE },
+      ],
+      truncated: false,
     });
   });
 
@@ -644,7 +794,7 @@ describeWithDatabase('NodesService integration', () => {
     ).resolves.toBeTruthy();
 
     await expect(
-      nodes.moveNode(editorId, childId, { parentId: null }),
+      nodes.moveNode(memberId, childId, { parentId: null }),
     ).rejects.toMatchObject({
       status: 403,
     });

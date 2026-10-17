@@ -43,12 +43,12 @@ withDatabase('preview HTTP integration', () => {
     const content = await request(app.getHttpServer()).get(created.body.contentUrl).set('Cookie', cookie).buffer(true).parse((res, done) => { const parts: Buffer[] = []; res.on('data', (p) => parts.push(p)); res.on('end', () => done(null, Buffer.concat(parts))); }).expect(200); expect(content.body).toEqual(bytes); expect(content.headers['content-type']).toMatch(/^application\/pdf/); expect(content.headers['content-disposition']).toMatch(/^inline/); expect(content.headers['x-frame-options']).toBeUndefined(); expect(content.headers['content-security-policy']).toContain("frame-ancestors 'self'"); expect(content.headers['x-content-type-options']).toBe('nosniff');
     const range = await request(app.getHttpServer()).get(created.body.contentUrl).set('Cookie', cookie).set('Range', 'bytes=0-6').buffer(true).parse((res, done) => { const parts: Buffer[] = []; res.on('data', (p) => parts.push(p)); res.on('end', () => done(null, Buffer.concat(parts))); }).expect(206); expect(range.body).toEqual(bytes.subarray(0, 7)); expect(range.headers['content-range']).toBe(`bytes 0-6/${bytes.length}`);
   });
-  it('allows a normal Viewer and denies users and system administrators without document ACL', async () => {
+  it('allows every active account to preview regardless of document ACL', async () => {
     const node = await request(app.getHttpServer()).get(`/nodes/${nodeId}`).set('Authorization', `Bearer ${viewerAccessToken}`).expect(200);
     expect(node.body.capabilities).toEqual(expect.arrayContaining(['VIEW', 'PREVIEW', 'DOWNLOAD']));
     await request(app.getHttpServer()).post(`/nodes/${nodeId}/preview-session`).set('Authorization', `Bearer ${viewerAccessToken}`).expect(201);
-    await request(app.getHttpServer()).post(`/nodes/${nodeId}/preview-session`).set('Authorization', `Bearer ${deniedAccessToken}`).expect(404);
-    await request(app.getHttpServer()).post(`/nodes/${nodeId}/preview-session`).set('Authorization', `Bearer ${adminAccessToken}`).expect(404);
+    await request(app.getHttpServer()).post(`/nodes/${nodeId}/preview-session`).set('Authorization', `Bearer ${deniedAccessToken}`).expect(201);
+    await request(app.getHttpServer()).post(`/nodes/${nodeId}/preview-session`).set('Authorization', `Bearer ${adminAccessToken}`).expect(201);
   });
   it('rejects invalid and expired preview capabilities', async () => {
     await request(app.getHttpServer()).get('/preview/not-a-session/content').expect(401);

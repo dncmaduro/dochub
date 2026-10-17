@@ -1,7 +1,9 @@
 import {
   type ChangeEvent,
+  type CSSProperties,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -19,6 +21,7 @@ import {
   type DriveIntegration,
   type DriveFile,
   type FolderTreeItem,
+  type NodeTreeItem,
   type Breadcrumb,
   type AdminGroup,
   type AdminUser,
@@ -99,6 +102,44 @@ function currentFolderId() {
 type DriveSort = { by: NodeSortBy; direction: NodeSortDirection };
 type ViewMode = "list" | "grid";
 const defaultDriveSort: DriveSort = { by: "name", direction: "asc" };
+const SIDEBAR_WIDTH_STORAGE_KEY = "dochub.sidebar-width";
+const DEFAULT_SIDEBAR_WIDTH = 216;
+const MIN_SIDEBAR_WIDTH = 180;
+const MAX_SIDEBAR_WIDTH = 440;
+
+function sidebarWidthBounds() {
+  const viewportMaximum = window.innerWidth - 280;
+  return {
+    min: MIN_SIDEBAR_WIDTH,
+    max: Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, viewportMaximum)),
+  };
+}
+
+function clampSidebarWidth(width: number) {
+  const { min, max } = sidebarWidthBounds();
+  return Math.min(max, Math.max(min, width));
+}
+
+function readSidebarWidth() {
+  try {
+    const value = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    if (value === null) return clampSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+    const width = Number(value);
+    return Number.isFinite(width)
+      ? clampSidebarWidth(width)
+      : clampSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+  } catch {
+    return clampSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+  }
+}
+
+function persistSidebarWidth(width: number) {
+  try {
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    // Sidebar width is a local preference and must not interrupt browsing.
+  }
+}
 
 function readViewMode(key: string): ViewMode {
   try {
@@ -114,11 +155,6 @@ function persistViewMode(key: string, value: ViewMode) {
   } catch {
     // View preference is optional and should not interrupt browsing.
   }
-}
-
-function hasDriveSortQuery() {
-  const parameters = new URLSearchParams(window.location.search);
-  return parameters.has("sortBy") || parameters.has("sortDirection");
 }
 
 function currentDriveSort(): DriveSort {
@@ -145,6 +181,13 @@ function drivePath(folderId: string | null, sort: DriveSort) {
   }
   const pathname = folderId ? `/drive/${folderId}` : "/drive";
   return parameters.size ? `${pathname}?${parameters}` : pathname;
+}
+
+function nextDriveSort(sort: DriveSort, by: NodeSortBy): DriveSort {
+  if (sort.by === by) {
+    return { by, direction: sort.direction === "asc" ? "desc" : "asc" };
+  }
+  return { by, direction: by === "lastModified" ? "desc" : "asc" };
 }
 function currentRoute() {
   if (/^\/document\/[0-9a-f-]+$/i.test(window.location.pathname)) return "legacyDocument";
@@ -345,11 +388,6 @@ function formatLastModified(value: string) {
 }
 function actorLabel(actor: FileVersion["actor"]) {
   if (actor.displayName?.trim()) return actor.displayName;
-  return t(`actors.${actor.type}`);
-}
-function driveActorLabel(actor: FileVersion["actor"]) {
-  if (actor.displayName?.trim()) return actor.displayName;
-  if (actor.type === "USER") return t("actors.UNKNOWN");
   return t(`actors.${actor.type}`);
 }
 function formatBytes(value: string | null) {
@@ -586,6 +624,9 @@ function App() {
   const [uploadingFromMenu, setUploadingFromMenu] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [creationNotice, setCreationNotice] = useState<Notice>(null);
+  const [sidebarPreview, setSidebarPreview] = useState<Preview | null>(null);
+  const [sidebarTrashNode, setSidebarTrashNode] = useState<NodeTreeItem | null>(null);
+  const sidebarPreviewActivation = useRef(0);
   const menuUploadInput = useRef<HTMLInputElement>(null);
   const creationParentId = location.route === "drive" ? currentFolderId() : null;
   const [folderCreateCapability, setFolderCreateCapability] = useState<{ folderId: string; canCreate: boolean } | null>(null);
@@ -734,6 +775,42 @@ function App() {
   function openUploadPicker() {
     if (!uploadingFromMenu) menuUploadInput.current?.click();
   }
+  async function openSidebarFile(item: NodeTreeItem) {
+    const activation = ++sidebarPreviewActivation.current;
+    try {
+      const node = await api.getNode(item.id);
+      if (activation !== sidebarPreviewActivation.current) return;
+      await openFileActivation(
+        node,
+        (nextPreview) => {
+          if (activation === sidebarPreviewActivation.current) {
+            setSidebarPreview(nextPreview);
+          }
+        },
+        (notice) => {
+          if (activation === sidebarPreviewActivation.current) {
+            setCreationNotice(notice);
+          }
+        },
+      );
+    } catch (error) {
+      if (activation === sidebarPreviewActivation.current) {
+        setCreationNotice({ tone: "error", message: displayError(error) });
+      }
+    }
+  }
+  function closeSidebarPreview() {
+    sidebarPreviewActivation.current += 1;
+    setSidebarPreview(null);
+  }
+  async function moveSidebarFolderToTrash(item: NodeTreeItem) {
+    await api.moveToTrash(item.id);
+    window.dispatchEvent(new CustomEvent("nodes-changed", {
+      detail: { parentId: item.parentId, nodeId: item.id },
+    }));
+    if (currentFolderId() === item.id) navigate(item.parentId);
+    setCreationNotice({ tone: "success", message: t("files.movedToTrash", { name: item.name }) });
+  }
   async function signOut() {
     const userId = profile?.id;
     try {
@@ -781,10 +858,30 @@ function App() {
         activeFolderId={location.route === "drive" ? creationParentId : null}
         onOpenDriveImport={() => setDriveImportOpen(true)}
         onOpenCreateNew={() => setCreateNewOpen(true)}
+        onOpenFile={openSidebarFile}
+        onTrashFolder={setSidebarTrashNode}
         onSignOut={() => void signOut()}
       >
         {page}
       </AppShell>
+      {sidebarPreview && (
+        <PreviewDialog
+          key={previewIsUnavailable(sidebarPreview) ? `unavailable-${sidebarPreview.nodeId}` : previewIsLoading(sidebarPreview) ? `loading-${sidebarPreview.nodeId}` : sidebarPreview.sessionId}
+          preview={sidebarPreview}
+          onClose={closeSidebarPreview}
+          onDownload={() => downloadPreview(sidebarPreview)}
+        />
+      )}
+      {sidebarTrashNode && (
+        <ConfirmDialog
+          title={t("files.moveFolderToTrashTitle")}
+          message={t("files.moveFolderToTrashConfirm", { name: sidebarTrashNode.name })}
+          action={t("files.moveToTrash")}
+          onClose={() => setSidebarTrashNode(null)}
+          onConfirm={() => moveSidebarFolderToTrash(sidebarTrashNode)}
+          onNotice={setCreationNotice}
+        />
+      )}
       <UploadPicker
         inputRef={menuUploadInput}
         onChange={(event) => void uploadFromMenu(event)}
@@ -1576,6 +1673,8 @@ function AppShell({
   activeFolderId,
   onOpenDriveImport,
   onOpenCreateNew,
+  onOpenFile,
+  onTrashFolder,
   onSignOut,
   children,
 }: {
@@ -1586,10 +1685,72 @@ function AppShell({
   activeFolderId: string | null;
   onOpenDriveImport: () => void;
   onOpenCreateNew: () => void;
+  onOpenFile: (item: NodeTreeItem) => void;
+  onTrashFolder: (item: NodeTreeItem) => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
-  return <div className="app-shell">
+  const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
+  const sidebarWidthRef = useRef(sidebarWidth);
+  const resize = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const resizeListeners = useRef<{
+    onPointerMove: (event: PointerEvent) => void;
+    onPointerUp: (event: PointerEvent) => void;
+  } | null>(null);
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+  const stopResizing = useCallback(() => {
+    if (!resize.current) return;
+    resize.current = null;
+    const listeners = resizeListeners.current;
+    if (listeners) {
+      window.removeEventListener("pointermove", listeners.onPointerMove);
+      window.removeEventListener("pointerup", listeners.onPointerUp);
+      window.removeEventListener("pointercancel", listeners.onPointerUp);
+      resizeListeners.current = null;
+    }
+    document.body.classList.remove("is-resizing-sidebar");
+    persistSidebarWidth(sidebarWidthRef.current);
+  }, []);
+  useEffect(() => {
+    const onResize = () => {
+      setSidebarWidth((current) => {
+        const next = clampSidebarWidth(current);
+        sidebarWidthRef.current = next;
+        return next;
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  useEffect(() => () => stopResizing(), [stopResizing]);
+  function startResizing(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    resize.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidthRef.current,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    document.body.classList.add("is-resizing-sidebar");
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const current = resize.current;
+      if (!current || current.pointerId !== moveEvent.pointerId) return;
+      const next = clampSidebarWidth(current.startWidth + moveEvent.clientX - current.startX);
+      sidebarWidthRef.current = next;
+      setSidebarWidth(next);
+    };
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (resize.current?.pointerId === upEvent.pointerId) stopResizing();
+    };
+    resizeListeners.current = { onPointerMove, onPointerUp };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+  }
+  const sidebarBounds = sidebarWidthBounds();
+  return <div className="app-shell" style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
     <Sidebar
       active={active}
       profile={profile}
@@ -1598,7 +1759,12 @@ function AppShell({
       activeFolderId={activeFolderId}
       onOpenDriveImport={onOpenDriveImport}
       onOpenCreateNew={onOpenCreateNew}
+      onOpenFile={onOpenFile}
+      onTrashFolder={onTrashFolder}
       onSignOut={onSignOut}
+      sidebarWidth={sidebarWidth}
+      sidebarMaxWidth={sidebarBounds.max}
+      onResizeStart={startResizing}
     />
     <main className="drive-main"><div className="page-scroll">{children}</div></main>
   </div>;
@@ -1612,7 +1778,12 @@ function Sidebar({
   activeFolderId,
   onOpenDriveImport,
   onOpenCreateNew,
+  onOpenFile,
+  onTrashFolder,
   onSignOut,
+  sidebarWidth,
+  sidebarMaxWidth,
+  onResizeStart,
 }: {
   active: SidebarRoute;
   profile: CurrentUser;
@@ -1621,7 +1792,12 @@ function Sidebar({
   activeFolderId: string | null;
   onOpenDriveImport: () => void;
   onOpenCreateNew: () => void;
+  onOpenFile: (item: NodeTreeItem) => void;
+  onTrashFolder: (item: NodeTreeItem) => void;
   onSignOut: () => void;
+  sidebarWidth: number;
+  sidebarMaxWidth: number;
+  onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const canAdmin = profile.status === "ACTIVE" && canAdministerAccounts(profile.systemRole);
   return (
@@ -1675,15 +1851,35 @@ function Sidebar({
           <button className={`nav-item${active === "admin" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin()}><Icon name="settings" /><span>{t("nav.admin")}</span></button>
           <div className="sidebar-divider sidebar-divider-after-admin" />
         </>}
-        <FolderTree activeFolderId={activeFolderId} />
+        <FolderTree activeFolderId={activeFolderId} onOpenFile={onOpenFile} canManageDocuments={canManageDocuments} onTrashFolder={onTrashFolder} />
       </nav>
       <AccountMenu profile={profile} onSignOut={onSignOut} />
+      <div
+        className="sidebar-resize-handle"
+        role="separator"
+        aria-label="Resize sidebar"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_SIDEBAR_WIDTH}
+        aria-valuemax={sidebarMaxWidth}
+        aria-valuenow={sidebarWidth}
+        onPointerDown={onResizeStart}
+      />
     </aside>
   );
 }
 
-function FolderTree({ activeFolderId }: { activeFolderId: string | null }) {
-  return <DocsHubFolderTree activeFolderId={activeFolderId} onNavigate={navigate} />;
+function FolderTree({
+  activeFolderId,
+  onOpenFile,
+  canManageDocuments,
+  onTrashFolder,
+}: {
+  activeFolderId: string | null;
+  onOpenFile: (item: NodeTreeItem) => void;
+  canManageDocuments: boolean;
+  onTrashFolder: (item: NodeTreeItem) => void;
+}) {
+  return <DocsHubNodeTree activeFolderId={activeFolderId} onNavigate={navigate} onOpenFile={onOpenFile} canManageDocuments={canManageDocuments} onTrashFolder={onTrashFolder} />;
 }
 
 function DocsHubFolderTree({
@@ -1699,11 +1895,71 @@ function DocsHubFolderTree({
   onSelect?: (folderId: string | null) => void;
   showRoot?: boolean;
 }) {
+  return <DocsHubTree
+    activeFolderId={activeFolderId}
+    selectedFolderId={selectedFolderId}
+    onNavigate={onNavigate}
+    onSelect={onSelect}
+    showRoot={showRoot}
+  />;
+}
+
+function DocsHubNodeTree({
+  activeFolderId,
+  onNavigate,
+  onOpenFile,
+  canManageDocuments,
+  onTrashFolder,
+}: {
+  activeFolderId?: string | null;
+  onNavigate?: (folderId: string) => void;
+  onOpenFile: (item: NodeTreeItem) => void;
+  canManageDocuments?: boolean;
+  onTrashFolder?: (item: NodeTreeItem) => void;
+}) {
+  return <DocsHubTree
+    activeFolderId={activeFolderId}
+    onNavigate={onNavigate}
+    onOpenFile={onOpenFile}
+    canManageDocuments={canManageDocuments}
+    onTrashFolder={onTrashFolder}
+    includeFiles
+  />;
+}
+
+type DocsHubTreeItem = FolderTreeItem | NodeTreeItem;
+
+function isFolderTreeItem(item: DocsHubTreeItem) {
+  return !("type" in item) || item.type === "FOLDER";
+}
+
+function DocsHubTree({
+  activeFolderId,
+  selectedFolderId,
+  onNavigate,
+  onSelect,
+  onOpenFile,
+  canManageDocuments = false,
+  onTrashFolder,
+  showRoot = false,
+  includeFiles = false,
+}: {
+  activeFolderId?: string | null;
+  selectedFolderId?: string | null;
+  onNavigate?: (folderId: string) => void;
+  onSelect?: (folderId: string | null) => void;
+  onOpenFile?: (item: NodeTreeItem) => void;
+  canManageDocuments?: boolean;
+  onTrashFolder?: (item: NodeTreeItem) => void;
+  showRoot?: boolean;
+  includeFiles?: boolean;
+}) {
   const rootKey = "__root__";
-  const [children, setChildren] = useState<Record<string, FolderTreeItem[]>>({});
+  const [children, setChildren] = useState<Record<string, DocsHubTreeItem[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(showRoot ? [rootKey] : []));
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, boolean>>({});
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const childrenRef = useRef(children);
   useEffect(() => {
     childrenRef.current = children;
@@ -1719,7 +1975,9 @@ function DocsHubFolderTree({
       return next;
     });
     try {
-      const result = await api.listFolderTree(parentId);
+      const result = includeFiles
+        ? await api.listNodeTree(parentId)
+        : await api.listFolderTree(parentId);
       setChildren((current) => ({ ...current, [key]: result.items }));
     } catch {
       setErrors((current) => ({ ...current, [key]: true }));
@@ -1730,11 +1988,29 @@ function DocsHubFolderTree({
         return next;
       });
     }
-  }, []);
+  }, [includeFiles]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadChildren(null), 0);
     return () => window.clearTimeout(timer);
+  }, [loadChildren]);
+
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      const detail = (event as CustomEvent<{ parentId?: string | null; nodeId?: string }>).detail;
+      if (!detail || !Object.prototype.hasOwnProperty.call(detail, "parentId")) return;
+      const parentId = detail.parentId ?? null;
+      const parentKey = parentId ?? rootKey;
+      setChildren((current) => {
+        const next = { ...current };
+        delete next[parentKey];
+        if (detail.nodeId) delete next[detail.nodeId];
+        return next;
+      });
+      void loadChildren(parentId, true);
+    };
+    window.addEventListener("nodes-changed", refresh);
+    return () => window.removeEventListener("nodes-changed", refresh);
   }, [loadChildren]);
 
   useEffect(() => {
@@ -1756,7 +2032,8 @@ function DocsHubFolderTree({
     };
   }, [activeFolderId, loadChildren]);
 
-  function toggle(item: FolderTreeItem) {
+  function toggle(item: DocsHubTreeItem) {
+    if (!isFolderTreeItem(item)) return;
     const isOpen = expanded.has(item.id);
     setExpanded((current) => {
       const next = new Set(current);
@@ -1787,28 +2064,57 @@ function DocsHubFolderTree({
     const key = parentId ?? rootKey;
     const items = children[key] ?? [];
     return items.map((item) => {
-      const isOpen = expanded.has(item.id);
-      const isActive = activeFolderId === item.id;
+      const isFolder = isFolderTreeItem(item);
+      const isOpen = isFolder && expanded.has(item.id);
+      const isActive = isFolder && activeFolderId === item.id;
       const isSelected = selectedFolderId !== undefined && selectedFolderId === item.id;
       const isLoading = loading.has(item.id);
+      const menuOpen = openMenuId === item.id;
       return (
-        <li key={item.id} className="folder-tree-item" role="treeitem" aria-expanded={isOpen}>
+        <li key={item.id} className="folder-tree-item" role="treeitem" aria-expanded={isFolder ? isOpen : undefined}>
           <div className={`folder-tree-row${isActive ? " is-active" : ""}${isSelected ? " is-selected" : ""}`}>
+            {isFolder ? (
+              <button
+                type="button"
+                className={`folder-tree-toggle${isOpen ? " is-open" : ""}`}
+                aria-label={isOpen ? t("nav.collapseFolder", { name: item.name }) : t("nav.expandFolder", { name: item.name })}
+                onClick={() => toggle(item)}
+                disabled={isLoading}
+              >
+                <Icon name="chevron" size={13} />
+              </button>
+            ) : <span className="folder-tree-toggle folder-tree-file-spacer" aria-hidden="true" />}
             <button
               type="button"
-              className={`folder-tree-toggle${isOpen ? " is-open" : ""}`}
-              aria-label={isOpen ? t("nav.collapseFolder", { name: item.name }) : t("nav.expandFolder", { name: item.name })}
-              onClick={() => toggle(item)}
-              disabled={isLoading}
+              className="folder-tree-link"
+              aria-current={isActive ? "page" : undefined}
+              onClick={() => isFolder ? selectFolder(item.id) : onOpenFile?.(item as NodeTreeItem)}
             >
-              <Icon name="chevron" size={13} />
-            </button>
-            <button type="button" className="folder-tree-link" aria-current={isActive ? "page" : undefined} onClick={() => selectFolder(item.id)}>
-              <Icon name="folder" size={15} />
+              <Icon name={isFolder ? "folder" : "file"} size={15} />
               <span>{item.name}</span>
             </button>
+            {isFolder && canManageDocuments && onTrashFolder && (
+              <>
+                <button
+                  id={`folder-tree-menu-trigger-${item.id}`}
+                  type="button"
+                  className="icon-button folder-tree-actions"
+                  aria-label={t("files.fileActions", { name: item.name })}
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  onClick={() => setOpenMenuId((current) => current === item.id ? null : item.id)}
+                >
+                  <Icon name="more" size={15} />
+                </button>
+                {menuOpen && <RowMenu id={`folder-tree-menu-${item.id}`} triggerId={`folder-tree-menu-trigger-${item.id}`} onClose={() => setOpenMenuId(null)}>
+                  <button type="button" role="menuitem" className="menu-danger" onClick={() => { setOpenMenuId(null); onTrashFolder(item as NodeTreeItem); }}>
+                    <Icon name="trash" size={16} />{t("files.moveToTrash")}
+                  </button>
+                </RowMenu>}
+              </>
+            )}
           </div>
-          {isOpen && <ul role="group">
+          {isFolder && isOpen && <ul role="group">
             {loading.has(item.id) && !children[item.id] && <li className="folder-tree-state">{t("common.loading")}</li>}
             {errors[item.id] && <li className="folder-tree-state"><span>{t("errors.generic")}</span><button type="button" className="button" onClick={() => void loadChildren(item.id, true)}>{t("common.retry")}</button></li>}
             {renderItems(item.id)}
@@ -1820,10 +2126,11 @@ function DocsHubFolderTree({
 
   const rootOpen = expanded.has(rootKey);
   const rootSelected = selectedFolderId !== undefined && selectedFolderId === null;
+  const treeLabel = t(includeFiles ? "nav.docsHubTree" : "nav.docsHubFolders");
 
   return (
-    <section className="folder-tree" aria-label={t("nav.docsHubFolders")}>
-      {!showRoot && <div className="folder-tree-heading">{t("nav.docsHubFolders")}</div>}
+    <section className="folder-tree" aria-label={treeLabel}>
+      {!showRoot && <div className="folder-tree-heading">{treeLabel}</div>}
       <ul role="tree">
         {showRoot && <li className="folder-tree-item" role="treeitem" aria-expanded={rootOpen}>
           <div className={`folder-tree-row${rootSelected ? " is-selected" : ""}`}>
@@ -1961,7 +2268,6 @@ function DriveApp({
 }) {
   const [folderId, setFolderId] = useState(currentFolderId);
   const [sort, setSort] = useState<DriveSort>(currentDriveSort);
-  const [sortActivated, setSortActivated] = useState(hasDriveSortQuery);
   const [view, setView] = useState<ViewMode>(() => readViewMode("dochub.drive-view"));
   const [nodes, setNodes] = useState<Node[]>([]);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
@@ -2007,7 +2313,6 @@ function DriveApp({
     const onPopState = () => {
       setFolderId(currentFolderId());
       setSort(currentDriveSort());
-      setSortActivated(hasDriveSortQuery());
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -2051,7 +2356,6 @@ function DriveApp({
   }
   function changeSort(next: DriveSort) {
     setSort(next);
-    setSortActivated(true);
     const path = drivePath(folderId, next);
     if (`${window.location.pathname}${window.location.search}` !== path) {
       window.history.pushState({}, "", path);
@@ -2112,7 +2416,7 @@ function DriveApp({
     <>
         <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />} searchQuery="">
             <ViewToggle value={view} onChange={changeView} label={t("drive.viewMode")} />
-            {view === "grid" && <SortControls sort={sort} onChange={changeSort} />}
+            <SortControls sort={sort} onChange={changeSort} />
             <button
               type="button"
               className="icon-button"
@@ -2164,9 +2468,6 @@ function DriveApp({
               favoriteIds={favoriteIds}
               onFavorite={toggleFavorite}
               viewMode={view}
-              sort={sort}
-              onSortChange={changeSort}
-              sortActivated={sortActivated}
             />
           )}
         </section>
@@ -2188,8 +2489,8 @@ function DriveApp({
       )}
       {trashNode && (
         <ConfirmDialog
-          title={t("files.moveToTrash")}
-          message={t("files.moveToTrashConfirm", { name: trashNode.name })}
+          title={trashNode.type === "FOLDER" ? t("files.moveFolderToTrashTitle") : t("files.moveToTrash")}
+          message={trashNode.type === "FOLDER" ? t("files.moveFolderToTrashConfirm", { name: trashNode.name }) : t("files.moveToTrashConfirm", { name: trashNode.name })}
           action={t("files.moveToTrash")}
           onClose={() => setTrashNode(null)}
           onConfirm={() => moveToTrash(trashNode)}
@@ -2262,8 +2563,21 @@ function ViewToggle({ value, onChange, label }: { value: ViewMode; onChange: (va
 
 function SortControls({ sort, onChange }: { sort: DriveSort; onChange: (sort: DriveSort) => void }) {
   return <div className="sort-controls" role="group" aria-label={t("files.sortBy")}>
-    <button type="button" className={sort.by === "name" ? "is-active" : ""} onClick={() => onChange({ by: "name", direction: sort.by === "name" && sort.direction === "asc" ? "desc" : "asc" })}>{t("common.name")} {sort.by === "name" ? sort.direction === "asc" ? "↑" : "↓" : ""}</button>
-    <button type="button" className={sort.by === "lastModified" ? "is-active" : ""} onClick={() => onChange({ by: "lastModified", direction: sort.by === "lastModified" && sort.direction === "asc" ? "desc" : "desc" })}>{t("common.lastModified")} {sort.by === "lastModified" ? sort.direction === "asc" ? "↑" : "↓" : ""}</button>
+    {(["name", "lastModified"] as const).map((by) => {
+      const active = sort.by === by;
+      const next = nextDriveSort(sort, by);
+      const label = by === "name" ? t("common.name") : t("common.lastModified");
+      return <button
+        key={by}
+        type="button"
+        className={active ? "is-active" : ""}
+        aria-pressed={active}
+        aria-label={`${label}, ${t(next.direction === "asc" ? "common.sortAscending" : "common.sortDescending")}`}
+        onClick={() => onChange(next)}
+      >
+        {label}{active ? ` ${sort.direction === "asc" ? "↑" : "↓"}` : ""}
+      </button>;
+    })}
   </div>;
 }
 
@@ -2283,9 +2597,6 @@ function FileList({
   viewMode = "list",
   dateLabel = t("common.lastModified"),
   showLastModified = true,
-  sort,
-  onSortChange,
-  sortActivated,
   canManageDocuments = false,
 }: {
   nodes: Node[];
@@ -2303,9 +2614,6 @@ function FileList({
   viewMode?: ViewMode;
   dateLabel?: string;
   showLastModified?: boolean;
-  sort?: DriveSort;
-  onSortChange?: (sort: DriveSort) => void;
-  sortActivated?: boolean;
   canManageDocuments?: boolean;
 }) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -2333,25 +2641,10 @@ function FileList({
       <table className={`file-table${showLastModified ? " with-last-modified" : ""}`}>
         <thead>
           <tr>
-            <SortableHeader
-              label={t("common.name")}
-              sortBy="name"
-              sort={showLastModified ? sort : undefined}
-              onSortChange={showLastModified ? onSortChange : undefined}
-              sortActivated={showLastModified ? sortActivated : undefined}
-            />
+            <th scope="col">{t("common.name")}</th>
             <th scope="col">{t("common.type")}</th>
             {showLastModified ? (
-              <>
-                <th scope="col">{t("common.modifiedBy")}</th>
-                <SortableHeader
-                  label={t("common.lastModified")}
-                  sortBy="lastModified"
-                  sort={sort}
-                  onSortChange={onSortChange}
-                  sortActivated={sortActivated}
-                />
-              </>
+              <th scope="col">{t("common.lastModified")}</th>
             ) : (
               <th scope="col">{dateLabel}</th>
             )}
@@ -2510,60 +2803,8 @@ function FileTile({
         {node.backing?.type === "GOOGLE_DRIVE" && canManageDocuments && onRemoveDrive && <button type="button" role="menuitem" className="menu-danger" onClick={() => { onCloseMenu(); onRemoveDrive(node); }}><Icon name="trash" size={16} />{t("drive.removeFromDocsHub")}</button>}
       </RowMenu>}
     </div>
-    <div className="file-tile-meta">{node.backing?.type === "GOOGLE_DRIVE" ? t("drive.modifiedByUnavailable") : driveActorLabel(node.lastModified.actor)}<span>{formatLastModified(node.lastModified.at)}</span></div>
+    <div className="file-tile-meta"><span>{formatLastModified(node.lastModified.at)}</span></div>
   </article>;
-}
-
-function SortableHeader({
-  label,
-  sortBy,
-  sort,
-  onSortChange,
-  sortActivated = true,
-}: {
-  label: string;
-  sortBy: NodeSortBy;
-  sort?: DriveSort;
-  onSortChange?: (sort: DriveSort) => void;
-  sortActivated?: boolean;
-}) {
-  const active = sort?.by === sortBy;
-  const nextDirection: NodeSortDirection =
-    !sortActivated && sortBy === "name" && active && sort.direction === "asc"
-      ? "asc"
-      : active
-    ? sort.direction === "asc"
-      ? "desc"
-      : "asc"
-    : sortBy === "lastModified"
-      ? "desc"
-      : "asc";
-  const ariaSort = active
-    ? sort.direction === "asc"
-      ? "ascending"
-      : "descending"
-    : "none";
-  return (
-    <th scope="col" aria-sort={ariaSort}>
-      {sort && onSortChange ? (
-        <button
-          type="button"
-          className="sort-header"
-          aria-label={`${label}, ${t(nextDirection === "asc" ? "common.sortAscending" : "common.sortDescending")}`}
-          onClick={() => onSortChange({ by: sortBy, direction: nextDirection })}
-        >
-          <span>{label}</span>
-          {active && (
-            <span className="sort-direction" aria-hidden="true">
-              {sort.direction === "asc" ? "↑" : "↓"}
-            </span>
-          )}
-        </button>
-      ) : (
-        label
-      )}
-    </th>
-  );
 }
 function FileRow({
   node,
@@ -2604,9 +2845,6 @@ function FileRow({
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const isFolder = node.type === "FOLDER";
-  const modifiedBy = node.backing?.type === "GOOGLE_DRIVE"
-    ? t("drive.modifiedByUnavailable")
-    : driveActorLabel(node.lastModified.actor);
   const canOpen =
     canOpenNode(node);
   async function download() {
@@ -2631,12 +2869,7 @@ function FileRow({
       </td>
       <td>{node.backing?.type === "GOOGLE_DRIVE" ? driveTypeLabel(node.backing.normalizedType) : node.type === "FOLDER" ? driveTypeLabel("FOLDER") : "—"}</td>
       {showLastModified ? (
-        <>
-          <td className="modified-by" title={modifiedBy}>
-            <span className="modified-by-value">{modifiedBy}</span>
-          </td>
-          <td className="modified">{formatLastModified(node.lastModified.at)}</td>
-        </>
+        <td className="modified">{formatLastModified(node.lastModified.at)}</td>
       ) : (
         <td className="modified">{formatDate(node.updatedAt)}</td>
       )}
@@ -2771,16 +3004,23 @@ function FileRow({
 function RowMenu({
   id,
   trigger,
+  triggerId,
   onClose,
   children,
 }: {
   id: string;
-  trigger: RefObject<HTMLButtonElement | null>;
+  trigger?: RefObject<HTMLButtonElement | null>;
+  triggerId?: string;
   onClose: () => void;
   children: ReactNode;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ top: -9999, left: -9999 });
+  function anchor() {
+    return triggerId
+      ? document.getElementById(triggerId)
+      : trigger?.current ?? null;
+  }
   function moveMenuFocus(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     const items = Array.from(
@@ -2804,10 +3044,10 @@ function RowMenu({
   }
   useLayoutEffect(() => {
     const place = () => {
-      const anchor = trigger.current;
+      const triggerElement = anchor();
       const element = menu.current;
-      if (!anchor || !element) return;
-      const rect = anchor.getBoundingClientRect();
+      if (!triggerElement || !element) return;
+      const rect = triggerElement.getBoundingClientRect();
       const margin = 8;
       const gap = 6;
       const width = element.offsetWidth;
@@ -2826,7 +3066,7 @@ function RowMenu({
     place();
     const closeForViewportChange = () => {
       onClose();
-      trigger.current?.focus();
+      anchor()?.focus();
     };
     window.addEventListener("resize", closeForViewportChange);
     window.addEventListener("scroll", closeForViewportChange, true);
@@ -2834,7 +3074,10 @@ function RowMenu({
       window.removeEventListener("resize", closeForViewportChange);
       window.removeEventListener("scroll", closeForViewportChange, true);
     };
-  }, [onClose, trigger]);
+  // The anchor is a DOM lookup for the portal trigger and is intentionally not
+  // a reactive value.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onClose, trigger, triggerId]);
   useEffect(() => {
     const firstItem = menu.current?.querySelector<HTMLButtonElement>(
       '[role="menuitem"]:not(:disabled)',
@@ -2845,17 +3088,17 @@ function RowMenu({
     const dismiss = (event: PointerEvent) => {
       if (
         !menu.current?.contains(event.target as globalThis.Node) &&
-        !trigger.current?.contains(event.target as globalThis.Node)
+        !anchor()?.contains(event.target as globalThis.Node)
       ) {
         onClose();
-        trigger.current?.focus();
+        anchor()?.focus();
       }
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         onClose();
-        trigger.current?.focus();
+        anchor()?.focus();
       }
     };
     document.addEventListener("pointerdown", dismiss);
@@ -2864,16 +3107,18 @@ function RowMenu({
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("keydown", escape);
     };
-  }, [onClose, trigger]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onClose, trigger, triggerId]);
   useEffect(() => {
     const menuElement = menu.current;
-    const triggerElement = trigger.current;
+    const triggerElement = anchor();
     return () => {
       if (document.activeElement && menuElement?.contains(document.activeElement)) {
         triggerElement?.focus();
       }
     };
-  }, [trigger]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trigger, triggerId]);
   return createPortal(
     <div
       id={id}
@@ -3375,7 +3620,7 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
       <Toast notice={notice} onDismiss={() => setNotice(null)} />
       {renameNode && <NameDialog title={t("files.rename")} action={t("common.save")} initialValue={renameNode.name} onClose={() => setRenameNode(null)} onSubmit={(name) => rename(renameNode, name)} />}
       {shareNode && <ShareDialog node={shareNode} onClose={() => setShareNode(null)} onNotice={setNotice} />}
-      {trashNode && <ConfirmDialog title={t("files.moveToTrash")} message={t("files.moveToTrashConfirm", { name: trashNode.name })} action={t("files.moveToTrash")} onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
+      {trashNode && <ConfirmDialog title={trashNode.type === "FOLDER" ? t("files.moveFolderToTrashTitle") : t("files.moveToTrash")} message={trashNode.type === "FOLDER" ? t("files.moveFolderToTrashConfirm", { name: trashNode.name }) : t("files.moveToTrashConfirm", { name: trashNode.name })} action={t("files.moveToTrash")} onClose={() => setTrashNode(null)} onConfirm={() => moveToTrash(trashNode)} onNotice={setNotice} />}
       {versionNode && <VersionDialog node={versionNode} onClose={() => setVersionNode(null)} onNotice={setNotice} />}
       {preview && (
         <PreviewDialog

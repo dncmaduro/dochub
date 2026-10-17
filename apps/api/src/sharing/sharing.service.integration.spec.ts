@@ -55,7 +55,7 @@ describeWithDatabase('SharingService integration', () => {
   beforeAll(async () => {
     await prisma.user.createMany({
       data: [
-        { id: ownerId, email: `sharing-owner-${suffix}@example.test`, normalizedEmail: `sharing-owner-${suffix}@example.test`, displayName: 'Sharing owner', status: UserStatus.ACTIVE },
+        { id: ownerId, email: `sharing-owner-${suffix}@example.test`, normalizedEmail: `sharing-owner-${suffix}@example.test`, displayName: 'Sharing owner', status: UserStatus.ACTIVE, systemRole: SystemRole.ADMIN },
         { id: viewerId, email: `sharing-viewer-${suffix}@example.test`, normalizedEmail: `sharing-viewer-${suffix}@example.test`, displayName: 'Sharing viewer', status: UserStatus.ACTIVE },
         { id: invisibleId, email: `sharing-invisible-${suffix}@example.test`, normalizedEmail: `sharing-invisible-${suffix}@example.test`, displayName: 'Sharing invisible', status: UserStatus.ACTIVE },
         { id: adminId, email: `sharing-admin-${suffix}@example.test`, normalizedEmail: `sharing-admin-${suffix}@example.test`, displayName: 'Sharing administrator', status: UserStatus.ACTIVE, systemRole: SystemRole.ADMIN },
@@ -105,8 +105,14 @@ describeWithDatabase('SharingService integration', () => {
   });
 
   it('reports sharing state and enforces VIEW and SHARE authorization', async () => {
-    await expect(sharing.getState(invisibleId, nodeId)).rejects.toMatchObject({ status: 404 });
-    await expect(sharing.getState(adminId, nodeId)).rejects.toMatchObject({ status: 404 });
+    await expect(sharing.getState(invisibleId, nodeId)).resolves.toMatchObject({
+      nodeId,
+      canManageSharing: false,
+    });
+    await expect(sharing.getState(adminId, nodeId)).resolves.toMatchObject({
+      nodeId,
+      canManageSharing: true,
+    });
     await expect(sharing.getState(suspendedId, nodeId)).rejects.toMatchObject({ status: 404 });
     await expect(sharing.getState(viewerId, trashedNodeId)).rejects.toMatchObject({ status: 404 });
     await expect(sharing.getState(viewerId, nodeId)).resolves.toEqual({

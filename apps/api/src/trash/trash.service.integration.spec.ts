@@ -53,6 +53,7 @@ describeWithDatabase('TrashService integration', () => {
           normalizedEmail: `trash-${suffix}@example.test`,
           displayName: 'Trash owner',
           status: UserStatus.ACTIVE,
+          systemRole: SystemRole.ADMIN,
         },
         {
           id: viewerId,
@@ -263,7 +264,7 @@ describeWithDatabase('TrashService integration', () => {
       (await service.list(editorId)).items.some(
         (item) => item.trashOperationId === operation.operation.id,
       ),
-    ).toBe(true);
+    ).toBe(false);
     await expect(service.list(invisibleId)).resolves.toMatchObject({
       items: [],
     });
@@ -327,7 +328,7 @@ describeWithDatabase('TrashService integration', () => {
     expect(new Set(nodes.map((n) => n.trashOperationId))).toHaveLength(1);
   });
 
-  it('restores a root folder subtree, preserves its shape, and makes normal ACL resolution available again', async () => {
+  it('restores a root folder subtree, preserves its shape, and makes normal resolution available again', async () => {
     const a = await node(null, 'restore-a'),
       b = await node(a.id, 'restore-b'),
       c = await node(a.id, 'restore-c'),
@@ -543,7 +544,7 @@ describeWithDatabase('TrashService integration', () => {
     });
   });
 
-  it('enforces invisible, viewer, editor, administrator, and group-inherited ACLs', async () => {
+  it('allows only administrators to restore regardless of ACL metadata', async () => {
     const invisible = await node(null, 'restore-invisible');
     await prisma.permissionEntry.create({
       data: { nodeId: invisible.id, userId: actorId, role: DocumentRole.OWNER },
@@ -551,10 +552,7 @@ describeWithDatabase('TrashService integration', () => {
     const invisibleOperation = await service.trash(actorId, invisible.id);
     await expect(
       service.restore(invisibleId, invisibleOperation.operation.id),
-    ).rejects.toMatchObject({ status: 404 });
-    await expect(
-      service.restore(adminId, invisibleOperation.operation.id),
-    ).rejects.toMatchObject({ status: 404 });
+    ).rejects.toMatchObject({ status: 403 });
     await prisma.permissionEntry.create({
       data: {
         nodeId: invisible.id,
@@ -574,6 +572,9 @@ describeWithDatabase('TrashService integration', () => {
     });
     await expect(
       service.restore(editorId, invisibleOperation.operation.id),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      service.restore(adminId, invisibleOperation.operation.id),
     ).resolves.toMatchObject({ restoredNodeCount: 1 });
 
     const parent = await node(null, 'restore-group-parent'),
@@ -587,7 +588,7 @@ describeWithDatabase('TrashService integration', () => {
     ).resolves.toMatchObject({ restoredNodeCount: 1 });
   });
 
-  it('does not authorize the trashed-by user after its ACL is removed', async () => {
+  it('keeps an administrator authorized after its ACL is removed', async () => {
     const root = await node(null, 'restore-no-trashed-by-bypass');
     await prisma.permissionEntry.create({
       data: { nodeId: root.id, userId: actorId, role: DocumentRole.OWNER },
@@ -598,7 +599,7 @@ describeWithDatabase('TrashService integration', () => {
     });
     await expect(
       service.restore(actorId, operation.operation.id),
-    ).rejects.toMatchObject({ status: 404 });
+    ).resolves.toMatchObject({ restoredNodeCount: 1 });
   });
 
   it('allows exactly one concurrent restore and rejects repeated or non-active status restores', async () => {
@@ -820,7 +821,7 @@ describeWithDatabase('TrashService integration', () => {
     });
   });
 
-  it('does not authorize invisible, viewer, or ACL-less administrator purges or touch storage', async () => {
+  it('allows only administrators to purge and keeps denied attempts side-effect free', async () => {
     const root = await node(null, 'purge-authorization', NodeType.FILE);
     await file(root.id, 1);
     await prisma.permissionEntry.create({
@@ -830,14 +831,7 @@ describeWithDatabase('TrashService integration', () => {
     storage.delete.mockClear();
     await expect(
       service.purge(invisibleId, operation.operation.id),
-    ).rejects.toMatchObject({
-      status: 404,
-    });
-    await expect(
-      service.purge(adminId, operation.operation.id),
-    ).rejects.toMatchObject({
-      status: 404,
-    });
+    ).rejects.toMatchObject({ status: 403 });
     await prisma.permissionEntry.create({
       data: { nodeId: root.id, userId: viewerId, role: DocumentRole.VIEWER },
     });
@@ -852,6 +846,10 @@ describeWithDatabase('TrashService integration', () => {
         where: { id: operation.operation.id },
       }),
     ).toMatchObject({ status: TrashOperationStatus.ACTIVE });
+
+    await expect(
+      service.purge(adminId, operation.operation.id),
+    ).resolves.toMatchObject({ status: TrashOperationStatus.PURGED });
 
     const trashedByRoot = await node(
       null,
@@ -873,8 +871,7 @@ describeWithDatabase('TrashService integration', () => {
     storage.delete.mockClear();
     await expect(
       service.purge(actorId, trashedByOperation.operation.id),
-    ).rejects.toMatchObject({ status: 404 });
-    expect(storage.delete).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ status: TrashOperationStatus.PURGED });
   });
 
   it('serializes concurrent restore and purge into one coherent lifecycle outcome', async () => {

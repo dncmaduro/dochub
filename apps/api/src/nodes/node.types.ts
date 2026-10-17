@@ -44,3 +44,14 @@ export interface FolderTreeItem {
 export interface FolderTreeResponse {
   items: FolderTreeItem[];
 }
+
+export interface NodeTreeItem {
+  id: string;
+  parentId: string | null;
+  name: string;
+  type: NodeType;
+}
+
+export interface NodeTreeResponse {
+  items: NodeTreeItem[];
+}

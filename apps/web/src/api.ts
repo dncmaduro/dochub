@@ -471,6 +471,12 @@ export interface FolderTreeItem {
   parentId: string | null;
   name: string;
 }
+export interface NodeTreeItem {
+  id: string;
+  parentId: string | null;
+  name: string;
+  type: "FILE" | "FOLDER";
+}
 interface RefreshResponse {
   accessToken: string;
   systemRole: SystemRole;
@@ -625,6 +631,12 @@ export class ApiClient {
       ? `/folders/tree/${encodeURIComponent(parentId)}`
       : "/folders/tree/root";
     return this.request<{ items: FolderTreeItem[] }>(path, { signal });
+  }
+  async listNodeTree(parentId: string | null, signal?: AbortSignal) {
+    const path = parentId
+      ? `/nodes/tree/${encodeURIComponent(parentId)}`
+      : "/nodes/tree/root";
+    return this.request<{ items: NodeTreeItem[] }>(path, { signal });
   }
   async breadcrumb(nodeId: string, signal?: AbortSignal) {
     return (await this.breadcrumbPage(nodeId, signal)).items;

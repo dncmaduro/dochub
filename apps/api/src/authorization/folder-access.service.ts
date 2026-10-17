@@ -4,12 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  GeneralAccessRole,
-  NodeType,
-  Prisma,
-  UserStatus,
-} from '@dochub/database';
+import { NodeType, Prisma, UserStatus } from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
 import {
   DocumentAuthorizationService,
@@ -130,39 +125,19 @@ export class FolderAccessService {
 
   /**
    * Returns the database-level visibility predicate for children of a folder.
-   * Root has no parent capability to inherit, so its children must have their
-   * own effective VIEW through general access or an ACL.
+   * Active accounts can browse every live node; Trash remains hidden here.
    */
-  childVisibilityWhere(
-    folder: ResolvedFolder,
-    userId: string,
-    groupIds: readonly string[],
-  ): Prisma.NodeWhereInput {
-    const principals: Prisma.PermissionEntryWhereInput[] = [
-      { userId },
-      ...(groupIds.length > 0 ? [{ groupId: { in: [...groupIds] } }] : []),
-    ];
-    const directVisibility: Prisma.NodeWhereInput[] = [
-      {
-        generalAccessRole: {
-          in: [GeneralAccessRole.VIEWER, GeneralAccessRole.EDITOR],
-        },
-      },
-      { permissionEntries: { some: { OR: principals } } },
-    ];
-
+  childVisibilityWhere(folder: ResolvedFolder): Prisma.NodeWhereInput {
     if (folder.reference.kind === 'ROOT') {
       return {
         parentId: null,
         trashOperationId: null,
-        OR: directVisibility,
       };
     }
 
     return {
       parentId: folder.reference.nodeId,
       trashOperationId: null,
-      OR: [{ inheritPermissions: true }, ...directVisibility],
     };
   }
 

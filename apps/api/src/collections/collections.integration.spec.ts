@@ -75,34 +75,34 @@ withDb('CollectionsService integration', () => {
     expect((await collections.listRecent(otherId)).items.map((item) => item.id)).toEqual([first.id]);
   });
 
-  it('filters recent items after ACL removal and while trashed', async () => {
+  it('keeps recent items visible after ACL removal and hides them while trashed', async () => {
     const target = await node('recent-filter');
     await collections.recordRecent(actorId, target.id);
     await prisma.permissionEntry.deleteMany({ where: { nodeId: target.id, userId: actorId } });
-    expect((await collections.listRecent(actorId)).items.map((item) => item.id)).not.toContain(target.id);
+    expect((await collections.listRecent(actorId)).items.map((item) => item.id)).toContain(target.id);
     await prisma.permissionEntry.create({ data: { nodeId: target.id, userId: actorId, role: DocumentRole.VIEWER } });
     const operation = await prisma.trashOperation.create({ data: { rootNodeId: target.id, trashedById: actorId, expiresAt: new Date(Date.now() + 60_000) } });
     await prisma.node.update({ where: { id: target.id }, data: { trashOperationId: operation.id } });
     expect((await collections.listRecent(actorId)).items.map((item) => item.id)).not.toContain(target.id);
   });
 
-  it('adds and removes favorites idempotently without granting access', async () => {
+  it('adds and removes favorites idempotently for active accounts', async () => {
     const target = await node('favorite-target');
     await expect(collections.addFavorite(actorId, target.id)).resolves.toEqual({ nodeId: target.id, favorited: true });
     await collections.addFavorite(actorId, target.id);
     expect(await prisma.favorite.count({ where: { userId: actorId, nodeId: target.id } })).toBe(1);
     expect((await collections.listFavorites(actorId)).items.map((item) => item.id)).toContain(target.id);
-    await expect(collections.addFavorite(adminId, target.id)).rejects.toMatchObject({ status: 404 });
+    await expect(collections.addFavorite(adminId, target.id)).resolves.toEqual({ nodeId: target.id, favorited: true });
     await collections.removeFavorite(actorId, target.id);
     await collections.removeFavorite(actorId, target.id);
     expect(await prisma.favorite.count({ where: { userId: actorId, nodeId: target.id } })).toBe(0);
   });
 
-  it('filters favorites after ACL removal and relies on node cascade on permanent deletion', async () => {
+  it('keeps favorites after ACL removal and relies on node cascade on permanent deletion', async () => {
     const target = await node('favorite-filter');
     await collections.addFavorite(actorId, target.id);
     await prisma.permissionEntry.deleteMany({ where: { nodeId: target.id, userId: actorId } });
-    expect((await collections.listFavorites(actorId)).items.map((item) => item.id)).not.toContain(target.id);
+    expect((await collections.listFavorites(actorId)).items.map((item) => item.id)).toContain(target.id);
     await prisma.node.delete({ where: { id: target.id } });
     expect(await prisma.favorite.findUnique({ where: { userId_nodeId: { userId: actorId, nodeId: target.id } } })).toBeNull();
     nodeIds.splice(nodeIds.indexOf(target.id), 1);

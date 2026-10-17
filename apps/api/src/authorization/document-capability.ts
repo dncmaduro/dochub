@@ -36,6 +36,14 @@ const ownerCapabilities = Object.freeze([
   DocumentCapability.MANAGE_PERMISSION,
 ]);
 
+/** Capabilities granted to every active non-administrator account. */
+export const READ_DOCUMENT_CAPABILITIES = viewerCapabilities;
+
+/** Capabilities granted to every active administrator account. */
+export const ADMIN_DOCUMENT_CAPABILITIES = Object.freeze(
+  Object.values(DocumentCapability),
+);
+
 /** The single source of truth for document-role capabilities. */
 export const DOCUMENT_ROLE_CAPABILITIES: Readonly<
   Record<DocumentRole, readonly DocumentCapability[]>

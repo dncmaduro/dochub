@@ -1,136 +1,117 @@
 import { ForbiddenException } from '@nestjs/common';
-import { DocumentRole } from '@dochub/database';
+import { SystemRole, UserStatus } from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
-import { DocumentCapability } from './document-capability.js';
+import {
+  ADMIN_DOCUMENT_CAPABILITIES,
+  DocumentCapability,
+  READ_DOCUMENT_CAPABILITIES,
+} from './document-capability.js';
 import { DocumentAuthorizationService } from './document-authorization.service.js';
 
 const nodeId = 'a0000000-0000-4000-8000-000000000001';
 const parentId = 'a0000000-0000-4000-8000-000000000002';
 const userId = 'a0000000-0000-4000-8000-000000000003';
-const groupId = 'a0000000-0000-4000-8000-000000000004';
 
 function createService({
   nodeChain,
-  memberships = [{ userId, groupId }],
-  roles = [DocumentRole.VIEWER],
+  role = SystemRole.VIEWER,
+  status = UserStatus.ACTIVE,
 }: {
   nodeChain: object[];
-  memberships?: object[];
-  roles?: DocumentRole[];
+  role?: SystemRole;
+  status?: UserStatus;
 }) {
-  const queryRaw = vi
-    .fn()
-    .mockResolvedValueOnce(nodeChain)
-    .mockResolvedValueOnce(memberships);
-  const findMany = vi
-    .fn()
-    .mockResolvedValue(roles.map((role) => ({ nodeId, role })));
+  const queryRaw = vi.fn().mockResolvedValue(nodeChain);
+  const userFindUnique = vi.fn().mockResolvedValue({ status, systemRole: role });
+  const permissionFindMany = vi.fn();
   const database = {
-    prisma: { $queryRaw: queryRaw, permissionEntry: { findMany } },
+    prisma: {
+      $queryRaw: queryRaw,
+      user: { findUnique: userFindUnique },
+      permissionEntry: { findMany: permissionFindMany },
+    },
   } as unknown as DatabaseService;
 
   return {
     service: new DocumentAuthorizationService(database),
     queryRaw,
-    findMany,
+    userFindUnique,
+    permissionFindMany,
   };
 }
 
+const liveNode = {
+  id: nodeId,
+  parentId,
+  inheritPermissions: false,
+  generalAccessRole: 'EDITOR',
+  trashOperationId: null,
+  depth: 0,
+};
+
 describe('DocumentAuthorizationService', () => {
-  it('unions explicit user and group permissions across an inheritable chain', async () => {
-    const { service, queryRaw, findMany } = createService({
-      nodeChain: [
-        {
-          id: nodeId,
-          parentId,
-          inheritPermissions: true,
-          trashOperationId: null,
-          depth: 0,
-        },
-        {
-          id: parentId,
-          parentId: null,
-          inheritPermissions: true,
-          trashOperationId: null,
-          depth: 1,
-        },
-      ],
-      roles: [DocumentRole.VIEWER, DocumentRole.EDITOR],
+  it('grants every supported capability to an active administrator without ACL entries', async () => {
+    const { service, permissionFindMany } = createService({
+      nodeChain: [liveNode],
+      role: SystemRole.ADMIN,
     });
 
-    const resolved = await service.resolveCapabilities(userId, nodeId);
+    await expect(service.resolveCapabilities(userId, nodeId)).resolves.toEqual({
+      nodeId,
+      capabilities: new Set(ADMIN_DOCUMENT_CAPABILITIES),
+    });
+    expect(permissionFindMany).not.toHaveBeenCalled();
+  });
 
-    expect(resolved.capabilities).toEqual(
-      new Set([
-        DocumentCapability.VIEW,
-        DocumentCapability.PREVIEW,
-        DocumentCapability.DOWNLOAD,
-        DocumentCapability.CREATE,
-        DocumentCapability.EDIT,
-        DocumentCapability.RENAME,
-        DocumentCapability.MOVE,
-        DocumentCapability.DELETE,
-        DocumentCapability.RESTORE_VERSION,
-      ]),
-    );
-    expect(queryRaw).toHaveBeenCalledTimes(2);
-    expect(findMany).toHaveBeenCalledWith({
-      where: {
-        nodeId: { in: [nodeId, parentId] },
-        OR: [{ userId }, { groupId: { in: [groupId] } }],
-      },
-      select: { nodeId: true, role: true },
+  it('keeps active non-administrators read-only even with OWNER/EDITOR-style ACL data', async () => {
+    const { service, permissionFindMany } = createService({
+      nodeChain: [liveNode],
+      role: SystemRole.DOCUMENT_MANAGER,
+    });
+
+    await expect(service.resolveCapabilities(userId, nodeId)).resolves.toEqual({
+      nodeId,
+      capabilities: new Set(READ_DOCUMENT_CAPABILITIES),
+    });
+    await expect(
+      service.hasCapability(userId, nodeId, DocumentCapability.DELETE),
+    ).resolves.toBe(false);
+    expect(permissionFindMany).not.toHaveBeenCalled();
+  });
+
+  it('gives viewers the same read-only account policy', async () => {
+    const { service } = createService({ nodeChain: [liveNode] });
+    await expect(service.resolveCapabilities(userId, nodeId)).resolves.toEqual({
+      nodeId,
+      capabilities: new Set(READ_DOCUMENT_CAPABILITIES),
     });
   });
 
-  it('fails closed for a missing node, a trashed ancestor, or a missing user', async () => {
+  it('fails closed for missing nodes and inactive accounts', async () => {
     for (const scenario of [
-      { nodeChain: [], memberships: [] },
+      { nodeChain: [], role: SystemRole.ADMIN, status: UserStatus.ACTIVE },
       {
-        nodeChain: [
-          {
-            id: nodeId,
-            parentId: null,
-            inheritPermissions: true,
-            trashOperationId: 'a0000000-0000-4000-8000-000000000005',
-            depth: 0,
-          },
-        ],
-        memberships: [],
+        nodeChain: [{ ...liveNode, trashOperationId: 'a0000000-0000-4000-8000-000000000005' }],
+        role: SystemRole.ADMIN,
+        status: UserStatus.ACTIVE,
       },
-      {
-        nodeChain: [
-          {
-            id: nodeId,
-            parentId: null,
-            inheritPermissions: true,
-            trashOperationId: null,
-            depth: 0,
-          },
-        ],
-        memberships: [],
-      },
+      { nodeChain: [liveNode], role: SystemRole.ADMIN, status: UserStatus.SUSPENDED },
+      { nodeChain: [liveNode], role: SystemRole.ADMIN, status: UserStatus.INVITED },
+      { nodeChain: [liveNode], role: SystemRole.ADMIN, status: UserStatus.PENDING_APPROVAL },
     ]) {
-      const { service, findMany } = createService(scenario);
+      const { service } = createService(scenario);
       await expect(
         service.hasCapability(userId, nodeId, DocumentCapability.VIEW),
       ).resolves.toBe(false);
-      expect(findMany).not.toHaveBeenCalled();
     }
   });
 
-  it('keeps trashed nodes hidden normally while the lifecycle resolver retains their ACL', async () => {
+  it('keeps trashed nodes hidden normally while allowing an active administrator to resolve Trash capabilities', async () => {
     const trashedChain = [
-      {
-        id: nodeId,
-        parentId: null,
-        inheritPermissions: true,
-        trashOperationId: 'a0000000-0000-4000-8000-000000000005',
-        depth: 0,
-      },
+      { ...liveNode, trashOperationId: 'a0000000-0000-4000-8000-000000000005' },
     ];
-    const normal = createService({ nodeChain: trashedChain });
-    const lifecycle = createService({ nodeChain: trashedChain });
+    const normal = createService({ nodeChain: trashedChain, role: SystemRole.ADMIN });
+    const lifecycle = createService({ nodeChain: trashedChain, role: SystemRole.ADMIN });
 
     await expect(
       normal.service.hasCapability(userId, nodeId, DocumentCapability.VIEW),
@@ -139,51 +120,14 @@ describe('DocumentAuthorizationService', () => {
       lifecycle.service.resolveTrashCapabilities(userId, nodeId),
     ).resolves.toEqual({
       nodeId,
-      capabilities: new Set([
-        DocumentCapability.VIEW,
-        DocumentCapability.PREVIEW,
-        DocumentCapability.DOWNLOAD,
-      ]),
+      capabilities: new Set(ADMIN_DOCUMENT_CAPABILITIES),
     });
   });
 
-  it('does not grant a capability that no explicit permission grants', async () => {
-    const { service } = createService({
-      nodeChain: [
-        {
-          id: nodeId,
-          parentId: null,
-          inheritPermissions: false,
-          trashOperationId: null,
-          depth: 0,
-        },
-      ],
-      roles: [DocumentRole.VIEWER],
-    });
-
+  it('asserts mutations through the same effective capability boundary', async () => {
+    const { service } = createService({ nodeChain: [liveNode] });
     await expect(
       service.assertCapability(userId, nodeId, DocumentCapability.DELETE),
     ).rejects.toBeInstanceOf(ForbiddenException);
-  });
-
-  it('does not derive access from an administrator or node creator', async () => {
-    const { service } = createService({
-      nodeChain: [
-        {
-          id: nodeId,
-          parentId: null,
-          inheritPermissions: false,
-          trashOperationId: null,
-          depth: 0,
-          createdById: userId,
-        },
-      ],
-      memberships: [{ userId, groupId: null, systemRole: 'ADMIN' }],
-      roles: [],
-    });
-
-    await expect(
-      service.hasCapability(userId, nodeId, DocumentCapability.VIEW),
-    ).resolves.toBe(false);
   });
 });

@@ -5,7 +5,7 @@ export function canViewDocuments(role: SystemRole): boolean {
 }
 
 export function canManageDocuments(role: SystemRole): boolean {
-  return role === "ADMIN" || role === "DOCUMENT_MANAGER";
+  return role === "ADMIN";
 }
 
 export function canAdministerAccounts(role: SystemRole): boolean {

@@ -6,9 +6,7 @@ import { FolderAccessService } from './folder-access.service.js';
 function harness(role: SystemRole, status = UserStatus.ACTIVE) {
   const userFindUnique = vi.fn().mockResolvedValue({ status, systemRole: role });
   const authorization = {
-    hasDocumentManager: vi.fn().mockResolvedValue(
-      role === SystemRole.ADMIN || role === SystemRole.DOCUMENT_MANAGER,
-    ),
+    hasDocumentManager: vi.fn().mockResolvedValue(role === SystemRole.ADMIN),
     resolveCapabilities: vi.fn(),
   };
   const service = new FolderAccessService(
@@ -19,16 +17,13 @@ function harness(role: SystemRole, status = UserStatus.ACTIVE) {
 }
 
 describe('FolderAccessService account role boundary', () => {
-  it.each([SystemRole.ADMIN, SystemRole.DOCUMENT_MANAGER])(
-    'grants %s root placement access',
-    async (role) => {
-      const { service } = harness(role);
+  it('grants active administrators root placement access', async () => {
+      const { service } = harness(SystemRole.ADMIN);
       const folder = await service.requireCreate('user-id', null);
       expect(folder.capabilities).toEqual(
         new Set([DocumentCapability.VIEW, DocumentCapability.CREATE]),
       );
-    },
-  );
+    });
 
   it('lets an active viewer browse the virtual root but not create', async () => {
     const { service } = harness(SystemRole.VIEWER);

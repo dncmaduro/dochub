@@ -8,11 +8,15 @@ import {
 } from '@dochub/database';
 import { DatabaseService } from '../database/database.service.js';
 import {
+  ADMIN_DOCUMENT_CAPABILITIES,
   DOCUMENT_ROLE_CAPABILITIES,
   DocumentCapability,
-  generalAccessCapabilities,
+  READ_DOCUMENT_CAPABILITIES,
 } from './document-capability.js';
-import { canManageDocuments } from '../common/system-role-policy.js';
+import {
+  canManageDocuments,
+  canViewDocuments,
+} from '../common/system-role-policy.js';
 
 interface NodeChainRow {
   id: string;
@@ -41,10 +45,6 @@ export type DocumentAuthorizationClient =
 export class DocumentAuthorizationService {
   constructor(private readonly database: DatabaseService) {}
 
-  /**
-   * Resolves explicit user and group permissions on a node and its inheritable
-   * ancestors. This deliberately has no creator or system-admin bypass.
-   */
   async resolveCapabilities(
     userId: string,
     nodeId: string,
@@ -77,18 +77,12 @@ export class DocumentAuthorizationService {
     const chains = new Map<string, (NodeChainRow & { targetId: string })[]>();
     for (const row of nodeChain)
       chains.set(row.targetId, [...(chains.get(row.targetId) ?? []), row]);
-    const groupIds = await this.findUserGroupIds(userId, client);
-    if (groupIds === null) {
+    const accountCapabilities = await this.accountCapabilities(userId, client);
+    if (!accountCapabilities) {
       for (const nodeId of uniqueIds)
         results.set(nodeId, this.emptyResolution(nodeId));
       return results;
     }
-    const explicit = await this.resolveExplicitCapabilities(
-      userId,
-      [...new Set(nodeChain.map((row) => row.id))],
-      groupIds,
-      client,
-    );
     for (const nodeId of uniqueIds) {
       const chain = chains.get(nodeId) ?? [];
       if (
@@ -97,16 +91,10 @@ export class DocumentAuthorizationService {
       )
         results.set(nodeId, this.emptyResolution(nodeId));
       else {
-        const capabilities = new Set<DocumentCapability>();
-        for (const node of chain)
-          for (const capability of explicit.get(node.id) ?? [])
-            capabilities.add(capability);
-        for (const capability of generalAccessCapabilities(
-          chain.find((node) => node.depth === 0)?.generalAccessRole,
-        )) {
-          capabilities.add(capability);
-        }
-        results.set(nodeId, { nodeId, capabilities });
+        results.set(nodeId, {
+          nodeId,
+          capabilities: new Set(accountCapabilities),
+        });
       }
     }
     return results;
@@ -167,31 +155,29 @@ export class DocumentAuthorizationService {
       return this.emptyResolution(nodeId);
     }
 
-    // Fetching the user and all memberships together lets a missing user fail
-    // closed without a per-group query.
-    const groupIds = await this.findUserGroupIds(userId, client);
-    if (groupIds === null) {
+    const accountCapabilities = await this.accountCapabilities(userId, client);
+    if (!accountCapabilities) {
       return this.emptyResolution(nodeId);
     }
+    return { nodeId, capabilities: new Set(accountCapabilities) };
+  }
 
-    const capabilitiesByNode = await this.resolveExplicitCapabilities(
-      userId,
-      nodeChain.map((node) => node.id),
-      groupIds,
-      client,
+  private async accountCapabilities(
+    userId: string,
+    client: DocumentAuthorizationClient,
+  ): Promise<ReadonlySet<DocumentCapability> | null> {
+    const user = await client.user.findUnique({
+      where: { id: userId },
+      select: { status: true, systemRole: true },
+    });
+    if (!user || user.status !== UserStatus.ACTIVE || !canViewDocuments(user.systemRole)) {
+      return null;
+    }
+    return new Set(
+      canManageDocuments(user.systemRole)
+        ? ADMIN_DOCUMENT_CAPABILITIES
+        : READ_DOCUMENT_CAPABILITIES,
     );
-    const capabilities = new Set<DocumentCapability>();
-    for (const node of nodeChain) {
-      for (const capability of capabilitiesByNode.get(node.id) ?? []) {
-        capabilities.add(capability);
-      }
-    }
-    for (const capability of generalAccessCapabilities(
-      nodeChain.find((node) => node.depth === 0)?.generalAccessRole,
-    )) {
-      capabilities.add(capability);
-    }
-    return { nodeId, capabilities };
   }
 
   /** Returns null if the principal no longer exists. */

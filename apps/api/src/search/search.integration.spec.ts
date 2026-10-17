@@ -133,12 +133,12 @@ withDb('SearchService integration', () => {
     });
     await prisma.$disconnect();
   });
-  it('matches names with relevance, accents, types, ACL filtering, and opaque pagination', async () => {
+  it('matches names with relevance, accents, types, and opaque pagination', async () => {
     const exact = await node('Báo cáo');
     await node('Báo cáo tháng 9');
     await node('Tổng hợp báo cáo');
     const plan = await node('Kế hoạch nhân sự', NodeType.FILE);
-    await node('Bao hidden', NodeType.FILE, false);
+    const hidden = await node('Bao hidden', NodeType.FILE, false);
     await node('Bao public', NodeType.FOLDER, false).then((row) =>
       prisma.node.update({
         where: { id: row.id },
@@ -162,13 +162,10 @@ withDb('SearchService integration', () => {
       ).items.map((x) => x.id),
     ).toContain(plan.id);
     expect(
-      (await search.search(actorId, { q: 'bao', type: NodeType.FILE })).items,
-    ).toHaveLength(0);
-    expect(
-      report.items.every(
-        (x) => !x.name.includes('hidden') && !x.name.includes('public'),
+      (await search.search(actorId, { q: 'bao', type: NodeType.FILE })).items.map(
+        (x) => x.id,
       ),
-    ).toBe(true);
+    ).toContain(hidden.id);
     if (report.nextCursor) {
       const page2 = await search.search(actorId, {
         q: 'bao cao',
@@ -280,7 +277,9 @@ withDb('SearchService integration', () => {
         [...scalar.capabilities].sort(),
       );
     }
-    expect(bulk.get(boundary.id)!.capabilities).toEqual(new Set());
+    expect(bulk.get(boundary.id)!.capabilities.has(DocumentCapability.VIEW)).toBe(
+      true,
+    );
     expect(
       bulk.get(boundaryChild.id)!.capabilities.has(DocumentCapability.VIEW),
     ).toBe(true);
@@ -490,7 +489,8 @@ withDb('SearchService integration', () => {
     expect(second.nextCursor).toBeNull();
   });
 
-  it('paginates mixed name and content candidates and ignores hidden content when determining nextCursor', async () => {
+  it('paginates mixed name and content candidates for every active account', async () => {
+    const hiddenCursorQuery = `cursor${randomUUID().replaceAll('-', '')}`;
     const named = await contentFile(
       `mixed-pagination-${suffix}.pdf`,
       'mixed pagination needle',
@@ -522,18 +522,24 @@ withDb('SearchService integration', () => {
     ).toEqual(new Set([named.id, contentOnly.id, trailingVisible.id]));
     expect(second.nextCursor).toBeNull();
 
-    const visibleA = await contentFile('visible-a.pdf', 'hidden cursor needle');
-    const visibleB = await contentFile('visible-b.pdf', 'hidden cursor needle');
-    await contentFile('hidden-a.pdf', 'hidden cursor needle', false);
-    await contentFile('hidden-b.pdf', 'hidden cursor needle', false);
+    const visibleA = await contentFile('visible-a.pdf', hiddenCursorQuery);
+    const visibleB = await contentFile('visible-b.pdf', hiddenCursorQuery);
+    const hiddenA = await contentFile('hidden-a.pdf', hiddenCursorQuery, false);
+    const hiddenB = await contentFile('hidden-b.pdf', hiddenCursorQuery, false);
     const visiblePage = await search.search(actorId, {
-      q: 'hidden cursor needle',
+      q: hiddenCursorQuery,
       limit: 2,
     });
-    expect(new Set(visiblePage.items.map((item) => item.id))).toEqual(
-      new Set([visibleA.id, visibleB.id]),
-    );
-    expect(visiblePage.nextCursor).toBeNull();
+    expect(visiblePage.nextCursor).not.toBeNull();
+    const visiblePage2 = await search.search(actorId, {
+      q: hiddenCursorQuery,
+      limit: 2,
+      cursor: visiblePage.nextCursor!,
+    });
+    expect(
+      new Set([...visiblePage.items, ...visiblePage2.items].map((item) => item.id)),
+    ).toEqual(new Set([visibleA.id, visibleB.id, hiddenA.id, hiddenB.id]));
+    expect(visiblePage2.nextCursor).toBeNull();
   });
 
   it('hides trashed content and restores it when current provenance remains valid', async () => {
@@ -569,7 +575,7 @@ withDb('SearchService integration', () => {
     ).toContain(content.id);
   });
 
-  it('uses the bulk ACL resolver for direct, group, inherited, boundary, admin, and public content candidates', async () => {
+  it('uses the bulk resolver for every live content candidate regardless of ACL metadata', async () => {
     const groupId = randomUUID();
     groupIds.push(groupId);
     await prisma.group.create({
@@ -652,14 +658,14 @@ withDb('SearchService integration', () => {
     expect(await visible('acl direct unique')).toContain(direct.id);
     expect(await visible('acl group unique')).toContain(group.id);
     expect(await visible('acl inherited unique')).toContain(inherited.id);
-    expect(await visible('acl boundary unique')).not.toContain(blocked.id);
+    expect(await visible('acl boundary unique')).toContain(blocked.id);
     expect(await visible('acl direct child unique')).toContain(directChild.id);
-    expect(await visible('acl admin unique')).not.toContain(adminOnly.id);
+    expect(await visible('acl admin unique')).toContain(adminOnly.id);
     expect(await visible('acl public unique')).toContain(publicOnly.id);
     expect(
       (await search.search(adminId, { q: 'acl admin unique' })).items.map(
         (item) => item.id,
       ),
-    ).not.toContain(adminOnly.id);
+    ).toContain(adminOnly.id);
   });
 });
