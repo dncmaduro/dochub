@@ -2303,12 +2303,16 @@ function DriveApp({
   const [driveIntegration, setDriveIntegration] = useState<DriveIntegration | null>(null);
   const [driveIntegrationLoading, setDriveIntegrationLoading] = useState(true);
   const loadController = useRef<AbortController | null>(null);
-  const load = useCallback(async (id: string | null) => {
+  const hasLoadedRef = useRef(false);
+  const load = useCallback(async (id: string | null, options: { silent?: boolean } = {}) => {
+    const silent = options.silent ?? false;
     loadController.current?.abort();
     const controller = new AbortController();
     loadController.current = controller;
-    setStatus("loading");
-    setError("");
+    if (!silent) {
+      setStatus("loading");
+      setError("");
+    }
     try {
       const [page, trail] = await Promise.all([
         api.listNodes(id, sort.by, sort.direction, controller.signal),
@@ -2317,9 +2321,18 @@ function DriveApp({
       if (controller.signal.aborted) return;
       setNodes(page.items);
       setBreadcrumbs(trail);
+      hasLoadedRef.current = true;
       setStatus("ready");
     } catch (requestError) {
       if (controller.signal.aborted) return;
+      if (silent) {
+        if (hasLoadedRef.current) setStatus("ready");
+        else {
+          setStatus("error");
+          setError(displayError(requestError));
+        }
+        return;
+      }
       setStatus("error");
       setError(displayError(requestError));
     }
@@ -2349,14 +2362,14 @@ function DriveApp({
   }, [folderId, load]);
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void load(folderId);
+      void load(folderId, { silent: true });
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [folderId, load]);
   useEffect(() => {
     const refreshAfterNodeChange = (event: Event) => {
       const parentId = (event as CustomEvent<{ parentId?: string | null }>).detail?.parentId;
-      if (parentId === folderId) void load(folderId);
+      if (parentId === folderId) void load(folderId, { silent: true });
     };
     window.addEventListener("nodes-changed", refreshAfterNodeChange);
     return () => window.removeEventListener("nodes-changed", refreshAfterNodeChange);
