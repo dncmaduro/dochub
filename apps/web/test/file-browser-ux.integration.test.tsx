@@ -203,7 +203,7 @@ describe("file browser UX", () => {
     expect(ApiClient.prototype.getNode).toHaveBeenCalledWith(file.id);
   });
 
-  it("shows the folder trash action only to administrators and confirms subtree deletion", async () => {
+  it("does not show a folder trash action in the sidebar", async () => {
     vi.mocked(ApiClient.prototype.refresh).mockResolvedValue({
       accessToken: "test-token",
       systemRole: "ADMIN",
@@ -219,18 +219,7 @@ describe("file browser UX", () => {
     await renderApp();
 
     const action = document.querySelector<HTMLButtonElement>(".folder-tree-actions");
-    expect(action).not.toBeNull();
-    await click(action!);
-    const menuItem = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
-      .find((item) => item.textContent?.includes("Move to Trash"));
-    expect(menuItem).toBeDefined();
-    await click(menuItem!);
-    expect(document.body.textContent).toContain("This folder and all files and subfolders inside it will be moved to Trash.");
-
-    const confirm = Array.from(document.querySelectorAll<HTMLButtonElement>(".confirm-dialog .button-danger"))[0];
-    expect(confirm).toBeDefined();
-    await click(confirm!);
-    expect(ApiClient.prototype.moveToTrash).toHaveBeenCalledWith(folder.id);
+    expect(action).toBeNull();
   });
 
   it("resizes the sidebar with Pointer Events and restores a validated local preference", async () => {

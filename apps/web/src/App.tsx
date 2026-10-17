@@ -625,7 +625,6 @@ function App() {
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [creationNotice, setCreationNotice] = useState<Notice>(null);
   const [sidebarPreview, setSidebarPreview] = useState<Preview | null>(null);
-  const [sidebarTrashNode, setSidebarTrashNode] = useState<NodeTreeItem | null>(null);
   const sidebarPreviewActivation = useRef(0);
   const menuUploadInput = useRef<HTMLInputElement>(null);
   const creationParentId = location.route === "drive" ? currentFolderId() : null;
@@ -803,14 +802,6 @@ function App() {
     sidebarPreviewActivation.current += 1;
     setSidebarPreview(null);
   }
-  async function moveSidebarFolderToTrash(item: NodeTreeItem) {
-    await api.moveToTrash(item.id);
-    window.dispatchEvent(new CustomEvent("nodes-changed", {
-      detail: { parentId: item.parentId, nodeId: item.id },
-    }));
-    if (currentFolderId() === item.id) navigate(item.parentId);
-    setCreationNotice({ tone: "success", message: t("files.movedToTrash", { name: item.name }) });
-  }
   async function signOut() {
     const userId = profile?.id;
     try {
@@ -859,7 +850,6 @@ function App() {
         onOpenDriveImport={() => setDriveImportOpen(true)}
         onOpenCreateNew={() => setCreateNewOpen(true)}
         onOpenFile={openSidebarFile}
-        onTrashFolder={setSidebarTrashNode}
         onSignOut={() => void signOut()}
       >
         {page}
@@ -870,16 +860,6 @@ function App() {
           preview={sidebarPreview}
           onClose={closeSidebarPreview}
           onDownload={() => downloadPreview(sidebarPreview)}
-        />
-      )}
-      {sidebarTrashNode && (
-        <ConfirmDialog
-          title={t("files.moveFolderToTrashTitle")}
-          message={t("files.moveFolderToTrashConfirm", { name: sidebarTrashNode.name })}
-          action={t("files.moveToTrash")}
-          onClose={() => setSidebarTrashNode(null)}
-          onConfirm={() => moveSidebarFolderToTrash(sidebarTrashNode)}
-          onNotice={setCreationNotice}
         />
       )}
       <UploadPicker
@@ -1674,7 +1654,6 @@ function AppShell({
   onOpenDriveImport,
   onOpenCreateNew,
   onOpenFile,
-  onTrashFolder,
   onSignOut,
   children,
 }: {
@@ -1686,7 +1665,6 @@ function AppShell({
   onOpenDriveImport: () => void;
   onOpenCreateNew: () => void;
   onOpenFile: (item: NodeTreeItem) => void;
-  onTrashFolder: (item: NodeTreeItem) => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
@@ -1760,7 +1738,6 @@ function AppShell({
       onOpenDriveImport={onOpenDriveImport}
       onOpenCreateNew={onOpenCreateNew}
       onOpenFile={onOpenFile}
-      onTrashFolder={onTrashFolder}
       onSignOut={onSignOut}
       sidebarWidth={sidebarWidth}
       sidebarMaxWidth={sidebarBounds.max}
@@ -1779,7 +1756,6 @@ function Sidebar({
   onOpenDriveImport,
   onOpenCreateNew,
   onOpenFile,
-  onTrashFolder,
   onSignOut,
   sidebarWidth,
   sidebarMaxWidth,
@@ -1793,7 +1769,6 @@ function Sidebar({
   onOpenDriveImport: () => void;
   onOpenCreateNew: () => void;
   onOpenFile: (item: NodeTreeItem) => void;
-  onTrashFolder: (item: NodeTreeItem) => void;
   onSignOut: () => void;
   sidebarWidth: number;
   sidebarMaxWidth: number;
@@ -1851,7 +1826,7 @@ function Sidebar({
           <button className={`nav-item${active === "admin" ? " is-active" : ""}`} type="button" onClick={() => navigateAdmin()}><Icon name="settings" /><span>{t("nav.admin")}</span></button>
           <div className="sidebar-divider sidebar-divider-after-admin" />
         </>}
-        <FolderTree activeFolderId={activeFolderId} onOpenFile={onOpenFile} canManageDocuments={canManageDocuments} onTrashFolder={onTrashFolder} />
+        <FolderTree activeFolderId={activeFolderId} onOpenFile={onOpenFile} />
       </nav>
       <AccountMenu profile={profile} onSignOut={onSignOut} />
       <div
@@ -1871,15 +1846,11 @@ function Sidebar({
 function FolderTree({
   activeFolderId,
   onOpenFile,
-  canManageDocuments,
-  onTrashFolder,
 }: {
   activeFolderId: string | null;
   onOpenFile: (item: NodeTreeItem) => void;
-  canManageDocuments: boolean;
-  onTrashFolder: (item: NodeTreeItem) => void;
 }) {
-  return <DocsHubNodeTree activeFolderId={activeFolderId} onNavigate={navigate} onOpenFile={onOpenFile} canManageDocuments={canManageDocuments} onTrashFolder={onTrashFolder} />;
+  return <DocsHubNodeTree activeFolderId={activeFolderId} onNavigate={navigate} onOpenFile={onOpenFile} />;
 }
 
 function DocsHubFolderTree({
@@ -1908,21 +1879,15 @@ function DocsHubNodeTree({
   activeFolderId,
   onNavigate,
   onOpenFile,
-  canManageDocuments,
-  onTrashFolder,
 }: {
   activeFolderId?: string | null;
   onNavigate?: (folderId: string) => void;
   onOpenFile: (item: NodeTreeItem) => void;
-  canManageDocuments?: boolean;
-  onTrashFolder?: (item: NodeTreeItem) => void;
 }) {
   return <DocsHubTree
     activeFolderId={activeFolderId}
     onNavigate={onNavigate}
     onOpenFile={onOpenFile}
-    canManageDocuments={canManageDocuments}
-    onTrashFolder={onTrashFolder}
     includeFiles
   />;
 }
@@ -1939,8 +1904,6 @@ function DocsHubTree({
   onNavigate,
   onSelect,
   onOpenFile,
-  canManageDocuments = false,
-  onTrashFolder,
   showRoot = false,
   includeFiles = false,
 }: {
@@ -1949,8 +1912,6 @@ function DocsHubTree({
   onNavigate?: (folderId: string) => void;
   onSelect?: (folderId: string | null) => void;
   onOpenFile?: (item: NodeTreeItem) => void;
-  canManageDocuments?: boolean;
-  onTrashFolder?: (item: NodeTreeItem) => void;
   showRoot?: boolean;
   includeFiles?: boolean;
 }) {
@@ -1959,7 +1920,6 @@ function DocsHubTree({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(showRoot ? [rootKey] : []));
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, boolean>>({});
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const childrenRef = useRef(children);
   useEffect(() => {
     childrenRef.current = children;
@@ -2069,7 +2029,6 @@ function DocsHubTree({
       const isActive = isFolder && activeFolderId === item.id;
       const isSelected = selectedFolderId !== undefined && selectedFolderId === item.id;
       const isLoading = loading.has(item.id);
-      const menuOpen = openMenuId === item.id;
       return (
         <li key={item.id} className="folder-tree-item" role="treeitem" aria-expanded={isFolder ? isOpen : undefined}>
           <div className={`folder-tree-row${isActive ? " is-active" : ""}${isSelected ? " is-selected" : ""}`}>
@@ -2093,26 +2052,6 @@ function DocsHubTree({
               <Icon name={isFolder ? "folder" : "file"} size={15} />
               <span>{item.name}</span>
             </button>
-            {isFolder && canManageDocuments && onTrashFolder && (
-              <>
-                <button
-                  id={`folder-tree-menu-trigger-${item.id}`}
-                  type="button"
-                  className="icon-button folder-tree-actions"
-                  aria-label={t("files.fileActions", { name: item.name })}
-                  aria-haspopup="menu"
-                  aria-expanded={menuOpen}
-                  onClick={() => setOpenMenuId((current) => current === item.id ? null : item.id)}
-                >
-                  <Icon name="more" size={15} />
-                </button>
-                {menuOpen && <RowMenu id={`folder-tree-menu-${item.id}`} triggerId={`folder-tree-menu-trigger-${item.id}`} onClose={() => setOpenMenuId(null)}>
-                  <button type="button" role="menuitem" className="menu-danger" onClick={() => { setOpenMenuId(null); onTrashFolder(item as NodeTreeItem); }}>
-                    <Icon name="trash" size={16} />{t("files.moveToTrash")}
-                  </button>
-                </RowMenu>}
-              </>
-            )}
           </div>
           {isFolder && isOpen && <ul role="group">
             {loading.has(item.id) && !children[item.id] && <li className="folder-tree-state">{t("common.loading")}</li>}
