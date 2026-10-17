@@ -6,7 +6,9 @@ import { FolderAccessService } from './folder-access.service.js';
 function harness(role: SystemRole, status = UserStatus.ACTIVE) {
   const userFindUnique = vi.fn().mockResolvedValue({ status, systemRole: role });
   const authorization = {
-    hasDocumentManager: vi.fn().mockResolvedValue(role === SystemRole.ADMIN),
+    hasDocumentManager: vi.fn().mockResolvedValue(
+      role === SystemRole.ADMIN || role === SystemRole.DOCUMENT_MANAGER,
+    ),
     resolveCapabilities: vi.fn(),
   };
   const service = new FolderAccessService(

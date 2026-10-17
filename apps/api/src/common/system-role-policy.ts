@@ -10,7 +10,7 @@ export function canViewDocuments(role: SystemRole): boolean {
 }
 
 export function canManageDocuments(role: SystemRole): boolean {
-  return role === SystemRole.ADMIN;
+  return role === SystemRole.ADMIN || role === SystemRole.DOCUMENT_MANAGER;
 }
 
 export function canAdministerAccounts(role: SystemRole): boolean {

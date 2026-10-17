@@ -14,9 +14,9 @@ describe('system role policy', () => {
     },
   );
 
-  it('allows only administrators to manage documents', () => {
+  it('allows administrators and document managers to manage documents', () => {
     expect(canManageDocuments(SystemRole.ADMIN)).toBe(true);
-    expect(canManageDocuments(SystemRole.DOCUMENT_MANAGER)).toBe(false);
+    expect(canManageDocuments(SystemRole.DOCUMENT_MANAGER)).toBe(true);
   });
 
   it('keeps viewers read-only and reserves account administration for admins', () => {

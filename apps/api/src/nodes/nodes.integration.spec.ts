@@ -142,12 +142,8 @@ describeWithDatabase('NodesService integration', () => {
     await prisma.$disconnect();
   });
 
-  it('allows only active administrators to create a root folder with viewer general access, owner ACL, and audit atomically', async () => {
-    await expect(
-      nodes.createFolder(memberId, { name: `Member root ${suffix}` }),
-    ).rejects.toMatchObject({ status: 403 });
-
-    const created = await nodes.createFolder(adminId, {
+  it('allows active document managers to create a root folder with viewer general access, owner ACL, and audit atomically', async () => {
+    const created = await nodes.createFolder(memberId, {
       name: `Created root ${suffix}`,
     });
     nodeIds.add(created.id);
@@ -167,7 +163,7 @@ describeWithDatabase('NodesService integration', () => {
       prisma.permissionEntry.findFirstOrThrow({
         where: {
           nodeId: created.id,
-          userId: adminId,
+          userId: memberId,
           role: DocumentRole.OWNER,
         },
       }),
@@ -521,12 +517,12 @@ describeWithDatabase('NodesService integration', () => {
     await prisma.permissionEntry.create({
       data: {
         nodeId: direct.id,
-        userId: memberId,
+        userId: viewerId,
         role: DocumentRole.VIEWER,
       },
     });
 
-    const rootPage = await nodes.listRoot(memberId, { limit: 100 });
+    const rootPage = await nodes.listRoot(viewerId, { limit: 100 });
     const rootIds = rootPage.items.map((node) => node.id);
     expect(rootIds).toContain(direct.id);
     expect(rootIds).toContain(general.id);
@@ -534,23 +530,23 @@ describeWithDatabase('NodesService integration', () => {
     expect(rootIds).toContain(nestedRestricted.id);
     expect(rootIds).toContain(nestedViewer.id);
 
-    await expect(nodes.getNode(memberId, direct.id)).resolves.toMatchObject({
+    await expect(nodes.getNode(viewerId, direct.id)).resolves.toMatchObject({
       id: direct.id,
       capabilities: expect.arrayContaining([DocumentCapability.VIEW]),
     });
     await expect(
-      nodes.listChildren(memberId, nestedViewer.id, { limit: 100 }),
+      nodes.listChildren(viewerId, nestedViewer.id, { limit: 100 }),
     ).resolves.toMatchObject({ items: [] });
 
     await prisma.permissionEntry.create({
       data: {
         nodeId: restricted.id,
-        userId: memberId,
+        userId: viewerId,
         role: DocumentRole.VIEWER,
       },
     });
     expect(
-      (await nodes.listRoot(memberId, { limit: 100 })).items.map(
+      (await nodes.listRoot(viewerId, { limit: 100 })).items.map(
         (node) => node.id,
       ),
     ).toContain(restricted.id);
@@ -794,7 +790,7 @@ describeWithDatabase('NodesService integration', () => {
     ).resolves.toBeTruthy();
 
     await expect(
-      nodes.moveNode(memberId, childId, { parentId: null }),
+      nodes.moveNode(viewerId, childId, { parentId: null }),
     ).rejects.toMatchObject({
       status: 403,
     });

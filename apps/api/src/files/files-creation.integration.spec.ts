@@ -125,21 +125,18 @@ withDatabase('root creation access policy integration', () => {
     await prisma.$disconnect();
   });
 
-  it('lets only an active administrator create every supported root item', async () => {
-    await expect(
-      nodes.createFolder(memberId, { name: `Member root folder ${suffix}` }),
-    ).rejects.toMatchObject({ status: 403 });
-    const folder = await nodes.createFolder(adminId, {
-      name: `Administrator root folder ${suffix}`,
+  it('lets an active document manager create every supported root item', async () => {
+    const folder = await nodes.createFolder(memberId, {
+      name: `Document manager root folder ${suffix}`,
     });
     nodeIds.add(folder.id);
 
     const rootUpload = await temporaryUpload(
-      'administrator-root.pdf',
-      Buffer.from('%PDF-1.7\nadministrator root upload\n'),
+      'document-manager-root.pdf',
+      Buffer.from('%PDF-1.7\ndocument manager root upload\n'),
       null,
     );
-    const uploaded = await files.createInitial(adminId, rootUpload);
+    const uploaded = await files.createInitial(memberId, rootUpload);
     await rm(path.dirname(rootUpload.tempPath), {
       recursive: true,
       force: true,
@@ -160,7 +157,7 @@ withDatabase('root creation access policy integration', () => {
       OfficeFileKind.XLSX,
       OfficeFileKind.PPTX,
     ]) {
-      const created = await files.createOffice(adminId, kind, null);
+      const created = await files.createOffice(memberId, kind, null);
       nodeIds.add(created.node.id);
       fileIds.add(created.file.id);
       createdVersionIds.add(created.version.id);
@@ -196,7 +193,7 @@ withDatabase('root creation access policy integration', () => {
     ).toBe(true);
 
     const ownerEntries = await prisma.permissionEntry.findMany({
-      where: { nodeId: { in: [...nodeIds] }, userId: adminId },
+      where: { nodeId: { in: [...nodeIds] }, userId: memberId },
       select: { nodeId: true, role: true },
     });
     expect(ownerEntries).toHaveLength(5);
@@ -223,14 +220,14 @@ withDatabase('root creation access policy integration', () => {
       prisma.auditLog.findMany({
         where: {
           resourceId: { in: [...nodeIds] },
-          actorId: adminId,
+          actorId: memberId,
           action: { in: ['FOLDER_CREATED', 'FILE_UPLOADED', 'FILE_CREATED'] },
         },
       }),
     ).resolves.toHaveLength(5);
   });
 
-  it('keeps protected nested folders non-writable for an active member', async () => {
+  it('keeps protected nested folders non-writable for an active viewer', async () => {
     const protectedFolder = await nodes.createFolder(adminId, {
       name: `Protected nested folder ${suffix}`,
     });
@@ -238,20 +235,20 @@ withDatabase('root creation access policy integration', () => {
     await prisma.permissionEntry.create({
       data: {
         nodeId: protectedFolder.id,
-        userId: memberId,
+        userId: viewerId,
         role: DocumentRole.VIEWER,
         createdById: adminId,
       },
     });
 
     await expect(
-      nodes.createFolder(memberId, {
+      nodes.createFolder(viewerId, {
         name: `Denied nested folder ${suffix}`,
         parentId: protectedFolder.id,
       }),
     ).rejects.toMatchObject({ status: 403 });
     await expect(
-      files.createOffice(memberId, OfficeFileKind.DOCX, protectedFolder.id),
+      files.createOffice(viewerId, OfficeFileKind.DOCX, protectedFolder.id),
     ).rejects.toMatchObject({ status: 403 });
     const deniedUpload = await temporaryUpload(
       'denied-nested.pdf',
@@ -259,7 +256,7 @@ withDatabase('root creation access policy integration', () => {
       protectedFolder.id,
     );
     await expect(
-      files.createInitial(memberId, deniedUpload),
+      files.createInitial(viewerId, deniedUpload),
     ).rejects.toMatchObject({ status: 403 });
     await rm(path.dirname(deniedUpload.tempPath), {
       recursive: true,

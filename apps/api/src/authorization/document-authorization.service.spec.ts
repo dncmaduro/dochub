@@ -63,7 +63,7 @@ describe('DocumentAuthorizationService', () => {
     expect(permissionFindMany).not.toHaveBeenCalled();
   });
 
-  it('keeps active non-administrators read-only even with OWNER/EDITOR-style ACL data', async () => {
+  it('grants every supported capability to an active document manager without ACL entries', async () => {
     const { service, permissionFindMany } = createService({
       nodeChain: [liveNode],
       role: SystemRole.DOCUMENT_MANAGER,
@@ -71,11 +71,11 @@ describe('DocumentAuthorizationService', () => {
 
     await expect(service.resolveCapabilities(userId, nodeId)).resolves.toEqual({
       nodeId,
-      capabilities: new Set(READ_DOCUMENT_CAPABILITIES),
+      capabilities: new Set(ADMIN_DOCUMENT_CAPABILITIES),
     });
     await expect(
       service.hasCapability(userId, nodeId, DocumentCapability.DELETE),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
     expect(permissionFindMany).not.toHaveBeenCalled();
   });
 
