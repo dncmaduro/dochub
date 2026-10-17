@@ -845,7 +845,7 @@ body.is-resizing-sidebar * {
   min-height: 64px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 16px;
   padding: 10px 24px;
   background: var(--surface);
@@ -897,6 +897,13 @@ body.is-resizing-sidebar * {
   font: inherit;
   font-size: 13px;
 }
+.shell-search input:focus-visible,
+.search-field input:focus-visible {
+  border: 0;
+  outline: 0;
+  outline-offset: 0;
+  box-shadow: none;
+}
 .shell-search input::placeholder,
 .search-field input::placeholder {
   color: var(--muted);
@@ -930,6 +937,24 @@ body.is-resizing-sidebar * {
   font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
+}
+.drive-space-toolbar,
+.content-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.drive-space-toolbar > .breadcrumbs {
+  width: auto;
+  flex: 1 1 auto;
+}
+.drive-space-controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
 }
 .breadcrumbs button {
   border: 0;
@@ -2566,6 +2591,18 @@ summary:focus-visible {
   }
   .drive-content {
     padding: 14px;
+  }
+  .drive-space-toolbar,
+  .content-toolbar {
+    align-items: flex-start;
+  }
+  .drive-space-toolbar {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .drive-space-controls {
+    width: 100%;
+    justify-content: flex-end;
   }
   .admin-content,
   .profile-content {

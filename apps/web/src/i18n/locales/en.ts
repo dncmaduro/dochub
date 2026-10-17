@@ -31,6 +31,9 @@ const en = {
     sortDescending: "sort descending",
     members: "Members",
   },
+  meta: {
+    pageTitle: "{{title}} · Docs Hub",
+  },
   actors: {
     USER: "Unknown user",
     UNKNOWN: "Unknown",

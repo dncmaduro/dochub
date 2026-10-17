@@ -207,6 +207,56 @@ function currentLocation() {
     adminTab: currentAdminTab(),
   };
 }
+function pageTitleFor(
+  location: ReturnType<typeof currentLocation>,
+  authenticated: boolean | null,
+) {
+  let title: string;
+  if (window.location.pathname === "/auth/pending") {
+    title = t("auth.pendingApproval");
+  } else if (authenticated === null) {
+    title = t("auth.checkingSession");
+  } else if (!authenticated) {
+    title = t("auth.signIn");
+  } else {
+    switch (location.route) {
+      case "admin": {
+        const section = location.adminTab === "drive"
+          ? t("admin.drive")
+          : location.adminTab === "groups"
+            ? t("admin.groups")
+            : t("admin.users");
+        title = `${t("admin.title")} · ${section}`;
+        break;
+      }
+      case "profile":
+        title = t("profile.title");
+        break;
+      case "trash":
+        title = t("trash.title");
+        break;
+      case "search":
+        title = t("search.title");
+        break;
+      case "recent":
+        title = t("nav.recent");
+        break;
+      case "favorites":
+        title = t("nav.favorites");
+        break;
+      case "legacyDocument":
+        title = t("document.accessDeniedTitle");
+        break;
+      case "legacyShare":
+        title = t("document.linkUnavailable");
+        break;
+      default:
+        title = t("files.title");
+        break;
+    }
+  }
+  return t("meta.pageTitle", { title });
+}
 function currentAdminTab(): "users" | "groups" | "drive" {
   const tab = new URLSearchParams(window.location.search).get("tab");
   return tab === "groups" || tab === "drive" ? tab : "users";
@@ -613,13 +663,11 @@ export function UploadPicker({
 }
 
 function App() {
-  useTranslation();
+  const { i18n } = useTranslation();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [profile, setProfile] = useState<CurrentUser | null>(null);
   const [location, setLocation] = useState(currentLocation);
   const [createOpen, setCreateOpen] = useState(false);
-  const [createNewOpen, setCreateNewOpen] = useState(false);
-  const [driveImportOpen, setDriveImportOpen] = useState(false);
   const [folderCreationParentId, setFolderCreationParentId] = useState<string | null>(null);
   const [uploadingFromMenu, setUploadingFromMenu] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
@@ -689,6 +737,9 @@ function App() {
       active = false;
     };
   }, [authenticated, creationParentId, location.route, profile]);
+  useEffect(() => {
+    document.title = pageTitleFor(location, authenticated);
+  }, [authenticated, i18n.language, location]);
   if (window.location.pathname === "/auth/pending") return <PendingApproval />;
   if (authenticated === null)
     return <div className="auth-state">{t("auth.checkingSession")}</div>;
@@ -708,7 +759,6 @@ function App() {
     (folderCreateCapability?.folderId === creationParentId && folderCreateCapability.canCreate)
   );
   function beginCreateFolder() {
-    setCreateNewOpen(false);
     setFolderCreationParentId(creationParentId);
     setCreateOpen(true);
   }
@@ -743,7 +793,6 @@ function App() {
   }
   function beginUpload(files: readonly File[], destinationFolderId: string | null) {
     if (!files.length || uploadingFromMenu) return;
-    setCreateNewOpen(false);
     setCreationNotice(null);
     const items = createUploadQueueItems(files, destinationFolderId);
     setUploadQueue(items);
@@ -845,10 +894,11 @@ function App() {
         profile={profile}
         active={active}
         canManageDocuments={canManage}
+        canCreate={canCreate}
         uploadingFromMenu={uploadingFromMenu}
         activeFolderId={location.route === "drive" ? creationParentId : null}
-        onOpenDriveImport={() => setDriveImportOpen(true)}
-        onOpenCreateNew={() => setCreateNewOpen(true)}
+        onUpload={openUploadPicker}
+        onCreateFolder={beginCreateFolder}
         onOpenFile={openSidebarFile}
         onSignOut={() => void signOut()}
       >
@@ -867,12 +917,6 @@ function App() {
         onChange={(event) => void uploadFromMenu(event)}
         disabled={uploadingFromMenu}
       />
-      {driveImportOpen && (
-        <GoogleDriveModal
-          canManageDocuments={canManage}
-          onClose={() => setDriveImportOpen(false)}
-        />
-      )}
       <Toast notice={creationNotice} onDismiss={() => setCreationNotice(null)} />
       {createOpen && (
         <NameDialog
@@ -880,15 +924,6 @@ function App() {
           action={t("common.create")}
           onClose={() => setCreateOpen(false)}
           onSubmit={createFolder}
-        />
-      )}
-      {createNewOpen && (
-        <CreateNewDialog
-          pending={uploadingFromMenu}
-          folderDisabled={!canCreate}
-          onClose={() => setCreateNewOpen(false)}
-          onFolder={beginCreateFolder}
-          onUpload={() => menuUploadInput.current?.click()}
         />
       )}
       {uploadQueue.length > 0 && (
@@ -972,7 +1007,7 @@ function AccessDenied() {
 }
 
 function AdminApp({ tab }: { tab: "users" | "groups" | "drive" }) {
-  return <><PageHeader title={<h1 className="page-title">{t("admin.title")}</h1>} /><section className="admin-content" aria-label={t("admin.title")}>
+  return <><PageHeader /><section className="admin-content" aria-label={t("admin.title")}>
     <div className="admin-intro"><h2>{t("admin.title")}</h2><p>{t("admin.description")}</p></div>
     <div className="admin-tabs" role="tablist" aria-label={t("admin.sections")}>
       <button type="button" role="tab" aria-selected={tab === "users"} className={tab === "users" ? "is-active" : ""} onClick={() => navigateAdmin("users")}>{t("admin.users")}</button>
@@ -1327,7 +1362,7 @@ function AdminGroups() {
 
 function ProfileApp({ profile, onSignOut }: { profile: CurrentUser; onSignOut: () => void }) {
   return <>
-    <PageHeader title={<h1 className="page-title">{t("profile.title")}</h1>} />
+    <PageHeader />
     <section className="profile-content" aria-label={t("profile.title")}>
       <div className="profile-heading"><h2>{t("profile.account")}</h2><p>{t("profile.description")}</p></div>
       <dl className="profile-details">
@@ -1352,198 +1387,6 @@ function driveSourceStatusLabel(status: "CONNECTED" | "STALE" | "UNAVAILABLE") {
     : status === "STALE"
       ? t("drive.sourceStale")
       : t("drive.sourceUnavailable");
-}
-
-function GoogleDriveModal({
-  canManageDocuments: canManage,
-  onClose,
-}: {
-  canManageDocuments: boolean;
-  onClose: () => void;
-}) {
-  const dialog = useDialogFocus();
-  const [connection, setConnection] = useState<DriveIntegration | null>(null);
-  const [folderId, setFolderId] = useState<string | null>(null);
-  const [folderStack, setFolderStack] = useState<Array<{ id: string; name: string }>>([]);
-  const [files, setFiles] = useState<DriveFile[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [view, setView] = useState<ViewMode>(() => readViewMode("dochub.drive-import-view"));
-  const [loading, setLoading] = useState(true);
-  const [connectionLoading, setConnectionLoading] = useState(true);
-  const [error, setError] = useState<Notice>(null);
-  const [pickerFile, setPickerFile] = useState<DriveFile | null>(null);
-  const [addingId, setAddingId] = useState<string | null>(null);
-  const requestRevision = useRef(0);
-  const loadController = useRef<AbortController | null>(null);
-
-  const load = useCallback(async (nextCursor?: string) => {
-    if (!folderId) return;
-    loadController.current?.abort();
-    const controller = new AbortController();
-    loadController.current = controller;
-    const revision = ++requestRevision.current;
-    setLoading(true);
-    try {
-      const page = await api.listDriveBrowserFiles(folderId, query, nextCursor, 50, controller.signal);
-      if (revision !== requestRevision.current || controller.signal.aborted) return;
-      setFiles((current) => nextCursor ? [...current, ...page.items] : page.items);
-      setCursor(page.nextCursor);
-      setError(null);
-    } catch (requestError) {
-      if (revision !== requestRevision.current || controller.signal.aborted) return;
-      setError({ tone: "error", message: displayError(requestError) });
-    } finally {
-      if (revision === requestRevision.current) setLoading(false);
-    }
-  }, [folderId, query]);
-
-  useEffect(() => {
-    void api.driveIntegration().then((state) => {
-      setConnection(state);
-      setFolderId(state.configured ? state.storageFolderId ?? null : null);
-    }).catch((requestError) => {
-      setError({ tone: "error", message: displayError(requestError) });
-    }).finally(() => setConnectionLoading(false));
-    return () => loadController.current?.abort();
-  }, []);
-
-  useEffect(() => {
-    if (!connection?.configured || !folderId) return;
-    const timer = window.setTimeout(() => void load(), 300);
-    return () => window.clearTimeout(timer);
-  }, [connection, folderId, load]);
-
-  function changeView(next: ViewMode) {
-    setView(next);
-    persistViewMode("dochub.drive-import-view", next);
-  }
-
-  function enterFolder(file: DriveFile) {
-    if (file.normalizedType !== "FOLDER" || !folderId) return;
-    const currentName = folderStack.at(-1)?.name ?? connection?.storageFolderName ?? t("drive.storageFolder");
-    setFolderStack((current) => [...current, { id: folderId, name: currentName }]);
-    setFolderId(file.driveFileId);
-    setQuery("");
-    setCursor(null);
-  }
-
-  function goBack() {
-    const previous = folderStack.at(-1);
-    if (!previous) return;
-    setFolderStack((current) => current.slice(0, -1));
-    setFolderId(previous.id);
-    setQuery("");
-    setCursor(null);
-  }
-
-  async function addToDocsHub(file: DriveFile, parentId: string | null) {
-    setAddingId(file.driveFileId);
-    try {
-      const result = await api.addDriveFileToDocsHub(file.driveFileId, parentId);
-      setFiles((current) => current.map((item) => item.driveFileId === file.driveFileId
-        ? { ...item, docsHubNodeId: result.nodeId }
-        : item));
-      setPickerFile(null);
-      window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId } }));
-      setError({ tone: "success", message: t("drive.addedToDocsHub", { name: result.name }) });
-    } catch (requestError) {
-      setError({ tone: "error", message: displayError(requestError) });
-    } finally {
-      setAddingId(null);
-    }
-  }
-
-  const unavailable = !connectionLoading && (!connection?.connected || !connection.configured);
-  return (
-    <div className="dialog-backdrop" role="presentation">
-      <section ref={dialog} className="dialog drive-import-dialog" role="dialog" aria-modal="true" aria-labelledby="drive-import-title">
-        <header className="dialog-header">
-          <h2 id="drive-import-title">{t("drive.addFromGoogleDrive")}</h2>
-          <button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}><Icon name="close" size={16} /></button>
-        </header>
-        {error && <p className={`drive-import-notice drive-import-notice-${error.tone}`} role={error.tone === "error" ? "alert" : "status"}>{error.message}</p>}
-        {connectionLoading ? <div className="drive-import-state">{t("common.loading")}</div> : unavailable ? <div className="drive-import-state"><h3>{t("drive.notConnected")}</h3><p>{t("drive.adminConfigures")}</p></div> : (
-          <>
-            <div className="drive-import-toolbar">
-              <button type="button" className="button" onClick={goBack} disabled={folderStack.length === 0}><Icon name="back" size={16} />{t("common.back")}</button>
-              <div className="search-field drive-import-search"><Icon name="search" size={17} /><input autoFocus value={query} onChange={(event) => { setQuery(event.target.value); setCursor(null); }} placeholder={t("drive.searchPlaceholder")} aria-label={t("drive.searchPlaceholder")} /></div>
-              <ViewToggle value={view} onChange={changeView} label={t("drive.viewMode")} />
-            </div>
-            <div className="drive-import-content" aria-busy={loading}>
-              {loading && files.length === 0 ? <div className="drive-import-state">{t("common.loading")}</div> : files.length === 0 ? <div className="drive-import-state">{t("drive.noFiles")}</div> : view === "list" ? (
-                <div className="file-table-wrap drive-import-table-wrap"><table className="file-table drive-import-table"><colgroup><col className="drive-import-col-name" /><col className="drive-import-col-type" /><col className="drive-import-col-modified" /><col className="drive-import-col-action" /></colgroup><thead><tr><th>{t("common.name")}</th><th>{t("common.type")}</th><th>{t("common.modified")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{files.map((file) => <DriveBrowserRow key={file.id} file={file} canManage={canManage} adding={addingId === file.driveFileId} onFolder={enterFolder} onSelect={setPickerFile} />)}</tbody></table></div>
-              ) : <div className="drive-browser-grid">{files.map((file) => <DriveBrowserCard key={file.id} file={file} canManage={canManage} adding={addingId === file.driveFileId} onFolder={enterFolder} onSelect={setPickerFile} />)}</div>}
-              {cursor && <button type="button" className="button drive-load-more" onClick={() => void load(cursor)} disabled={loading}>{t("search.loadMore")}</button>}
-            </div>
-          </>
-        )}
-      </section>
-      {pickerFile && <DocsHubFolderPicker file={pickerFile} onClose={() => setPickerFile(null)} onSelect={(parentId) => void addToDocsHub(pickerFile, parentId)} pending={addingId === pickerFile.driveFileId} />}
-    </div>
-  );
-}
-
-function DriveBrowserRow({
-  file,
-  canManage,
-  adding,
-  onFolder,
-  onSelect,
-}: {
-  file: DriveFile;
-  canManage: boolean;
-  adding: boolean;
-  onFolder: (file: DriveFile) => void;
-  onSelect: (file: DriveFile) => void;
-}) {
-  const isFolder = file.normalizedType === "FOLDER";
-  return <tr>
-    <td><button type="button" className="file-name" disabled={!isFolder && (!canManage || Boolean(file.docsHubNodeId))} onClick={() => isFolder ? onFolder(file) : onSelect(file)}><Icon name={isFolder ? "folder" : "file"} size={19} /><span>{file.name}</span></button></td>
-    <td>{driveTypeLabel(file.normalizedType)}</td>
-    <td>{file.driveModifiedTime ? formatDate(file.driveModifiedTime) : "—"}</td>
-    <td className="drive-external-actions">{isFolder ? "—" : file.docsHubNodeId ? <span className="drive-in-docshub">{t("drive.alreadyInDocsHub")}</span> : canManage ? <button type="button" className="button" disabled={adding} onClick={() => onSelect(file)}>{t("drive.addToDocsHub")}</button> : "—"}</td>
-  </tr>;
-}
-
-function DriveBrowserCard({
-  file,
-  canManage,
-  adding,
-  onFolder,
-  onSelect,
-}: {
-  file: DriveFile;
-  canManage: boolean;
-  adding: boolean;
-  onFolder: (file: DriveFile) => void;
-  onSelect: (file: DriveFile) => void;
-}) {
-  const isFolder = file.normalizedType === "FOLDER";
-  return <article className="drive-browser-card">
-    <button type="button" className="drive-browser-card-main" disabled={!isFolder && (!canManage || Boolean(file.docsHubNodeId))} onClick={() => isFolder ? onFolder(file) : onSelect(file)}><Icon name={isFolder ? "folder" : "file"} size={22} /><strong title={file.name}>{file.name}</strong><span>{driveTypeLabel(file.normalizedType)} · {file.driveModifiedTime ? formatDate(file.driveModifiedTime) : "—"}</span></button>
-    {!isFolder && (file.docsHubNodeId ? <span className="drive-in-docshub">{t("drive.alreadyInDocsHub")}</span> : canManage ? <button type="button" className="button" disabled={adding} onClick={() => onSelect(file)}>{t("drive.addToDocsHub")}</button> : null)}
-  </article>;
-}
-
-function DocsHubFolderPicker({
-  file,
-  onClose,
-  onSelect,
-  pending,
-}: {
-  file: DriveFile;
-  onClose: () => void;
-  onSelect: (parentId: string | null) => void;
-  pending: boolean;
-}) {
-  const dialog = useDialogFocus();
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
-  return <div className="dialog-backdrop" role="presentation"><section ref={dialog} className="dialog drive-folder-picker" role="dialog" aria-modal="true" aria-labelledby="drive-folder-picker-title">
-    <header className="dialog-header"><div><h2 id="drive-folder-picker-title">{t("drive.chooseDocsHubFolder")}</h2><p>{file.name}</p></div><button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}><Icon name="close" size={16} /></button></header>
-    <div className="dialog-body drive-folder-picker-body"><DocsHubFolderTree selectedFolderId={selectedFolderId} onSelect={setSelectedFolderId} showRoot /></div>
-    <footer className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>{t("common.cancel")}</button><button type="button" className="button button-primary" onClick={() => onSelect(selectedFolderId)} disabled={pending}>{pending ? t("drive.addingToDocsHub") : t("drive.addHere")}</button></footer>
-  </section></div>;
 }
 
 function SignIn() {
@@ -1625,20 +1468,10 @@ function SearchInput({ query }: { query: string }) {
   );
 }
 
-function PageHeader({
-  title,
-  searchQuery,
-  children,
-}: {
-  title: ReactNode;
-  searchQuery?: string;
-  children?: ReactNode;
-}) {
+function PageHeader({ searchQuery = "" }: { searchQuery?: string }) {
   return (
     <header className="topbar">
-      <div className="page-context">{title}</div>
-      {searchQuery !== undefined && <SearchInput query={searchQuery} />}
-      <div className="toolbar-actions">{children}</div>
+      <SearchInput query={searchQuery} />
     </header>
   );
 }
@@ -1649,10 +1482,11 @@ function AppShell({
   active,
   profile,
   canManageDocuments,
-    uploadingFromMenu,
+  canCreate,
+  uploadingFromMenu,
   activeFolderId,
-  onOpenDriveImport,
-  onOpenCreateNew,
+  onUpload,
+  onCreateFolder,
   onOpenFile,
   onSignOut,
   children,
@@ -1660,10 +1494,11 @@ function AppShell({
   active: SidebarRoute;
   profile: CurrentUser;
   canManageDocuments: boolean;
-    uploadingFromMenu: boolean;
+  canCreate: boolean;
+  uploadingFromMenu: boolean;
   activeFolderId: string | null;
-  onOpenDriveImport: () => void;
-  onOpenCreateNew: () => void;
+  onUpload: () => void;
+  onCreateFolder: () => void;
   onOpenFile: (item: NodeTreeItem) => void;
   onSignOut: () => void;
   children: ReactNode;
@@ -1733,10 +1568,11 @@ function AppShell({
       active={active}
       profile={profile}
       canManageDocuments={canManageDocuments}
+      canCreate={canCreate}
       uploadingFromMenu={uploadingFromMenu}
       activeFolderId={activeFolderId}
-      onOpenDriveImport={onOpenDriveImport}
-      onOpenCreateNew={onOpenCreateNew}
+      onUpload={onUpload}
+      onCreateFolder={onCreateFolder}
       onOpenFile={onOpenFile}
       onSignOut={onSignOut}
       sidebarWidth={sidebarWidth}
@@ -1751,10 +1587,11 @@ function Sidebar({
   active,
   profile,
   canManageDocuments,
+  canCreate,
   uploadingFromMenu,
   activeFolderId,
-  onOpenDriveImport,
-  onOpenCreateNew,
+  onUpload,
+  onCreateFolder,
   onOpenFile,
   onSignOut,
   sidebarWidth,
@@ -1764,10 +1601,11 @@ function Sidebar({
   active: SidebarRoute;
   profile: CurrentUser;
   canManageDocuments: boolean;
+  canCreate: boolean;
   uploadingFromMenu: boolean;
   activeFolderId: string | null;
-  onOpenDriveImport: () => void;
-  onOpenCreateNew: () => void;
+  onUpload: () => void;
+  onCreateFolder: () => void;
   onOpenFile: (item: NodeTreeItem) => void;
   onSignOut: () => void;
   sidebarWidth: number;
@@ -1784,8 +1622,9 @@ function Sidebar({
       {canManageDocuments && (
         <AddDriveMenu
           pending={uploadingFromMenu}
-          onOpenDrive={onOpenDriveImport}
-          onOpenCreateNew={onOpenCreateNew}
+          canCreate={canCreate}
+          onUpload={onUpload}
+          onCreateFolder={onCreateFolder}
         />
       )}
       <nav aria-label={t("nav.main")}>
@@ -1851,28 +1690,6 @@ function FolderTree({
   onOpenFile: (item: NodeTreeItem) => void;
 }) {
   return <DocsHubNodeTree activeFolderId={activeFolderId} onNavigate={navigate} onOpenFile={onOpenFile} />;
-}
-
-function DocsHubFolderTree({
-  activeFolderId,
-  selectedFolderId,
-  onNavigate,
-  onSelect,
-  showRoot = false,
-}: {
-  activeFolderId?: string | null;
-  selectedFolderId?: string | null;
-  onNavigate?: (folderId: string) => void;
-  onSelect?: (folderId: string | null) => void;
-  showRoot?: boolean;
-}) {
-  return <DocsHubTree
-    activeFolderId={activeFolderId}
-    selectedFolderId={selectedFolderId}
-    onNavigate={onNavigate}
-    onSelect={onSelect}
-    showRoot={showRoot}
-  />;
 }
 
 function DocsHubNodeTree({
@@ -2271,6 +2088,12 @@ function DriveApp({
     return () => window.clearTimeout(timer);
   }, [folderId, load]);
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      void load(folderId);
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [folderId, load]);
+  useEffect(() => {
     const refreshAfterNodeChange = (event: Event) => {
       const parentId = (event as CustomEvent<{ parentId?: string | null }>).detail?.parentId;
       if (parentId === folderId) void load(folderId);
@@ -2353,33 +2176,24 @@ function DriveApp({
   const canCreateHere = canCreate;
   return (
     <>
-        <PageHeader title={<Breadcrumbs items={breadcrumbs} folderId={folderId} />} searchQuery="">
-            <ViewToggle value={view} onChange={changeView} label={t("drive.viewMode")} />
-            <SortControls sort={sort} onChange={changeSort} />
-            <button
-              type="button"
-              className="icon-button"
-              onClick={() => void load(folderId)}
-              aria-label={t("files.refresh")}
-            >
-              <Icon name="refresh" />
-            </button>
-            {canManageDocuments ? (
-              <>
-            <button
-              type="button"
-              className="button button-primary"
-              onClick={onUpload}
-              disabled={uploading || driveIntegrationLoading || !driveIntegration?.connected || !driveIntegration.configured || !driveIntegration.canWrite}
-            >
-              <Icon name="upload" />
-              {uploading ? t("files.uploading") : t("files.upload")}
-            </button>
-              </>
-            ) : null}
-        </PageHeader>
+        <PageHeader />
         <Toast notice={notice} onDismiss={() => setNotice(null)} />
         <section className="drive-content" aria-label={t("files.title")}>
+          <div className="drive-space-toolbar">
+            <Breadcrumbs items={breadcrumbs} folderId={folderId} />
+            <div className="drive-space-controls">
+              <ViewToggle value={view} onChange={changeView} label={t("drive.viewMode")} />
+              <SortControls sort={sort} onChange={changeSort} />
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => void load(folderId)}
+                aria-label={t("files.refresh")}
+              >
+                <Icon name="refresh" />
+              </button>
+            </div>
+          </div>
           {status === "loading" && <LoadingRows />}
           {status === "error" && (
             <ErrorState message={error} onRetry={() => void load(folderId)} />
@@ -3545,12 +3359,14 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
   const emptyTitle = kind === "recent" ? t("search.noRecent") : t("search.noFavorites");
   return (
     <>
-        <PageHeader title={<h1 className="page-title">{title}</h1>}>
-          <button type="button" className="icon-button" onClick={() => void load()} aria-label={t("files.refreshCollection", { name: title })}>
-            <Icon name="refresh" />
-          </button>
-        </PageHeader>
+        <PageHeader />
         <section className="drive-content" aria-label={title}>
+          <div className="content-toolbar">
+            <h1 className="page-title">{title}</h1>
+            <button type="button" className="icon-button" onClick={() => void load()} aria-label={t("files.refreshCollection", { name: title })}>
+              <Icon name="refresh" />
+            </button>
+          </div>
           {status === "loading" && <LoadingRows label={`${t("common.loading")} ${title.toLowerCase()}`} />}
           {status === "error" && <CollectionError title={title} message={error} onRetry={() => void load()} />}
           {status === "ready" && displayItems.length === 0 && <SearchState title={emptyTitle} />}
@@ -3719,11 +3535,7 @@ function SearchApp({ query }: { query: string }) {
 
   return (
     <>
-        <header className="topbar">
-          <div className="page-context"><h1 className="page-title">{t("search.title")}</h1></div>
-          <SearchInput key={query} query={query} />
-          <div className="toolbar-actions" />
-        </header>
+        <PageHeader key={query} searchQuery={query} />
         <section className="drive-content" aria-label={t("search.results")}>
           {status === "idle" && <SearchState title={t("files.search")} message={t("search.enterQuery")} />}
           {status === "invalid" && <SearchState title={t("search.queryTooLong")} message={t("search.queryTooLongMessage")} />}
@@ -3826,12 +3638,14 @@ function TrashApp() {
   }
   return (
     <>
-        <PageHeader title={<h1 className="page-title">{t("trash.title")}</h1>}>
-          <button type="button" className="icon-button" onClick={() => void load()} aria-label={t("trash.refresh")}>
-            <Icon name="refresh" />
-          </button>
-        </PageHeader>
+        <PageHeader />
         <section className="drive-content" aria-label={t("trash.title")}>
+          <div className="content-toolbar">
+            <h1 className="page-title">{t("trash.title")}</h1>
+            <button type="button" className="icon-button" onClick={() => void load()} aria-label={t("trash.refresh")}>
+              <Icon name="refresh" />
+            </button>
+          </div>
           {status === "loading" && <LoadingRows />}
           {status === "error" && <ErrorState message={error} onRetry={() => void load()} />}
           {status === "ready" && items.length === 0 && <div className="content-state"><h1>{t("trash.empty")}</h1></div>}
@@ -4209,12 +4023,14 @@ function EmptyState({
 }
 function AddDriveMenu({
   pending,
-  onOpenDrive,
-  onOpenCreateNew,
+  canCreate,
+  onUpload,
+  onCreateFolder,
 }: {
   pending: boolean;
-  onOpenDrive: () => void;
-  onOpenCreateNew: () => void;
+  canCreate: boolean;
+  onUpload: () => void;
+  onCreateFolder: () => void;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -4301,51 +4117,18 @@ function AddDriveMenu({
           visibility: position ? "visible" : "hidden",
         }}
       >
-        <button type="button" role="menuitem" onClick={() => { setOpen(false); onOpenDrive(); }}>
-          <Icon name="drive" />
-          {t("drive.addFromGoogleDrive")}
+        <button type="button" role="menuitem" disabled={pending} onClick={() => { setOpen(false); onUpload(); }}>
+          <Icon name="upload" />
+          {t("files.upload")}
         </button>
-        <div className="new-menu-divider" />
-        <button type="button" role="menuitem" onClick={() => { setOpen(false); onOpenCreateNew(); }}>
-          <Icon name="plus" />
-          {t("files.createNew")}
+        <button type="button" role="menuitem" disabled={pending || !canCreate} onClick={() => { setOpen(false); onCreateFolder(); }}>
+          <Icon name="folder" />
+          {t("files.newFolder")}
         </button>
       </div>,
       document.body,
     )}
   </div>;
-}
-
-function CreateNewDialog({
-  pending,
-  folderDisabled,
-  onClose,
-  onFolder,
-  onUpload,
-}: {
-  pending: boolean;
-  folderDisabled: boolean;
-  onClose: () => void;
-  onFolder: () => void;
-  onUpload: () => void;
-}) {
-  const dialog = useDialogFocus();
-  return (
-    <div className="dialog-backdrop" role="presentation">
-      <section ref={dialog} className="dialog create-new-dialog" role="dialog" aria-modal="true" aria-labelledby="create-new-title">
-        <header className="dialog-header">
-          <h2 id="create-new-title">{t("files.createNew")}</h2>
-          <button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}>
-            <Icon name="close" size={16} />
-          </button>
-        </header>
-        <div className="create-new-options">
-          <button type="button" className="button" disabled={pending || folderDisabled} onClick={onFolder}><Icon name="folder" />{t("files.newFolder")}</button>
-          <button type="button" className="button" disabled={pending} onClick={onUpload}><Icon name="upload" />{t("files.upload")}</button>
-        </div>
-      </section>
-    </div>
-  );
 }
 function ErrorState({
   message,

@@ -55,7 +55,7 @@ describe("rendered upload controls", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders one shared multi-file picker used by both upload buttons", async () => {
+  it("renders one shared multi-file picker used by sidebar and empty-state upload actions", async () => {
     await act(async () => root.render(createElement(App)));
     for (let attempt = 0; attempt < 5; attempt += 1) await settleEffects();
 
@@ -63,14 +63,24 @@ describe("rendered upload controls", () => {
     expect(inputs).toHaveLength(1);
     expect(inputs.every((input) => input.multiple)).toBe(true);
 
-    const headerUpload = document.querySelector<HTMLButtonElement>(".topbar button.button-primary");
+    const addFrom = document.querySelector<HTMLButtonElement>(".sidebar > .new-menu > button");
     const emptyFolderUpload = document.querySelector<HTMLButtonElement>(".content-state button.button-primary");
-    expect(headerUpload).not.toBeNull();
+    expect(addFrom).not.toBeNull();
     expect(emptyFolderUpload).not.toBeNull();
+    expect(document.querySelector(".topbar button.button-primary")).toBeNull();
+    expect(document.querySelectorAll(".topbar > *")).toHaveLength(1);
 
     const picker = inputs[0]!;
     const pickerClick = vi.spyOn(picker, "click");
-    headerUpload!.click();
+    await act(async () => {
+      addFrom!.click();
+      await Promise.resolve();
+    });
+    const uploadMenuItem = document.querySelector<HTMLButtonElement>("#add-drive-menu-popover [role=menuitem]");
+    expect(uploadMenuItem).not.toBeNull();
+    expect(document.querySelectorAll("#add-drive-menu-popover [role=menuitem]")).toHaveLength(2);
+    expect(document.querySelector("#add-drive-menu-popover")?.textContent).not.toContain("Google Drive");
+    uploadMenuItem!.click();
     emptyFolderUpload!.click();
     expect(pickerClick).toHaveBeenCalledTimes(2);
 
