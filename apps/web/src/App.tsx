@@ -2819,11 +2819,11 @@ function FileTile({
       <button ref={trigger} type="button" className="icon-button file-tile-actions" aria-label={t("files.fileActions", { name: node.name })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><Icon name="more" /></button>
       {menuOpen && <RowMenu id={`file-menu-${node.id}`} trigger={trigger} onClose={onCloseMenu}>
         <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onFavorite(node); }}><Icon name="star" size={16} />{isFavorite ? t("files.unfavorite") : t("files.favorite")}</button>
-        <button type="button" role="menuitem" disabled={!canOpen} onClick={() => { onCloseMenu(); if (isFolder) onFolder(node.id); else void onOpen(node); }}>{openActionLabel(node)}</button>
-        {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>{t("drive.openInGoogle")}</button>}
+        <button type="button" role="menuitem" disabled={!canOpen} onClick={() => { onCloseMenu(); if (isFolder) onFolder(node.id); else void onOpen(node); }}><Icon name={isFolder ? "folder" : "file"} size={16} />{openActionLabel(node)}</button>
+        {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}><Icon name="drive" size={16} />{t("drive.openInGoogle")}</button>}
         {!isFolder && hasCapability(node, "DOWNLOAD") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); void download(); }}><Icon name="download" size={16} />{t("common.download")}</button>}
         {hasCapability(node, "RENAME") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onRename(node); }}><Icon name="edit" size={16} />{t("files.rename")}</button>}
-        {!isFolder && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onVersions(node); }}>{t("files.versionHistory")}</button>}
+        {!isFolder && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onVersions(node); }}><Icon name="recent" size={16} />{t("files.versionHistory")}</button>}
         {node.backing?.type !== "GOOGLE_DRIVE" && hasCapability(node, "SHARE") && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onShare(node); }}><Icon name="share" size={16} />{t("files.share")}</button>}
         {hasCapability(node, "DELETE") && <button type="button" role="menuitem" className="menu-danger" onClick={() => { onCloseMenu(); onTrash(node); }}><Icon name="trash" size={16} />{t("files.moveToTrash")}</button>}
         {node.backing?.type === "GOOGLE_DRIVE" && canManageDocuments && onRemoveDrive && <button type="button" role="menuitem" className="menu-danger" onClick={() => { onCloseMenu(); onRemoveDrive(node); }}><Icon name="trash" size={16} />{t("drive.removeFromDocsHub")}</button>}
@@ -2935,10 +2935,12 @@ function FileRow({
               }}
               disabled={!canOpen}
             >
+              <Icon name={isFolder ? "folder" : "file"} size={16} />
               {openActionLabel(node)}
             </button>
             {!isFolder && node.backing?.type === "GOOGLE_DRIVE" && node.backing.webViewLink && (
               <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onOpenInGoogle(node); }}>
+                <Icon name="drive" size={16} />
                 {t("drive.openInGoogle")}
               </button>
             )}
@@ -2977,6 +2979,7 @@ function FileRow({
                   onVersions(node);
                 }}
               >
+                <Icon name="recent" size={16} />
                 {t("files.versionHistory")}
               </button>
             )}

@@ -143,6 +143,19 @@ describe("file browser UX", () => {
     expect(sortButtons()).toHaveLength(2);
   });
 
+  it("shows an icon for every file and folder row action", async () => {
+    await renderApp();
+
+    const rowTriggers = Array.from(document.querySelectorAll<HTMLButtonElement>(".file-table tbody .row-actions > button"));
+    expect(rowTriggers).toHaveLength(2);
+    await click(rowTriggers[0]!);
+    expect(Array.from(document.querySelectorAll<HTMLButtonElement>(".row-menu [role=menuitem]")).every((item) => item.querySelector("svg"))).toBe(true);
+
+    await click(rowTriggers[0]!);
+    await click(rowTriggers[1]!);
+    expect(Array.from(document.querySelectorAll<HTMLButtonElement>(".row-menu [role=menuitem]")).every((item) => item.querySelector("svg"))).toBe(true);
+  });
+
   it("toggles each sort field deterministically and keeps URL-backed state", async () => {
     await renderApp();
 
