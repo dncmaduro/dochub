@@ -668,6 +668,7 @@ function App() {
   const [profile, setProfile] = useState<CurrentUser | null>(null);
   const [location, setLocation] = useState(currentLocation);
   const [createOpen, setCreateOpen] = useState(false);
+  const [driveImportOpen, setDriveImportOpen] = useState(false);
   const [folderCreationParentId, setFolderCreationParentId] = useState<string | null>(null);
   const [uploadingFromMenu, setUploadingFromMenu] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
@@ -897,6 +898,7 @@ function App() {
         canCreate={canCreate}
         uploadingFromMenu={uploadingFromMenu}
         activeFolderId={location.route === "drive" ? creationParentId : null}
+        onOpenDriveImport={() => setDriveImportOpen(true)}
         onUpload={openUploadPicker}
         onCreateFolder={beginCreateFolder}
         onOpenFile={openSidebarFile}
@@ -917,6 +919,12 @@ function App() {
         onChange={(event) => void uploadFromMenu(event)}
         disabled={uploadingFromMenu}
       />
+      {driveImportOpen && (
+        <GoogleDriveModal
+          canManageDocuments={canManage}
+          onClose={() => setDriveImportOpen(false)}
+        />
+      )}
       <Toast notice={creationNotice} onDismiss={() => setCreationNotice(null)} />
       {createOpen && (
         <NameDialog
@@ -1389,6 +1397,198 @@ function driveSourceStatusLabel(status: "CONNECTED" | "STALE" | "UNAVAILABLE") {
       : t("drive.sourceUnavailable");
 }
 
+function GoogleDriveModal({
+  canManageDocuments: canManage,
+  onClose,
+}: {
+  canManageDocuments: boolean;
+  onClose: () => void;
+}) {
+  const dialog = useDialogFocus();
+  const [connection, setConnection] = useState<DriveIntegration | null>(null);
+  const [folderId, setFolderId] = useState<string | null>(null);
+  const [folderStack, setFolderStack] = useState<Array<{ id: string; name: string }>>([]);
+  const [files, setFiles] = useState<DriveFile[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [view, setView] = useState<ViewMode>(() => readViewMode("dochub.drive-import-view"));
+  const [loading, setLoading] = useState(true);
+  const [connectionLoading, setConnectionLoading] = useState(true);
+  const [error, setError] = useState<Notice>(null);
+  const [pickerFile, setPickerFile] = useState<DriveFile | null>(null);
+  const [addingId, setAddingId] = useState<string | null>(null);
+  const requestRevision = useRef(0);
+  const loadController = useRef<AbortController | null>(null);
+
+  const load = useCallback(async (nextCursor?: string) => {
+    if (!folderId) return;
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
+    const revision = ++requestRevision.current;
+    setLoading(true);
+    try {
+      const page = await api.listDriveBrowserFiles(folderId, query, nextCursor, 50, controller.signal);
+      if (revision !== requestRevision.current || controller.signal.aborted) return;
+      setFiles((current) => nextCursor ? [...current, ...page.items] : page.items);
+      setCursor(page.nextCursor);
+      setError(null);
+    } catch (requestError) {
+      if (revision !== requestRevision.current || controller.signal.aborted) return;
+      setError({ tone: "error", message: displayError(requestError) });
+    } finally {
+      if (revision === requestRevision.current) setLoading(false);
+    }
+  }, [folderId, query]);
+
+  useEffect(() => {
+    void api.driveIntegration().then((state) => {
+      setConnection(state);
+      setFolderId(state.configured ? state.storageFolderId ?? null : null);
+    }).catch((requestError) => {
+      setError({ tone: "error", message: displayError(requestError) });
+    }).finally(() => setConnectionLoading(false));
+    return () => loadController.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!connection?.configured || !folderId) return;
+    const timer = window.setTimeout(() => void load(), 300);
+    return () => window.clearTimeout(timer);
+  }, [connection, folderId, load]);
+
+  function changeView(next: ViewMode) {
+    setView(next);
+    persistViewMode("dochub.drive-import-view", next);
+  }
+
+  function enterFolder(file: DriveFile) {
+    if (file.normalizedType !== "FOLDER" || !folderId) return;
+    const currentName = folderStack.at(-1)?.name ?? connection?.storageFolderName ?? t("drive.storageFolder");
+    setFolderStack((current) => [...current, { id: folderId, name: currentName }]);
+    setFolderId(file.driveFileId);
+    setQuery("");
+    setCursor(null);
+  }
+
+  function goBack() {
+    const previous = folderStack.at(-1);
+    if (!previous) return;
+    setFolderStack((current) => current.slice(0, -1));
+    setFolderId(previous.id);
+    setQuery("");
+    setCursor(null);
+  }
+
+  async function addToDocsHub(file: DriveFile, parentId: string | null) {
+    setAddingId(file.driveFileId);
+    try {
+      const result = await api.addDriveFileToDocsHub(file.driveFileId, parentId);
+      setFiles((current) => current.map((item) => item.driveFileId === file.driveFileId
+        ? { ...item, docsHubNodeId: result.nodeId }
+        : item));
+      setPickerFile(null);
+      window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId } }));
+      setError({ tone: "success", message: t("drive.addedToDocsHub", { name: result.name }) });
+    } catch (requestError) {
+      setError({ tone: "error", message: displayError(requestError) });
+    } finally {
+      setAddingId(null);
+    }
+  }
+
+  const unavailable = !connectionLoading && (!connection?.connected || !connection.configured);
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section ref={dialog} className="dialog drive-import-dialog" role="dialog" aria-modal="true" aria-labelledby="drive-import-title">
+        <header className="dialog-header">
+          <h2 id="drive-import-title">{t("drive.addFromGoogleDrive")}</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}><Icon name="close" size={16} /></button>
+        </header>
+        {error && <p className={`drive-import-notice drive-import-notice-${error.tone}`} role={error.tone === "error" ? "alert" : "status"}>{error.message}</p>}
+        {connectionLoading ? <div className="drive-import-state">{t("common.loading")}</div> : unavailable ? <div className="drive-import-state"><h3>{t("drive.notConnected")}</h3><p>{t("drive.adminConfigures")}</p></div> : (
+          <>
+            <div className="drive-import-toolbar">
+              <button type="button" className="button" onClick={goBack} disabled={folderStack.length === 0}><Icon name="back" size={16} />{t("common.back")}</button>
+              <div className="search-field drive-import-search"><Icon name="search" size={17} /><input autoFocus value={query} onChange={(event) => { setQuery(event.target.value); setCursor(null); }} placeholder={t("drive.searchPlaceholder")} aria-label={t("drive.searchPlaceholder")} /></div>
+              <ViewToggle value={view} onChange={changeView} label={t("drive.viewMode")} />
+            </div>
+            <div className="drive-import-content" aria-busy={loading}>
+              {loading && files.length === 0 ? <div className="drive-import-state">{t("common.loading")}</div> : files.length === 0 ? <div className="drive-import-state">{t("drive.noFiles")}</div> : view === "list" ? (
+                <div className="file-table-wrap drive-import-table-wrap"><table className="file-table drive-import-table"><colgroup><col className="drive-import-col-name" /><col className="drive-import-col-type" /><col className="drive-import-col-modified" /><col className="drive-import-col-action" /></colgroup><thead><tr><th>{t("common.name")}</th><th>{t("common.type")}</th><th>{t("common.modified")}</th><th>{t("common.actions")}</th></tr></thead><tbody>{files.map((file) => <DriveBrowserRow key={file.id} file={file} canManage={canManage} adding={addingId === file.driveFileId} onFolder={enterFolder} onSelect={setPickerFile} />)}</tbody></table></div>
+              ) : <div className="drive-browser-grid">{files.map((file) => <DriveBrowserCard key={file.id} file={file} canManage={canManage} adding={addingId === file.driveFileId} onFolder={enterFolder} onSelect={setPickerFile} />)}</div>}
+              {cursor && <button type="button" className="button drive-load-more" onClick={() => void load(cursor)} disabled={loading}>{t("search.loadMore")}</button>}
+            </div>
+          </>
+        )}
+      </section>
+      {pickerFile && <DocsHubFolderPicker file={pickerFile} onClose={() => setPickerFile(null)} onSelect={(parentId) => void addToDocsHub(pickerFile, parentId)} pending={addingId === pickerFile.driveFileId} />}
+    </div>
+  );
+}
+
+function DriveBrowserRow({
+  file,
+  canManage,
+  adding,
+  onFolder,
+  onSelect,
+}: {
+  file: DriveFile;
+  canManage: boolean;
+  adding: boolean;
+  onFolder: (file: DriveFile) => void;
+  onSelect: (file: DriveFile) => void;
+}) {
+  const isFolder = file.normalizedType === "FOLDER";
+  return <tr>
+    <td><button type="button" className="file-name" disabled={!isFolder && (!canManage || Boolean(file.docsHubNodeId))} onClick={() => isFolder ? onFolder(file) : onSelect(file)}><Icon name={isFolder ? "folder" : "file"} size={19} /><span>{file.name}</span></button></td>
+    <td>{driveTypeLabel(file.normalizedType)}</td>
+    <td>{file.driveModifiedTime ? formatDate(file.driveModifiedTime) : "—"}</td>
+    <td className="drive-external-actions">{isFolder ? "—" : file.docsHubNodeId ? <span className="drive-in-docshub">{t("drive.alreadyInDocsHub")}</span> : canManage ? <button type="button" className="button" disabled={adding} onClick={() => onSelect(file)}>{t("drive.addToDocsHub")}</button> : "—"}</td>
+  </tr>;
+}
+
+function DriveBrowserCard({
+  file,
+  canManage,
+  adding,
+  onFolder,
+  onSelect,
+}: {
+  file: DriveFile;
+  canManage: boolean;
+  adding: boolean;
+  onFolder: (file: DriveFile) => void;
+  onSelect: (file: DriveFile) => void;
+}) {
+  const isFolder = file.normalizedType === "FOLDER";
+  return <article className="drive-browser-card">
+    <button type="button" className="drive-browser-card-main" disabled={!isFolder && (!canManage || Boolean(file.docsHubNodeId))} onClick={() => isFolder ? onFolder(file) : onSelect(file)}><Icon name={isFolder ? "folder" : "file"} size={22} /><strong title={file.name}>{file.name}</strong><span>{driveTypeLabel(file.normalizedType)} · {file.driveModifiedTime ? formatDate(file.driveModifiedTime) : "—"}</span></button>
+    {!isFolder && (file.docsHubNodeId ? <span className="drive-in-docshub">{t("drive.alreadyInDocsHub")}</span> : canManage ? <button type="button" className="button" disabled={adding} onClick={() => onSelect(file)}>{t("drive.addToDocsHub")}</button> : null)}
+  </article>;
+}
+
+function DocsHubFolderPicker({
+  file,
+  onClose,
+  onSelect,
+  pending,
+}: {
+  file: DriveFile;
+  onClose: () => void;
+  onSelect: (parentId: string | null) => void;
+  pending: boolean;
+}) {
+  const dialog = useDialogFocus();
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  return <div className="dialog-backdrop" role="presentation"><section ref={dialog} className="dialog drive-folder-picker" role="dialog" aria-modal="true" aria-labelledby="drive-folder-picker-title">
+    <header className="dialog-header"><div><h2 id="drive-folder-picker-title">{t("drive.chooseDocsHubFolder")}</h2><p>{file.name}</p></div><button type="button" className="icon-button" onClick={onClose} aria-label={t("common.close")}><Icon name="close" size={16} /></button></header>
+    <div className="dialog-body drive-folder-picker-body"><DocsHubFolderTree selectedFolderId={selectedFolderId} onSelect={setSelectedFolderId} showRoot /></div>
+    <footer className="dialog-actions"><button type="button" className="button" onClick={onClose} disabled={pending}>{t("common.cancel")}</button><button type="button" className="button button-primary" onClick={() => onSelect(selectedFolderId)} disabled={pending}>{pending ? t("drive.addingToDocsHub") : t("drive.addHere")}</button></footer>
+  </section></div>;
+}
+
 function SignIn() {
   const [pending, setPending] = useState(false);
   return (
@@ -1485,6 +1685,7 @@ function AppShell({
   canCreate,
   uploadingFromMenu,
   activeFolderId,
+  onOpenDriveImport,
   onUpload,
   onCreateFolder,
   onOpenFile,
@@ -1497,6 +1698,7 @@ function AppShell({
   canCreate: boolean;
   uploadingFromMenu: boolean;
   activeFolderId: string | null;
+  onOpenDriveImport: () => void;
   onUpload: () => void;
   onCreateFolder: () => void;
   onOpenFile: (item: NodeTreeItem) => void;
@@ -1571,6 +1773,7 @@ function AppShell({
       canCreate={canCreate}
       uploadingFromMenu={uploadingFromMenu}
       activeFolderId={activeFolderId}
+      onOpenDriveImport={onOpenDriveImport}
       onUpload={onUpload}
       onCreateFolder={onCreateFolder}
       onOpenFile={onOpenFile}
@@ -1590,6 +1793,7 @@ function Sidebar({
   canCreate,
   uploadingFromMenu,
   activeFolderId,
+  onOpenDriveImport,
   onUpload,
   onCreateFolder,
   onOpenFile,
@@ -1604,6 +1808,7 @@ function Sidebar({
   canCreate: boolean;
   uploadingFromMenu: boolean;
   activeFolderId: string | null;
+  onOpenDriveImport: () => void;
   onUpload: () => void;
   onCreateFolder: () => void;
   onOpenFile: (item: NodeTreeItem) => void;
@@ -1623,6 +1828,7 @@ function Sidebar({
         <AddDriveMenu
           pending={uploadingFromMenu}
           canCreate={canCreate}
+          onOpenDrive={onOpenDriveImport}
           onUpload={onUpload}
           onCreateFolder={onCreateFolder}
         />
@@ -1690,6 +1896,28 @@ function FolderTree({
   onOpenFile: (item: NodeTreeItem) => void;
 }) {
   return <DocsHubNodeTree activeFolderId={activeFolderId} onNavigate={navigate} onOpenFile={onOpenFile} />;
+}
+
+function DocsHubFolderTree({
+  activeFolderId,
+  selectedFolderId,
+  onNavigate,
+  onSelect,
+  showRoot = false,
+}: {
+  activeFolderId?: string | null;
+  selectedFolderId?: string | null;
+  onNavigate?: (folderId: string) => void;
+  onSelect?: (folderId: string | null) => void;
+  showRoot?: boolean;
+}) {
+  return <DocsHubTree
+    activeFolderId={activeFolderId}
+    selectedFolderId={selectedFolderId}
+    onNavigate={onNavigate}
+    onSelect={onSelect}
+    showRoot={showRoot}
+  />;
 }
 
 function DocsHubNodeTree({
@@ -4024,11 +4252,13 @@ function EmptyState({
 function AddDriveMenu({
   pending,
   canCreate,
+  onOpenDrive,
   onUpload,
   onCreateFolder,
 }: {
   pending: boolean;
   canCreate: boolean;
+  onOpenDrive: () => void;
   onUpload: () => void;
   onCreateFolder: () => void;
 }) {
@@ -4121,6 +4351,11 @@ function AddDriveMenu({
           <Icon name="upload" />
           {t("files.upload")}
         </button>
+        <button type="button" role="menuitem" disabled={pending} onClick={() => { setOpen(false); onOpenDrive(); }}>
+          <Icon name="drive" />
+          {t("drive.addFromGoogleDrive")}
+        </button>
+        <div className="new-menu-divider" />
         <button type="button" role="menuitem" disabled={pending || !canCreate} onClick={() => { setOpen(false); onCreateFolder(); }}>
           <Icon name="folder" />
           {t("files.newFolder")}

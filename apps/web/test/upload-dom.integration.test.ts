@@ -78,8 +78,8 @@ describe("rendered upload controls", () => {
     });
     const uploadMenuItem = document.querySelector<HTMLButtonElement>("#add-drive-menu-popover [role=menuitem]");
     expect(uploadMenuItem).not.toBeNull();
-    expect(document.querySelectorAll("#add-drive-menu-popover [role=menuitem]")).toHaveLength(2);
-    expect(document.querySelector("#add-drive-menu-popover")?.textContent).not.toContain("Google Drive");
+    expect(document.querySelectorAll("#add-drive-menu-popover [role=menuitem]")).toHaveLength(3);
+    expect(document.querySelector("#add-drive-menu-popover")?.textContent).toContain("Google Drive");
     uploadMenuItem!.click();
     emptyFolderUpload!.click();
     expect(pickerClick).toHaveBeenCalledTimes(2);
