@@ -1998,6 +1998,7 @@ function DocsHubTree({
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, boolean>>({});
   const childrenRef = useRef(children);
+  const loadingRef = useRef(new Set<string>());
   useEffect(() => {
     childrenRef.current = children;
   }, [children]);
@@ -2005,6 +2006,8 @@ function DocsHubTree({
   const loadChildren = useCallback(async (parentId: string | null, force = false) => {
     const key = parentId ?? rootKey;
     if (!force && Object.prototype.hasOwnProperty.call(childrenRef.current, key)) return;
+    if (loadingRef.current.has(key)) return;
+    loadingRef.current.add(key);
     setLoading((current) => new Set(current).add(key));
     setErrors((current) => {
       const next = { ...current };
@@ -2019,6 +2022,7 @@ function DocsHubTree({
     } catch {
       setErrors((current) => ({ ...current, [key]: true }));
     } finally {
+      loadingRef.current.delete(key);
       setLoading((current) => {
         const next = new Set(current);
         next.delete(key);
@@ -2037,17 +2041,21 @@ function DocsHubTree({
       const detail = (event as CustomEvent<{ parentId?: string | null; nodeId?: string }>).detail;
       if (!detail || !Object.prototype.hasOwnProperty.call(detail, "parentId")) return;
       const parentId = detail.parentId ?? null;
-      const parentKey = parentId ?? rootKey;
-      setChildren((current) => {
-        const next = { ...current };
-        delete next[parentKey];
-        if (detail.nodeId) delete next[detail.nodeId];
-        return next;
-      });
       void loadChildren(parentId, true);
     };
     window.addEventListener("nodes-changed", refresh);
     return () => window.removeEventListener("nodes-changed", refresh);
+  }, [loadChildren]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const keys = new Set([rootKey, ...Object.keys(childrenRef.current)]);
+      for (const key of keys) {
+        if (loadingRef.current.has(key)) continue;
+        void loadChildren(key === rootKey ? null : key, true);
+      }
+    }, 10_000);
+    return () => window.clearInterval(timer);
   }, [loadChildren]);
 
   useEffect(() => {
@@ -2386,6 +2394,7 @@ function DriveApp({
   }, []);
   async function rename(node: Node, name: string) {
     await api.renameNode(node.id, name);
+    window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: node.parentId, nodeId: node.id } }));
     await load(folderId);
     setNotice({ tone: "success", message: t("files.renamed") });
   }
@@ -2415,12 +2424,14 @@ function DriveApp({
   }
   async function moveToTrash(node: Node) {
     await api.moveToTrash(node.id);
+    window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: node.parentId, nodeId: node.id } }));
     setNodes((items) => items.filter((item) => item.id !== node.id));
     setNotice({ tone: "success", message: t("files.movedToTrash", { name: node.name }) });
   }
   async function removeDriveReference(node: Node) {
     try {
       await api.removeDriveReference(node.id);
+      window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: node.parentId, nodeId: node.id } }));
       setNodes((items) => items.filter((item) => item.id !== node.id));
       setRemoveDriveNode(null);
       setNotice({ tone: "success", message: t("drive.removedFromDocsHub", { name: node.name }) });
@@ -3594,12 +3605,14 @@ function CollectionApp({ kind }: { kind: "recent" | "favorites" }) {
 
   async function rename(node: Node, name: string) {
     const updated = await api.renameNode(node.id, name);
+    window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: node.parentId, nodeId: node.id } }));
     setItems((current) => current.map((item) => item.id === node.id ? { ...item, ...updated } : item));
     setNotice({ tone: "success", message: t("files.renamed") });
   }
 
   async function moveToTrash(node: Node) {
     await api.moveToTrash(node.id);
+    window.dispatchEvent(new CustomEvent("nodes-changed", { detail: { parentId: node.parentId, nodeId: node.id } }));
     setItems((current) => current.filter((item) => item.id !== node.id));
     setFavoriteIds((current) => {
       const next = new Set(current);
